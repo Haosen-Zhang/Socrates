@@ -1,0 +1,14 @@
+{
+  "name": "socrates",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "bun run --cwd apps/desktop tauri dev",
+    "test": "bun test",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/bun": "^1",
+    "typescript": "~5.8.3"
+  }
+}

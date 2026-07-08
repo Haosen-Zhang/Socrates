@@ -6,7 +6,26 @@ Socrates 是一个多模型群聊式 Agent 工作台。它允许用户把不同�
 
 ## 当前阶段
 
-本仓库当前只包含产品和工程设计文档，暂不包含应用代码。
+MVP 开发中。产品与工程设计见 `docs/`，实现按 GitHub Issues 的票逐张推进（spec 见 issue #2）。
+
+## 开发
+
+依赖：[Bun](https://bun.sh)、[Rust](https://rustup.rs)（Tauri 需要）。
+
+```bash
+bun install
+bun run dev        # 启动桌面应用（Tauri + sidecar）
+bun test           # 运行测试
+bun run typecheck  # TypeScript 类型检查
+```
+
+代码结构（Bun workspaces）：
+
+| 包 | 内容 |
+| --- | --- |
+| `apps/desktop` | Tauri + React 桌面应用 |
+| `apps/sidecar` | Bun sidecar：编排引擎宿主，HTTP + SSE 服务 |
+| `packages/core` | 纯 TypeScript 编排逻辑与领域类型（零 IO 依赖） |
 
 ## 文档目录
 
