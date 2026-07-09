@@ -1,65 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Agent, StoredMessage, TaskSummary } from "@socrates/core";
-import { useStore, type StreamingTurn } from "./store";
+import { useStore, useT, type StreamingTurn } from "./store";
 
-const STATUS_BADGE: Record<TaskSummary["status"], [string, string]> = {
-  running: ["进行中", "bg-blue-100 text-blue-800"],
-  completed: ["已完成", "bg-green-100 text-green-800"],
-  failed: ["失败", "bg-red-100 text-red-800"],
-  cancelled: ["已取消", "bg-neutral-200 text-neutral-600"],
-};
-
-/** 历史任务面板：时间、模式、状态、token 合计；点击定位到时间线中的回放位置 */
-function TaskHistoryPanel({ onJump }: { onJump: (taskId: string) => void }) {
-  const { tasks } = useStore();
-  if (tasks.length === 0) {
-    return <p className="border-b border-neutral-200 bg-white px-4 py-2 text-xs text-neutral-500">还没有讨论任务。</p>;
-  }
-  return (
-    <ul className="max-h-56 divide-y divide-neutral-100 overflow-y-auto border-b border-neutral-200 bg-white">
-      {tasks.map((t) => {
-        const [text, cls] = STATUS_BADGE[t.status];
-        return (
-          <li
-            key={t.id}
-            className="flex cursor-pointer items-center gap-2 px-4 py-2 text-sm hover:bg-neutral-50"
-            onClick={() => onJump(t.id)}
-          >
-            <span className="shrink-0 text-xs text-neutral-400">
-              {new Date(t.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
-            </span>
-            <span className="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-600">
-              {t.mode === "debate" ? "辩论" : "轮流"}
-            </span>
-            <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${cls}`} title={t.error}>
-              {text}
-            </span>
-            <span className="min-w-0 flex-1 truncate">{t.prompt}</span>
-            <span className="shrink-0 text-[10px] text-neutral-400">
-              ↑{t.inputTokens} ↓{t.outputTokens}
-            </span>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-const DUTY_BADGE: Record<string, [string, string]> = {
-  propose: ["提案", "bg-blue-100 text-blue-800"],
-  critique: ["质疑", "bg-red-100 text-red-800"],
-  synthesize: ["综合", "bg-purple-100 text-purple-800"],
-  judge: ["裁决", "bg-amber-100 text-amber-800"],
-  summarize: ["最终总结", "bg-amber-100 text-amber-800"],
+const DUTY_CLS: Record<string, string> = {
+  propose: "bg-blue-100 text-blue-800",
+  critique: "bg-red-100 text-red-800",
+  synthesize: "bg-purple-100 text-purple-800",
+  judge: "bg-amber-100 text-amber-800",
+  summarize: "bg-amber-100 text-amber-800",
 };
 
 function AgentHeader({ name, model, duty }: { name?: string; model?: string; duty?: string }) {
-  const badge = duty ? DUTY_BADGE[duty] : undefined;
+  const t = useT();
   return (
     <div className="mb-0.5 text-xs text-neutral-500">
       {name} · {model}
-      {badge && (
-        <span className={`ml-2 rounded px-1.5 py-0.5 text-[10px] font-medium ${badge[1]}`}>{badge[0]}</span>
+      {duty && DUTY_CLS[duty] && (
+        <span className={`ml-2 rounded px-1.5 py-0.5 text-[10px] font-medium ${DUTY_CLS[duty]}`}>
+          {t(`duty_${duty}`)}
+        </span>
       )}
     </div>
   );
@@ -94,10 +53,11 @@ function Bubble({ m }: { m: StoredMessage }) {
 }
 
 function RoundDivider({ round }: { round: number }) {
+  const t = useT();
   return (
     <div className="flex items-center gap-3 py-1">
       <div className="h-px flex-1 bg-neutral-200" />
-      <span className="text-xs text-neutral-400">第 {round} 轮</span>
+      <span className="text-xs text-neutral-400">{t("round_divider", { n: round })}</span>
       <div className="h-px flex-1 bg-neutral-200" />
     </div>
   );
@@ -121,33 +81,85 @@ function StreamingBubble({ s }: { s: StreamingTurn }) {
   );
 }
 
+const STATUS_CLS: Record<TaskSummary["status"], string> = {
+  running: "bg-blue-100 text-blue-800",
+  completed: "bg-green-100 text-green-800",
+  failed: "bg-red-100 text-red-800",
+  cancelled: "bg-neutral-200 text-neutral-600",
+};
+
+const DATE_LOCALE: Record<string, string> = { "zh-CN": "zh-CN", "zh-TW": "zh-TW", en: "en-US" };
+
+/** 历史任务面板：时间、模式、状态、token 合计；点击定位到时间线中的回放位置 */
+function TaskHistoryPanel({ onJump }: { onJump: (taskId: string) => void }) {
+  const { tasks, lang } = useStore();
+  const t = useT();
+  if (tasks.length === 0) {
+    return <p className="border-b border-neutral-200 bg-white px-4 py-2 text-xs text-neutral-500">{t("no_tasks")}</p>;
+  }
+  return (
+    <ul className="max-h-56 divide-y divide-neutral-100 overflow-y-auto border-b border-neutral-200 bg-white">
+      {tasks.map((task) => (
+        <li
+          key={task.id}
+          className="flex cursor-pointer items-center gap-2 px-4 py-2 text-sm hover:bg-neutral-50"
+          onClick={() => onJump(task.id)}
+        >
+          <span className="shrink-0 text-xs text-neutral-400">
+            {new Date(task.createdAt).toLocaleString(DATE_LOCALE[lang], {
+              month: "numeric",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </span>
+          <span className="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-600">
+            {task.mode === "debate" ? t("mode_debate") : t("mode_round_robin")}
+          </span>
+          <span
+            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_CLS[task.status]}`}
+            title={task.error}
+          >
+            {t(`status_${task.status}`)}
+          </span>
+          <span className="min-w-0 flex-1 truncate">{task.prompt}</span>
+          <span className="shrink-0 text-[10px] text-neutral-400">
+            ↑{task.inputTokens} ↓{task.outputTokens}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** 运行中任务的控制条：取消；turn 失败时给出 重试/跳过/终止 三选 */
 function TaskControlBar() {
   const { activeTaskId, failedTurn, streaming, cancelTask, decideTurn } = useStore();
+  const t = useT();
   if (!activeTaskId) return null;
   if (failedTurn) {
     return (
       <div className="mx-4 mb-2 flex items-center gap-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
         <span className="min-w-0 flex-1 truncate" title={failedTurn.message}>
-          「{failedTurn.agentName}」发言失败：{failedTurn.message}
+          {t("turn_failed_msg", { name: failedTurn.agentName, msg: failedTurn.message })}
         </span>
         <button
           className="shrink-0 rounded border border-amber-400 px-2 py-0.5 hover:bg-amber-100"
           onClick={() => void decideTurn("retry")}
         >
-          重试
+          {t("retry")}
         </button>
         <button
           className="shrink-0 rounded border border-amber-400 px-2 py-0.5 hover:bg-amber-100"
           onClick={() => void decideTurn("skip")}
         >
-          跳过该 Agent
+          {t("skip_agent")}
         </button>
         <button
           className="shrink-0 rounded border border-red-300 px-2 py-0.5 text-red-700 hover:bg-red-50"
           onClick={() => void decideTurn("abort")}
         >
-          终止任务
+          {t("abort_task")}
         </button>
       </div>
     );
@@ -156,13 +168,13 @@ function TaskControlBar() {
     <div className="mx-4 mb-2 flex items-center justify-between rounded border border-neutral-200 bg-neutral-100 px-3 py-2 text-sm text-neutral-600">
       <span className="flex items-center gap-2">
         <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-green-600" />
-        {streaming ? `「${streaming.agentName}」发言中…` : "讨论进行中…"}
+        {streaming ? t("speaking_now", { name: streaming.agentName }) : t("task_running")}
       </span>
       <button
         className="rounded border border-neutral-300 bg-white px-2 py-0.5 hover:bg-neutral-50"
         onClick={() => void cancelTask()}
       >
-        取消任务
+        {t("cancel_task")}
       </button>
     </div>
   );
@@ -174,6 +186,7 @@ type OrderItem = { id: string; enabled: boolean };
 /** 多 Agent 房间的任务发起表单：需求、参与者与发言顺序（拖拽）、轮数、最终总结者 */
 function TaskComposer({ agents }: { agents: Agent[] }) {
   const { streaming, activeTaskId, sendTask } = useStore();
+  const t = useT();
   const busy = !!streaming || !!activeTaskId;
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState<"round_robin" | "debate">("round_robin");
@@ -241,11 +254,11 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
       {showConfig && (
         <div className="flex gap-4 rounded border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm">
           <div className="flex shrink-0 flex-col gap-1">
-            <span className="text-neutral-500">模式</span>
+            <span className="text-neutral-500">{t("mode")}</span>
             {(
               [
-                ["round_robin", "轮流发言"],
-                ["debate", "辩论"],
+                ["round_robin", t("mode_round_robin")],
+                ["debate", t("mode_debate")],
               ] as const
             ).map(([value, label]) => (
               <button
@@ -264,10 +277,10 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
             <div className="grid flex-1 grid-cols-2 gap-2">
               {(
                 [
-                  ["proposerId", "提案者"],
-                  ["skepticId", "质疑者"],
-                  ["synthesizerId", "综合者"],
-                  ["judgeId", "裁决者"],
+                  ["proposerId", t("debate_proposer")],
+                  ["skepticId", t("debate_skeptic")],
+                  ["synthesizerId", t("debate_synthesizer")],
+                  ["judgeId", t("debate_judge")],
                 ] as const
               ).map(([key, label]) => (
                 <label key={key} className="flex items-center gap-1">
@@ -287,39 +300,39 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
               ))}
             </div>
           ) : (
-          <div className="min-w-0 flex-1">
-            <div className="mb-1 text-neutral-500">参与者与发言顺序（拖动排序）：</div>
-            <ul className="max-h-44 space-y-1 overflow-y-auto pr-1">
-              {items.map((item) => {
-                const a = agentOf(item.id);
-                if (!a) return null;
-                const position = item.enabled ? speakingOrder.indexOf(item.id) + 1 : null;
-                return (
-                  <li
-                    key={item.id}
-                    draggable
-                    onDragStart={() => setDragId(item.id)}
-                    onDragEnd={() => setDragId(null)}
-                    onDragOver={(e) => dragOver(e, item.id)}
-                    className={`flex cursor-grab items-center gap-2 rounded border bg-white px-2 py-1 ${
-                      dragId === item.id ? "border-neutral-400 opacity-60" : "border-neutral-200"
-                    } ${item.enabled ? "" : "text-neutral-400"}`}
-                  >
-                    <span className="select-none text-neutral-400">⠿</span>
-                    <input type="checkbox" checked={item.enabled} onChange={() => toggle(item.id)} />
-                    <span className="w-5 text-xs text-neutral-400">{position ? `${position}.` : "—"}</span>
-                    <span className="min-w-0 flex-1 truncate">{a.displayName}</span>
-                    <span className="shrink-0 text-xs text-neutral-400">{a.modelId}</span>
-                  </li>
-                );
-              })}
-            </ul>
-            {speakingOrder.length === 0 && <p className="mt-1 text-xs text-red-600">至少勾选一位参与者</p>}
-          </div>
+            <div className="min-w-0 flex-1">
+              <div className="mb-1 text-neutral-500">{t("order_hint")}</div>
+              <ul className="max-h-44 space-y-1 overflow-y-auto pr-1">
+                {items.map((item) => {
+                  const a = agentOf(item.id);
+                  if (!a) return null;
+                  const position = item.enabled ? speakingOrder.indexOf(item.id) + 1 : null;
+                  return (
+                    <li
+                      key={item.id}
+                      draggable
+                      onDragStart={() => setDragId(item.id)}
+                      onDragEnd={() => setDragId(null)}
+                      onDragOver={(e) => dragOver(e, item.id)}
+                      className={`flex cursor-grab items-center gap-2 rounded border bg-white px-2 py-1 ${
+                        dragId === item.id ? "border-neutral-400 opacity-60" : "border-neutral-200"
+                      } ${item.enabled ? "" : "text-neutral-400"}`}
+                    >
+                      <span className="select-none text-neutral-400">⠿</span>
+                      <input type="checkbox" checked={item.enabled} onChange={() => toggle(item.id)} />
+                      <span className="w-5 text-xs text-neutral-400">{position ? `${position}.` : "—"}</span>
+                      <span className="min-w-0 flex-1 truncate">{a.displayName}</span>
+                      <span className="shrink-0 text-xs text-neutral-400">{a.modelId}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+              {speakingOrder.length === 0 && <p className="mt-1 text-xs text-red-600">{t("order_need_one")}</p>}
+            </div>
           )}
           <div className="flex shrink-0 flex-col gap-2">
             <label className="flex items-center justify-between gap-1">
-              <span className="text-neutral-500">轮数</span>
+              <span className="text-neutral-500">{t("rounds")}</span>
               <input
                 type="number"
                 min={1}
@@ -331,7 +344,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
             </label>
             {mode === "round_robin" && (
               <label className="flex items-center justify-between gap-1">
-                <span className="text-neutral-500">总结者</span>
+                <span className="text-neutral-500">{t("summarizer")}</span>
                 <select
                   className="rounded border border-neutral-300 px-1.5 py-0.5 text-sm"
                   value={summarizerId}
@@ -352,7 +365,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
         <button
           type="button"
           className="rounded border border-neutral-300 px-2 text-sm text-neutral-500 hover:bg-neutral-100"
-          title="发言顺序 / 轮数 / 总结者"
+          title={t("config_tooltip")}
           onClick={() => setShowConfig((v) => !v)}
         >
           ⚙
@@ -361,10 +374,10 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
           className="flex-1 rounded border border-neutral-300 px-3 py-2 text-sm"
           placeholder={
             busy
-              ? "讨论进行中…"
+              ? t("task_running")
               : mode === "debate"
-                ? `描述议题，四角色辩论 ${maxRounds} 轮后裁决`
-                : `描述任务，${speakingOrder.length} 位 Agent 将讨论 ${maxRounds} 轮`
+                ? t("debate_placeholder", { m: maxRounds })
+                : t("rr_placeholder", { n: speakingOrder.length, m: maxRounds })
           }
           value={prompt}
           disabled={busy}
@@ -375,7 +388,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
           disabled={busy || !prompt.trim() || (mode === "round_robin" && speakingOrder.length === 0)}
           type="submit"
         >
-          {mode === "debate" ? "发起辩论" : "发起讨论"}
+          {mode === "debate" ? t("start_debate") : t("start_discussion")}
         </button>
       </div>
     </form>
@@ -384,6 +397,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
 
 function SimpleComposer() {
   const { streaming, sendMessage } = useStore();
+  const t = useT();
   const [draft, setDraft] = useState("");
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -396,7 +410,7 @@ function SimpleComposer() {
     <form onSubmit={submit} className="flex gap-2 border-t border-neutral-200 bg-white p-3">
       <input
         className="flex-1 rounded border border-neutral-300 px-3 py-2 text-sm"
-        placeholder={streaming ? "回复中…" : "输入消息，回车发送"}
+        placeholder={streaming ? t("replying") : t("message_placeholder")}
         value={draft}
         disabled={!!streaming}
         onChange={(e) => setDraft(e.target.value)}
@@ -406,7 +420,7 @@ function SimpleComposer() {
         disabled={!!streaming || !draft.trim()}
         type="submit"
       >
-        发送
+        {t("send")}
       </button>
     </form>
   );
@@ -414,6 +428,7 @@ function SimpleComposer() {
 
 function NewRoomForm({ onDone }: { onDone: () => void }) {
   const { agents, createRoom } = useStore();
+  const t = useT();
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -435,13 +450,13 @@ function NewRoomForm({ onDone }: { onDone: () => void }) {
     <form onSubmit={submit} className="space-y-2 rounded border border-neutral-200 bg-white p-3">
       <input
         className="w-full rounded border border-neutral-300 px-2 py-1.5 text-sm"
-        placeholder="房间名"
+        placeholder={t("room_name")}
         required
         value={name}
         onChange={(e) => setName(e.target.value)}
       />
       <div className="max-h-32 space-y-1 overflow-y-auto">
-        {agents.length === 0 && <p className="text-xs text-neutral-500">先到「设置」里创建 Agent</p>}
+        {agents.length === 0 && <p className="text-xs text-neutral-500">{t("create_agent_first")}</p>}
         {agents.map((a) => (
           <label key={a.id} className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={selected.includes(a.id)} onChange={() => toggle(a.id)} />
@@ -453,10 +468,10 @@ function NewRoomForm({ onDone }: { onDone: () => void }) {
       {error && <p className="text-xs text-red-700">{error}</p>}
       <div className="flex gap-2">
         <button className="rounded bg-neutral-900 px-2 py-1 text-xs text-white" type="submit">
-          创建
+          {t("create")}
         </button>
         <button className="rounded border border-neutral-300 px-2 py-1 text-xs" type="button" onClick={onDone}>
-          取消
+          {t("cancel")}
         </button>
       </div>
     </form>
@@ -466,6 +481,7 @@ function NewRoomForm({ onDone }: { onDone: () => void }) {
 export default function ChatPage() {
   const { rooms, agents, currentRoomId, messages, streaming, chatError, tasks, selectRoom, removeRoom, clearChatError } =
     useStore();
+  const t = useT();
   const [creating, setCreating] = useState(false);
   const [showTasks, setShowTasks] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -507,7 +523,7 @@ export default function ChatPage() {
           className="w-full rounded border border-neutral-300 px-2 py-1.5 text-sm hover:bg-neutral-100"
           onClick={() => setCreating(true)}
         >
-          + 新建房间
+          {t("new_room")}
         </button>
         {creating && <NewRoomForm onDone={() => setCreating(false)} />}
         {rooms.map((r) => (
@@ -524,7 +540,7 @@ export default function ChatPage() {
                 r.id === currentRoomId ? "text-neutral-400" : "text-neutral-300"
               }`}
             >
-              {r.agentIds.length}人
+              {t("room_members", { n: r.agentIds.length })}
             </span>
             <button
               className={`ml-1 hidden text-xs group-hover:block ${
@@ -535,7 +551,7 @@ export default function ChatPage() {
                 void removeRoom(r.id);
               }}
             >
-              删
+              {t("delete")}
             </button>
           </div>
         ))}
@@ -552,7 +568,7 @@ export default function ChatPage() {
                 }`}
                 onClick={() => setShowTasks((v) => !v)}
               >
-                历史任务 {tasks.length}
+                {t("task_history", { n: tasks.length })}
               </button>
             </div>
             {showTasks && <TaskHistoryPanel onJump={jumpToTask} />}
@@ -575,14 +591,14 @@ export default function ChatPage() {
                   {chatError}
                 </span>
                 <button className="ml-2 shrink-0 underline" onClick={clearChatError}>
-                  关闭
+                  {t("close")}
                 </button>
               </div>
             )}
             {roomAgents.length > 1 ? <TaskComposer agents={roomAgents} /> : <SimpleComposer />}
           </>
         ) : (
-          <p className="p-6 text-sm text-neutral-500">选择或新建一个房间开始讨论。</p>
+          <p className="p-6 text-sm text-neutral-500">{t("pick_room")}</p>
         )}
       </section>
     </div>

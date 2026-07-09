@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import { loadLang, persistLang, tr, type Lang } from "./i18n";
 import {
   parseSseChunk,
   type Agent,
@@ -62,6 +63,8 @@ type Store = {
   handshake: Handshake | null;
   view: "chat" | "settings";
   setView: (v: "chat" | "settings") => void;
+  lang: Lang;
+  setLang: (lang: Lang) => void;
 
   providers: Provider[];
   testResults: Record<string, TestResult | "running">;
@@ -174,7 +177,7 @@ export const useStore = create<Store>((set, get) => {
             // 任务流：引擎挂起等处置；单聊流：随后会收到 error 事件
             set({ failedTurn: { agentName: e.agentName, message: e.message }, streaming: null });
           } else if (e.type === "task_cancelled") {
-            set({ chatError: "任务已取消，已完成的发言已保留。", streaming: null });
+            set({ chatError: tr(get().lang, "task_cancelled_notice"), streaming: null });
           } else if (e.type === "error") {
             set({ chatError: e.message, streaming: null });
           }
@@ -194,6 +197,11 @@ export const useStore = create<Store>((set, get) => {
     handshake: null,
     view: "chat",
     setView: (view) => set({ view }),
+    lang: loadLang(),
+    setLang: (lang) => {
+      persistLang(lang);
+      set({ lang });
+    },
 
     providers: [],
     testResults: {},
@@ -343,3 +351,9 @@ export const useStore = create<Store>((set, get) => {
     },
   };
 });
+
+/** 组件用的翻译 hook：语言切换即触发重渲染 */
+export function useT() {
+  const lang = useStore((s) => s.lang);
+  return (key: string, vars?: Record<string, string | number>) => tr(lang, key, vars);
+}

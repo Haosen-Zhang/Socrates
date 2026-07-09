@@ -1,0 +1,335 @@
+/** 零依赖 i18n：字典 + {var} 插值。sidecar 返回的错误文案暂不翻译（#19 注明）。 */
+export type Lang = "zh-CN" | "zh-TW" | "en";
+
+export const LANGS: Array<{ value: Lang; label: string }> = [
+  { value: "zh-CN", label: "简体中文" },
+  { value: "zh-TW", label: "繁體中文" },
+  { value: "en", label: "English" },
+];
+
+const LANG_STORAGE_KEY = "socrates.lang";
+
+export function loadLang(): Lang {
+  const v = localStorage.getItem(LANG_STORAGE_KEY);
+  return v === "zh-TW" || v === "en" ? v : "zh-CN";
+}
+
+export function persistLang(lang: Lang): void {
+  localStorage.setItem(LANG_STORAGE_KEY, lang);
+}
+
+type Dict = Record<string, string>;
+
+const zhCN: Dict = {
+  // App 框架
+  connecting: "连接中…",
+  connected: "已连接",
+  disconnected: "未连接",
+  tab_chat: "聊天",
+  tab_settings: "设置",
+  waiting_sidecar: "正在等待 sidecar 启动…",
+  sidecar_failed: "sidecar 未能启动，请查看日志。",
+  language: "语言",
+
+  // 通用
+  edit: "编辑",
+  delete: "删除",
+  cancel: "取消",
+  create: "创建",
+  add: "添加",
+  save: "保存修改",
+  name: "名称",
+
+  // Provider 设置
+  providers_title: "模型供应商",
+  providers_empty: "还没有供应商，用下面的表单添加一个。",
+  provider_add: "添加供应商",
+  provider_edit: "编辑供应商",
+  provider_type: "类型",
+  base_url: "Base URL（留空用默认）",
+  default_model: "默认模型",
+  api_key: "API Key",
+  api_key_keep: "API Key（留空则不更换）",
+  test_connection: "测试连接",
+  testing: "测试中…",
+  test_ok: "连接成功",
+  test_auth_failed: "鉴权失败",
+  test_network_error: "网络错误",
+  test_error: "错误{status}",
+
+  // Agent 设置
+  agents_empty: "还没有 Agent，用下面的表单创建一个。",
+  agent_create: "创建 Agent",
+  agent_edit: "编辑 Agent",
+  provider: "供应商",
+  provider_select: "选择供应商…",
+  provider_deleted: "已删除的供应商",
+  model_optional: "模型（留空用供应商默认）",
+  temperature_optional: "温度（可选）",
+  role: "角色",
+  role_placeholder: "架构审稿人 / 实现者…",
+  system_prompt: "系统提示词",
+
+  // 聊天侧栏
+  new_room: "+ 新建房间",
+  room_name: "房间名",
+  create_agent_first: "先到「设置」里创建 Agent",
+  room_members: "{n}人",
+  pick_room: "选择或新建一个房间开始讨论。",
+
+  // 时间线
+  round_divider: "第 {n} 轮",
+  duty_propose: "提案",
+  duty_critique: "质疑",
+  duty_synthesize: "综合",
+  duty_judge: "裁决",
+  duty_summarize: "最终总结",
+
+  // 任务控制
+  speaking_now: "「{name}」发言中…",
+  task_running: "讨论进行中…",
+  cancel_task: "取消任务",
+  turn_failed_msg: "「{name}」发言失败：{msg}",
+  retry: "重试",
+  skip_agent: "跳过该 Agent",
+  abort_task: "终止任务",
+  task_cancelled_notice: "任务已取消，已完成的发言已保留。",
+  close: "关闭",
+
+  // 任务发起表单
+  mode: "模式",
+  mode_round_robin: "轮流发言",
+  mode_debate: "辩论",
+  order_hint: "参与者与发言顺序（拖动排序）：",
+  order_need_one: "至少勾选一位参与者",
+  rounds: "轮数",
+  summarizer: "总结者",
+  debate_proposer: "提案者",
+  debate_skeptic: "质疑者",
+  debate_synthesizer: "综合者",
+  debate_judge: "裁决者",
+  config_tooltip: "模式 / 发言顺序 / 轮数",
+  rr_placeholder: "描述任务，{n} 位 Agent 将讨论 {m} 轮",
+  debate_placeholder: "描述议题，四角色辩论 {m} 轮后裁决",
+  start_discussion: "发起讨论",
+  start_debate: "发起辩论",
+
+  // 单聊
+  replying: "回复中…",
+  message_placeholder: "输入消息，回车发送",
+  send: "发送",
+
+  // 历史任务
+  task_history: "历史任务 {n}",
+  no_tasks: "还没有讨论任务。",
+  status_running: "进行中",
+  status_completed: "已完成",
+  status_failed: "失败",
+  status_cancelled: "已取消",
+};
+
+const zhTW: Dict = {
+  connecting: "連線中…",
+  connected: "已連線",
+  disconnected: "未連線",
+  tab_chat: "聊天",
+  tab_settings: "設定",
+  waiting_sidecar: "正在等待 sidecar 啟動…",
+  sidecar_failed: "sidecar 未能啟動，請查看日誌。",
+  language: "語言",
+
+  edit: "編輯",
+  delete: "刪除",
+  cancel: "取消",
+  create: "建立",
+  add: "新增",
+  save: "儲存修改",
+  name: "名稱",
+
+  providers_title: "模型供應商",
+  providers_empty: "還沒有供應商，用下面的表單新增一個。",
+  provider_add: "新增供應商",
+  provider_edit: "編輯供應商",
+  provider_type: "類型",
+  base_url: "Base URL（留空用預設）",
+  default_model: "預設模型",
+  api_key: "API Key",
+  api_key_keep: "API Key（留空則不更換）",
+  test_connection: "測試連線",
+  testing: "測試中…",
+  test_ok: "連線成功",
+  test_auth_failed: "鑑權失敗",
+  test_network_error: "網路錯誤",
+  test_error: "錯誤{status}",
+
+  agents_empty: "還沒有 Agent，用下面的表單建立一個。",
+  agent_create: "建立 Agent",
+  agent_edit: "編輯 Agent",
+  provider: "供應商",
+  provider_select: "選擇供應商…",
+  provider_deleted: "已刪除的供應商",
+  model_optional: "模型（留空用供應商預設）",
+  temperature_optional: "溫度（可選）",
+  role: "角色",
+  role_placeholder: "架構審稿人 / 實作者…",
+  system_prompt: "系統提示詞",
+
+  new_room: "+ 新建房間",
+  room_name: "房間名",
+  create_agent_first: "先到「設定」裡建立 Agent",
+  room_members: "{n}人",
+  pick_room: "選擇或新建一個房間開始討論。",
+
+  round_divider: "第 {n} 輪",
+  duty_propose: "提案",
+  duty_critique: "質疑",
+  duty_synthesize: "綜合",
+  duty_judge: "裁決",
+  duty_summarize: "最終總結",
+
+  speaking_now: "「{name}」發言中…",
+  task_running: "討論進行中…",
+  cancel_task: "取消任務",
+  turn_failed_msg: "「{name}」發言失敗：{msg}",
+  retry: "重試",
+  skip_agent: "跳過該 Agent",
+  abort_task: "終止任務",
+  task_cancelled_notice: "任務已取消，已完成的發言已保留。",
+  close: "關閉",
+
+  mode: "模式",
+  mode_round_robin: "輪流發言",
+  mode_debate: "辯論",
+  order_hint: "參與者與發言順序（拖曳排序）：",
+  order_need_one: "至少勾選一位參與者",
+  rounds: "輪數",
+  summarizer: "總結者",
+  debate_proposer: "提案者",
+  debate_skeptic: "質疑者",
+  debate_synthesizer: "綜合者",
+  debate_judge: "裁決者",
+  config_tooltip: "模式 / 發言順序 / 輪數",
+  rr_placeholder: "描述任務，{n} 位 Agent 將討論 {m} 輪",
+  debate_placeholder: "描述議題，四角色辯論 {m} 輪後裁決",
+  start_discussion: "發起討論",
+  start_debate: "發起辯論",
+
+  replying: "回覆中…",
+  message_placeholder: "輸入訊息，Enter 送出",
+  send: "送出",
+
+  task_history: "歷史任務 {n}",
+  no_tasks: "還沒有討論任務。",
+  status_running: "進行中",
+  status_completed: "已完成",
+  status_failed: "失敗",
+  status_cancelled: "已取消",
+};
+
+const en: Dict = {
+  connecting: "Connecting…",
+  connected: "Connected",
+  disconnected: "Disconnected",
+  tab_chat: "Chat",
+  tab_settings: "Settings",
+  waiting_sidecar: "Waiting for the sidecar to start…",
+  sidecar_failed: "The sidecar failed to start. Check the logs.",
+  language: "Language",
+
+  edit: "Edit",
+  delete: "Delete",
+  cancel: "Cancel",
+  create: "Create",
+  add: "Add",
+  save: "Save",
+  name: "Name",
+
+  providers_title: "Model Providers",
+  providers_empty: "No providers yet — add one with the form below.",
+  provider_add: "Add provider",
+  provider_edit: "Edit provider",
+  provider_type: "Type",
+  base_url: "Base URL (blank = default)",
+  default_model: "Default model",
+  api_key: "API Key",
+  api_key_keep: "API Key (blank = keep current)",
+  test_connection: "Test",
+  testing: "Testing…",
+  test_ok: "Connected",
+  test_auth_failed: "Auth failed",
+  test_network_error: "Network error",
+  test_error: "Error{status}",
+
+  agents_empty: "No agents yet — create one with the form below.",
+  agent_create: "Create agent",
+  agent_edit: "Edit agent",
+  provider: "Provider",
+  provider_select: "Select a provider…",
+  provider_deleted: "Deleted provider",
+  model_optional: "Model (blank = provider default)",
+  temperature_optional: "Temperature (optional)",
+  role: "Role",
+  role_placeholder: "Architecture reviewer / Implementer…",
+  system_prompt: "System prompt",
+
+  new_room: "+ New room",
+  room_name: "Room name",
+  create_agent_first: "Create an agent in Settings first",
+  room_members: "{n}",
+  pick_room: "Pick or create a room to start a discussion.",
+
+  round_divider: "Round {n}",
+  duty_propose: "Proposal",
+  duty_critique: "Critique",
+  duty_synthesize: "Synthesis",
+  duty_judge: "Verdict",
+  duty_summarize: "Final summary",
+
+  speaking_now: "{name} is speaking…",
+  task_running: "Discussion in progress…",
+  cancel_task: "Cancel task",
+  turn_failed_msg: "{name} failed to speak: {msg}",
+  retry: "Retry",
+  skip_agent: "Skip this agent",
+  abort_task: "Abort task",
+  task_cancelled_notice: "Task cancelled. Completed turns are kept.",
+  close: "Dismiss",
+
+  mode: "Mode",
+  mode_round_robin: "Round robin",
+  mode_debate: "Debate",
+  order_hint: "Participants & speaking order (drag to reorder):",
+  order_need_one: "Select at least one participant",
+  rounds: "Rounds",
+  summarizer: "Summarizer",
+  debate_proposer: "Proposer",
+  debate_skeptic: "Skeptic",
+  debate_synthesizer: "Synthesizer",
+  debate_judge: "Judge",
+  config_tooltip: "Mode / order / rounds",
+  rr_placeholder: "Describe the task — {n} agents, {m} rounds",
+  debate_placeholder: "Describe the topic — 4 roles debate for {m} rounds, then a verdict",
+  start_discussion: "Start discussion",
+  start_debate: "Start debate",
+
+  replying: "Replying…",
+  message_placeholder: "Type a message and press Enter",
+  send: "Send",
+
+  task_history: "Tasks {n}",
+  no_tasks: "No tasks yet.",
+  status_running: "Running",
+  status_completed: "Done",
+  status_failed: "Failed",
+  status_cancelled: "Cancelled",
+};
+
+const DICTS: Record<Lang, Dict> = { "zh-CN": zhCN, "zh-TW": zhTW, en };
+
+export function tr(lang: Lang, key: string, vars?: Record<string, string | number>): string {
+  let s = DICTS[lang][key] ?? zhCN[key] ?? key;
+  if (vars) {
+    for (const [k, v] of Object.entries(vars)) s = s.split(`{${k}}`).join(String(v));
+  }
+  return s;
+}
