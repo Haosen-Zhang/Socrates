@@ -111,7 +111,7 @@ describe("round robin task", () => {
     expect(task?.status).toBe("completed");
   });
 
-  it("failed turn marks task failed and traces the error", async () => {
+  it("failed turn + abort decision marks task failed and traces the error", async () => {
     let calls = 0;
     const flaky: ModelGateway = async function* () {
       calls++;
@@ -124,12 +124,24 @@ describe("round robin task", () => {
     };
     const { app, db } = makeApp(flaky);
     const { a, b, room } = await setupTwoAgentRoom(app);
-    const { events } = await postTask(app, room.id, {
-      prompt: "会失败",
-      speakingOrder: [a.id, b.id],
-      maxRounds: 1,
-      finalSummarizerId: a.id,
+    const res = await app.request(`/rooms/${room.id}/tasks`, {
+      method: "POST",
+      body: JSON.stringify({ prompt: "会失败", speakingOrder: [a.id, b.id], maxRounds: 1, finalSummarizerId: a.id }),
     });
+    const task = db.query<{ id: string }, []>("SELECT id FROM tasks").get()!;
+    const decide = (async () => {
+      for (let i = 0; i < 200; i++) {
+        const r = await app.request(`/rooms/${room.id}/tasks/${task.id}/decision`, {
+          method: "POST",
+          body: JSON.stringify({ action: "abort" }),
+        });
+        if (r.status === 200) return;
+        await Bun.sleep(10);
+      }
+      throw new Error("decision 一直 404");
+    })();
+    const { events } = parseSseChunk(await res.text());
+    await decide;
     const types = (events as StreamEvent[]).map((e) => e.type);
     expect(types).toContain("turn_failed");
     expect(types.at(-1)).toBe("error");
@@ -180,6 +192,72 @@ describe("round robin task", () => {
       debate: { proposerId: a.id, skepticId: "外人", synthesizerId: a.id, judgeId: a.id },
     });
     expect(res.status).toBe(400);
+  });
+
+  it("cancel mid-task stops the stream and marks the task cancelled", async () => {
+    const slow: ModelGateway = async function* () {
+      for (let i = 0; i < 200; i++) {
+        await Bun.sleep(10);
+        yield { type: "delta", text: "x" };
+      }
+      yield { type: "done" };
+    };
+    const { app, db } = makeApp(slow);
+    const { a, b, room } = await setupTwoAgentRoom(app);
+    const res = await app.request(`/rooms/${room.id}/tasks`, {
+      method: "POST",
+      body: JSON.stringify({ prompt: "长任务", speakingOrder: [a.id, b.id], maxRounds: 1, finalSummarizerId: a.id }),
+    });
+    await Bun.sleep(50); // 任务起跑
+    const task = db.query<{ id: string }, []>("SELECT id FROM tasks").get()!;
+    const cancelRes = await app.request(`/rooms/${room.id}/tasks/${task.id}/cancel`, { method: "POST" });
+    expect(cancelRes.status).toBe(200);
+    const { events } = parseSseChunk(await res.text());
+    expect((events as StreamEvent[]).at(-1)?.type).toBe("task_cancelled");
+    expect(db.query<{ status: string }, []>("SELECT status FROM tasks").get()?.status).toBe("cancelled");
+    // 二次取消：任务已结束
+    const again = await app.request(`/rooms/${room.id}/tasks/${task.id}/cancel`, { method: "POST" });
+    expect(again.status).toBe(404);
+  });
+
+  it("failed turn awaits decision; skip continues to the next speaker", async () => {
+    let calls = 0;
+    const flaky: ModelGateway = async function* () {
+      calls++;
+      if (calls === 1) {
+        yield { type: "error", message: "boom" };
+        return;
+      }
+      yield { type: "delta", text: "ok" };
+      yield { type: "done" };
+    };
+    const { app, db } = makeApp(flaky);
+    const { a, b, room } = await setupTwoAgentRoom(app);
+    const res = await app.request(`/rooms/${room.id}/tasks`, {
+      method: "POST",
+      body: JSON.stringify({ prompt: "x", speakingOrder: [a.id, b.id], maxRounds: 1, finalSummarizerId: b.id }),
+    });
+    const task = db.query<{ id: string }, []>("SELECT id FROM tasks").get()!;
+    const decide = (async () => {
+      for (let i = 0; i < 200; i++) {
+        const r = await app.request(`/rooms/${room.id}/tasks/${task.id}/decision`, {
+          method: "POST",
+          body: JSON.stringify({ action: "skip" }),
+        });
+        if (r.status === 200) return;
+        await Bun.sleep(10);
+      }
+      throw new Error("decision 一直 404");
+    })();
+    const { events } = parseSseChunk(await res.text());
+    await decide;
+    const types = (events as StreamEvent[]).map((e) => e.type);
+    expect(types).toContain("turn_failed");
+    expect(types.at(-1)).toBe("task_completed");
+    // 甲失败被跳过：agent 消息只有 乙 + 总结(乙)
+    const history = await (await app.request(`/rooms/${room.id}/messages`)).json();
+    expect(history.filter((m: { role: string }) => m.role === "agent")).toHaveLength(2);
+    expect(db.query<{ status: string }, []>("SELECT status FROM tasks").get()?.status).toBe("completed");
   });
 
   it("rejects invalid config with 400", async () => {

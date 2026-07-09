@@ -79,6 +79,12 @@ type Store = {
   messages: StoredMessage[];
   streaming: StreamingTurn | null;
   chatError: string | null;
+  /** 运行中的编排任务；非空时禁止发起新讨论 */
+  activeTaskId: string | null;
+  /** 失败待处置的 turn（引擎挂起等 decision） */
+  failedTurn: { agentName: string; message: string } | null;
+  cancelTask: () => Promise<void>;
+  decideTurn: (action: "retry" | "skip" | "abort") => Promise<void>;
   loadRooms: () => Promise<void>;
   createRoom: (name: string, agentIds: string[]) => Promise<void>;
   removeRoom: (id: string) => Promise<void>;
@@ -119,7 +125,7 @@ export const useStore = create<Store>((set, get) => {
   /** POST 到当前房间的流式端点并消费 SSE，把事件映射进 store */
   const streamPost = async (suffix: string, body: unknown) => {
     const roomId = get().currentRoomId;
-    if (!roomId || get().streaming) return;
+    if (!roomId || get().streaming || get().activeTaskId) return;
     set({ chatError: null });
     try {
       const res = await sidecarFetch(hs(), `/rooms/${roomId}${suffix}`, {
@@ -141,9 +147,10 @@ export const useStore = create<Store>((set, get) => {
         buffer = rest;
         for (const e of events) {
           if (e.type === "user_message") {
-            set((s) => ({ messages: [...s.messages, e.message] }));
+            set((s) => ({ messages: [...s.messages, e.message], activeTaskId: e.message.taskId ?? null }));
           } else if (e.type === "turn_started") {
             set({
+              failedTurn: null,
               streaming: {
                 agentName: e.agentName,
                 model: e.model,
@@ -160,7 +167,10 @@ export const useStore = create<Store>((set, get) => {
           } else if (e.type === "message_completed") {
             set((s) => ({ messages: [...s.messages, e.message], streaming: null }));
           } else if (e.type === "turn_failed") {
-            set({ chatError: `「${e.agentName}」发言失败：${e.message}`, streaming: null });
+            // 任务流：引擎挂起等处置；单聊流：随后会收到 error 事件
+            set({ failedTurn: { agentName: e.agentName, message: e.message }, streaming: null });
+          } else if (e.type === "task_cancelled") {
+            set({ chatError: "任务已取消，已完成的发言已保留。", streaming: null });
           } else if (e.type === "error") {
             set({ chatError: e.message, streaming: null });
           }
@@ -170,7 +180,7 @@ export const useStore = create<Store>((set, get) => {
     } catch (err) {
       set({ chatError: err instanceof Error ? err.message : String(err), streaming: null });
     } finally {
-      if (get().streaming) set({ streaming: null });
+      set({ streaming: null, activeTaskId: null, failedTurn: null });
     }
   };
 
@@ -188,6 +198,8 @@ export const useStore = create<Store>((set, get) => {
     messages: [],
     streaming: null,
     chatError: null,
+    activeTaskId: null,
+    failedTurn: null,
 
     connect: async () => {
       if (connectStarted) return;
@@ -298,6 +310,22 @@ export const useStore = create<Store>((set, get) => {
 
     sendTask: async (form) => {
       await streamPost(`/tasks`, form);
+    },
+
+    cancelTask: async () => {
+      const { currentRoomId, activeTaskId } = get();
+      if (!currentRoomId || !activeTaskId) return;
+      await sidecarFetch(hs(), `/rooms/${currentRoomId}/tasks/${activeTaskId}/cancel`, { method: "POST" });
+    },
+
+    decideTurn: async (action) => {
+      const { currentRoomId, activeTaskId } = get();
+      if (!currentRoomId || !activeTaskId) return;
+      set({ failedTurn: null });
+      await sidecarFetch(hs(), `/rooms/${currentRoomId}/tasks/${activeTaskId}/decision`, {
+        method: "POST",
+        body: JSON.stringify({ action }),
+      });
     },
   };
 });

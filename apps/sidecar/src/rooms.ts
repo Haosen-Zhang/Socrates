@@ -11,6 +11,7 @@ import {
   type StoredMessage,
   type StreamEvent,
   type TaskConfig,
+  type TurnFailureDecision,
 } from "@socrates/core";
 import { toAgent, type AgentRow } from "./agents";
 import type { SecretStore } from "./secrets";
@@ -87,6 +88,9 @@ function sseResponse(handler: (emit: (e: StreamEvent) => void) => Promise<void>)
 
 export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGateway) {
   const app = new Hono();
+  /** 运行中任务的取消把手与「失败后等用户处置」的挂起决定 */
+  const taskControllers = new Map<string, AbortController>();
+  const taskDecisions = new Map<string, (d: TurnFailureDecision) => void>();
   const roomById = (id: string) => db.query<RoomRow, [string]>("SELECT * FROM rooms WHERE id = ?").get(id);
   const roomAgents = (roomId: string) =>
     db
@@ -297,7 +301,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
     );
     const userMessage = insertMessage({ roomId: room.id, role: "user", content: cfg.prompt.trim(), taskId });
 
-    const finishTask = (status: "completed" | "failed", error?: string) =>
+    const finishTask = (status: "completed" | "failed" | "cancelled", error?: string) =>
       db.run("UPDATE tasks SET status = ?, error = ?, completed_at = ? WHERE id = ?", [
         status,
         error ?? null,
@@ -341,10 +345,28 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
         ],
       );
 
+    const controller = new AbortController();
+    taskControllers.set(taskId, controller);
+    /** turn 失败后挂起，等用户 POST decision；10 分钟无人处置视为终止 */
+    const onTurnFailed = () =>
+      new Promise<TurnFailureDecision>((resolve) => {
+        const timer = setTimeout(
+          () => {
+            if (taskDecisions.delete(taskId)) resolve("abort");
+          },
+          10 * 60 * 1000,
+        );
+        taskDecisions.set(taskId, (d) => {
+          clearTimeout(timer);
+          resolve(d);
+        });
+      });
+
     return sseResponse(async (emit) => {
       emit({ type: "user_message", message: userMessage });
       let turnStartedAt = now;
-      for await (const ev of runTask(cfg, { agents, gateway })) {
+      try {
+      for await (const ev of runTask(cfg, { agents, gateway, signal: controller.signal, onTurnFailed })) {
         if (ev.type === "turn_started") {
           turnStartedAt = new Date().toISOString();
           emit({
@@ -379,12 +401,38 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
         } else if (ev.type === "task_completed") {
           finishTask("completed");
           emit({ type: "task_completed" });
+        } else if (ev.type === "task_cancelled") {
+          finishTask("cancelled");
+          emit({ type: "task_cancelled" });
         } else {
           finishTask("failed", ev.message);
           emit({ type: "error", message: ev.message });
         }
       }
+      } finally {
+        taskControllers.delete(taskId);
+        taskDecisions.delete(taskId);
+      }
     });
+  });
+
+  app.post("/:id/tasks/:taskId/cancel", (c) => {
+    const controller = taskControllers.get(c.req.param("taskId"));
+    if (!controller) return c.json({ error: "任务不存在或已结束" }, 404);
+    controller.abort();
+    // 若正挂在「等处置」上，取消视为终止
+    taskDecisions.get(c.req.param("taskId"))?.("abort");
+    return c.json({ ok: true });
+  });
+
+  app.post("/:id/tasks/:taskId/decision", async (c) => {
+    const b = await c.req.json<{ action: TurnFailureDecision }>();
+    if (!["retry", "skip", "abort"].includes(b.action)) return c.json({ error: "无效的处置" }, 400);
+    const resolve = taskDecisions.get(c.req.param("taskId"));
+    if (!resolve) return c.json({ error: "没有等待处置的失败 turn" }, 404);
+    taskDecisions.delete(c.req.param("taskId"));
+    resolve(b.action);
+    return c.json({ ok: true });
   });
 
   return app;
