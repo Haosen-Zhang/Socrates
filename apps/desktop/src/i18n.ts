@@ -76,6 +76,10 @@ const zhCN: Dict = {
   create_agent_first: "先到「设置」里创建 Agent",
   room_members: "{n}人",
   pick_room: "选择或新建一个房间开始讨论。",
+  archive: "归档",
+  unarchive: "恢复",
+  confirm_delete: "确认删除？",
+  archived_section: "已归档 ({n})",
 
   // 时间线
   round_divider: "第 {n} 轮",
@@ -179,6 +183,10 @@ const zhTW: Dict = {
   create_agent_first: "先到「設定」裡建立 Agent",
   room_members: "{n}人",
   pick_room: "選擇或新建一個房間開始討論。",
+  archive: "封存",
+  unarchive: "還原",
+  confirm_delete: "確認刪除？",
+  archived_section: "已封存 ({n})",
 
   round_divider: "第 {n} 輪",
   duty_propose: "提案",
@@ -277,6 +285,10 @@ const en: Dict = {
   create_agent_first: "Create an agent in Settings first",
   room_members: "{n}",
   pick_room: "Pick or create a room to start a discussion.",
+  archive: "Archive",
+  unarchive: "Restore",
+  confirm_delete: "Confirm delete?",
+  archived_section: "Archived ({n})",
 
   round_divider: "Round {n}",
   duty_propose: "Proposal",
