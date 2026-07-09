@@ -65,7 +65,11 @@ export type OrchestrationEvent =
   | ({ type: "turn_completed"; content: string; usage?: TokenUsage } & TurnMeta)
   | ({ type: "turn_failed"; message: string } & TurnMeta)
   | { type: "task_completed" }
+  | { type: "task_cancelled" }
   | { type: "task_failed"; message: string };
+
+/** turn 失败后的处置：重试当前 turn / 跳过继续 / 终止任务 */
+export type TurnFailureDecision = "retry" | "skip" | "abort";
 
 export function validateTaskConfig(cfg: TaskConfig, roomAgentIds: string[]): string | null {
   if (!cfg.prompt.trim()) return "任务描述不能为空";
@@ -196,19 +200,32 @@ export function buildDiscussionMessages(prompt: string, turns: CompletedTurn[]):
 export type OrchestrationDeps = {
   agents: Record<string, OrchestrationAgent>;
   gateway: ModelGateway;
+  /** 任务取消信号：turn 之间与流式中途都会检查，并透传给底层请求 */
+  signal?: AbortSignal;
+  /** turn 失败后的处置回调；缺省 abort（终止任务） */
+  onTurnFailed?: (info: TurnMeta & { message: string }) => Promise<TurnFailureDecision>;
 };
 
 /**
  * 执行 turn plan：逐个 turn 调模型、流式产出事件。
- * turn 失败即终止任务（重试/跳过在 MVP-6）。
+ * 失败的 turn 经 onTurnFailed 决定重试/跳过/终止；取消随时生效。
  */
 export async function* runTask(
   cfg: TaskConfig,
   deps: OrchestrationDeps,
 ): AsyncIterable<OrchestrationEvent> {
   const turns: CompletedTurn[] = [];
+  const plan = buildTurnPlan(cfg);
+  const cancelled = () => deps.signal?.aborted === true;
 
-  for (const [turnIndex, spec] of buildTurnPlan(cfg).entries()) {
+  let i = 0;
+  let turnIndex = 0; // 含重试在内的执行序号，trace 用
+  while (i < plan.length) {
+    if (cancelled()) {
+      yield { type: "task_cancelled" };
+      return;
+    }
+    const spec = plan[i];
     const agent = deps.agents[spec.agentId];
     if (!agent) {
       yield { type: "task_failed", message: `Agent ${spec.agentId} 不存在` };
@@ -229,7 +246,12 @@ export async function* runTask(
         system: buildTurnSystem(agent, spec, cfg.maxRounds),
         temperature: agent.temperature,
         messages: buildDiscussionMessages(cfg.prompt, turns),
+        signal: deps.signal,
       })) {
+        if (cancelled()) {
+          yield { type: "task_cancelled" };
+          return;
+        }
         if (ev.type === "delta") {
           content += ev.text;
           yield { type: "delta", text: ev.text };
@@ -241,16 +263,28 @@ export async function* runTask(
         }
       }
     } catch (err) {
+      if (cancelled()) {
+        yield { type: "task_cancelled" };
+        return;
+      }
       failure = String(err).slice(0, 300);
     }
 
+    turnIndex++;
     if (failure !== null) {
       yield { type: "turn_failed", message: failure, ...meta };
+      const decision = (await deps.onTurnFailed?.({ ...meta, message: failure })) ?? "abort";
+      if (decision === "retry") continue; // 同一 spec 重跑
+      if (decision === "skip") {
+        i++;
+        continue;
+      }
       yield { type: "task_failed", message: `「${agent.displayName}」发言失败：${failure}` };
       return;
     }
     turns.push({ agentId: spec.agentId, agentName: agent.displayName, round: spec.round, content });
     yield { type: "turn_completed", content, usage, ...meta };
+    i++;
   }
   yield { type: "task_completed" };
 }

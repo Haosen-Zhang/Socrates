@@ -77,12 +77,60 @@ function StreamingBubble({ s }: { s: StreamingTurn }) {
   );
 }
 
+/** 运行中任务的控制条：取消；turn 失败时给出 重试/跳过/终止 三选 */
+function TaskControlBar() {
+  const { activeTaskId, failedTurn, streaming, cancelTask, decideTurn } = useStore();
+  if (!activeTaskId) return null;
+  if (failedTurn) {
+    return (
+      <div className="mx-4 mb-2 flex items-center gap-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+        <span className="min-w-0 flex-1 truncate" title={failedTurn.message}>
+          「{failedTurn.agentName}」发言失败：{failedTurn.message}
+        </span>
+        <button
+          className="shrink-0 rounded border border-amber-400 px-2 py-0.5 hover:bg-amber-100"
+          onClick={() => void decideTurn("retry")}
+        >
+          重试
+        </button>
+        <button
+          className="shrink-0 rounded border border-amber-400 px-2 py-0.5 hover:bg-amber-100"
+          onClick={() => void decideTurn("skip")}
+        >
+          跳过该 Agent
+        </button>
+        <button
+          className="shrink-0 rounded border border-red-300 px-2 py-0.5 text-red-700 hover:bg-red-50"
+          onClick={() => void decideTurn("abort")}
+        >
+          终止任务
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="mx-4 mb-2 flex items-center justify-between rounded border border-neutral-200 bg-neutral-100 px-3 py-2 text-sm text-neutral-600">
+      <span className="flex items-center gap-2">
+        <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-green-600" />
+        {streaming ? `「${streaming.agentName}」发言中…` : "讨论进行中…"}
+      </span>
+      <button
+        className="rounded border border-neutral-300 bg-white px-2 py-0.5 hover:bg-neutral-50"
+        onClick={() => void cancelTask()}
+      >
+        取消任务
+      </button>
+    </div>
+  );
+}
+
 /** 发言顺序条目：勾选决定是否参与本次讨论，列表顺序即发言顺序 */
 type OrderItem = { id: string; enabled: boolean };
 
 /** 多 Agent 房间的任务发起表单：需求、参与者与发言顺序（拖拽）、轮数、最终总结者 */
 function TaskComposer({ agents }: { agents: Agent[] }) {
-  const { streaming, sendTask } = useStore();
+  const { streaming, activeTaskId, sendTask } = useStore();
+  const busy = !!streaming || !!activeTaskId;
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState<"round_robin" | "debate">("round_robin");
   const [items, setItems] = useState<OrderItem[]>(agents.map((a) => ({ id: a.id, enabled: true })));
@@ -268,19 +316,19 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
         <input
           className="flex-1 rounded border border-neutral-300 px-3 py-2 text-sm"
           placeholder={
-            streaming
+            busy
               ? "讨论进行中…"
               : mode === "debate"
                 ? `描述议题，四角色辩论 ${maxRounds} 轮后裁决`
                 : `描述任务，${speakingOrder.length} 位 Agent 将讨论 ${maxRounds} 轮`
           }
           value={prompt}
-          disabled={!!streaming}
+          disabled={busy}
           onChange={(e) => setPrompt(e.target.value)}
         />
         <button
           className="rounded bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-40"
-          disabled={!!streaming || !prompt.trim() || (mode === "round_robin" && speakingOrder.length === 0)}
+          disabled={busy || !prompt.trim() || (mode === "round_robin" && speakingOrder.length === 0)}
           type="submit"
         >
           {mode === "debate" ? "发起辩论" : "发起讨论"}
@@ -459,6 +507,7 @@ export default function ChatPage() {
               {streaming && <StreamingBubble s={streaming} />}
               <div ref={bottomRef} />
             </div>
+            <TaskControlBar />
             {chatError && (
               <div className="mx-4 mb-2 flex items-center justify-between rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                 <span className="min-w-0 truncate" title={chatError}>

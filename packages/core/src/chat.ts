@@ -58,6 +58,7 @@ export type StreamEvent =
   | { type: "message_completed"; message: StoredMessage }
   | { type: "turn_failed"; agentName: string; message: string }
   | { type: "task_completed" }
+  | { type: "task_cancelled" }
   | { type: "error"; message: string };
 
 export function encodeSseEvent(e: StreamEvent): string {
@@ -97,6 +98,8 @@ export type GatewayRequest = {
   system?: string;
   temperature?: number;
   messages: ChatMessage[];
+  /** 任务取消时中止底层请求，不再消耗 token */
+  signal?: AbortSignal;
 };
 
 export type TokenUsage = { inputTokens?: number; outputTokens?: number };

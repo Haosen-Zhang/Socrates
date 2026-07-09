@@ -203,6 +203,89 @@ describe("runTask / round robin", () => {
   });
 });
 
+describe("runTask / control", () => {
+  it("cancel between turns stops the task and skips remaining agents", async () => {
+    const ac = new AbortController();
+    let calls = 0;
+    const gw: ModelGateway = async function* () {
+      calls++;
+      yield { type: "delta", text: "ok" };
+      yield { type: "done" };
+      if (calls === 1) ac.abort(); // 第一个 turn 完成后取消
+    };
+    const events = await collect(runTask(rr(), { agents: AGENTS, gateway: gw, signal: ac.signal }));
+    expect(events.filter((e) => e.type === "turn_completed")).toHaveLength(1);
+    expect(events.at(-1)).toEqual({ type: "task_cancelled" });
+    expect(calls).toBe(1);
+  });
+
+  it("cancel mid-stream discards the partial turn", async () => {
+    const ac = new AbortController();
+    const gw: ModelGateway = async function* () {
+      yield { type: "delta", text: "前半" };
+      ac.abort();
+      yield { type: "delta", text: "后半" };
+      yield { type: "done" };
+    };
+    const events = await collect(runTask(rr(), { agents: AGENTS, gateway: gw, signal: ac.signal }));
+    expect(events.filter((e) => e.type === "turn_completed")).toHaveLength(0);
+    expect(events.at(-1)).toEqual({ type: "task_cancelled" });
+  });
+
+  it("retry reruns the same speaker until it succeeds", async () => {
+    let calls = 0;
+    const gw: ModelGateway = async function* (req) {
+      calls++;
+      if (calls === 2) {
+        yield { type: "error", message: "限流" };
+        return;
+      }
+      yield { type: "delta", text: `${req.modelId}说` };
+      yield { type: "done" };
+    };
+    const events = await collect(
+      runTask(rr({ maxRounds: 1 }), {
+        agents: AGENTS,
+        gateway: gw,
+        onTurnFailed: async () => "retry",
+      }),
+    );
+    const starts = events.filter((e) => e.type === "turn_started");
+    // 甲、乙(失败)、乙(重试)、总结甲
+    expect(starts.map((s) => s.agentId)).toEqual(["a", "b", "b", "a"]);
+    expect(events.at(-1)).toEqual({ type: "task_completed" });
+    expect(events.filter((e) => e.type === "turn_completed")).toHaveLength(3);
+  });
+
+  it("skip advances to the next speaker and the skipped turn leaves no transcript", async () => {
+    const seen: import("./chat").GatewayRequest[] = [];
+    let calls = 0;
+    const gw: ModelGateway = async function* (req) {
+      seen.push(req);
+      calls++;
+      if (calls === 1) {
+        yield { type: "error", message: "boom" };
+        return;
+      }
+      yield { type: "delta", text: "ok" };
+      yield { type: "done" };
+    };
+    const events = await collect(
+      runTask(rr({ maxRounds: 1 }), {
+        agents: AGENTS,
+        gateway: gw,
+        onTurnFailed: async () => "skip",
+      }),
+    );
+    const starts = events.filter((e) => e.type === "turn_started");
+    // 甲(失败被跳过)、乙、总结甲
+    expect(starts.map((s) => s.agentId)).toEqual(["a", "b", "a"]);
+    expect(events.at(-1)).toEqual({ type: "task_completed" });
+    // 乙的上下文里没有甲的失败发言
+    expect(seen[1].messages[0].content).not.toContain("【甲");
+  });
+});
+
 describe("runTask / debate", () => {
   it("streams the doc sequence and judge sees the whole debate", async () => {
     const seen: GatewayRequest[] = [];
