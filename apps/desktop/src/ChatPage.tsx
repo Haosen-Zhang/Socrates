@@ -2,14 +2,21 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Agent, StoredMessage } from "@socrates/core";
 import { useStore, type StreamingTurn } from "./store";
 
-function AgentHeader({ name, model, phase }: { name?: string; model?: string; phase?: string }) {
+const DUTY_BADGE: Record<string, [string, string]> = {
+  propose: ["提案", "bg-blue-100 text-blue-800"],
+  critique: ["质疑", "bg-red-100 text-red-800"],
+  synthesize: ["综合", "bg-purple-100 text-purple-800"],
+  judge: ["裁决", "bg-amber-100 text-amber-800"],
+  summarize: ["最终总结", "bg-amber-100 text-amber-800"],
+};
+
+function AgentHeader({ name, model, duty }: { name?: string; model?: string; duty?: string }) {
+  const badge = duty ? DUTY_BADGE[duty] : undefined;
   return (
     <div className="mb-0.5 text-xs text-neutral-500">
       {name} · {model}
-      {phase === "summary" && (
-        <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
-          最终总结
-        </span>
+      {badge && (
+        <span className={`ml-2 rounded px-1.5 py-0.5 text-[10px] font-medium ${badge[1]}`}>{badge[0]}</span>
       )}
     </div>
   );
@@ -29,7 +36,7 @@ function Bubble({ m }: { m: StoredMessage }) {
   return (
     <div className="flex justify-start">
       <div className={isSummary ? "w-full max-w-[85%]" : "max-w-[70%]"}>
-        <AgentHeader name={m.agentName} model={m.model} phase={m.phase} />
+        <AgentHeader name={m.agentName} model={m.model} duty={m.duty ?? (isSummary ? "summarize" : undefined)} />
         <div
           className={`rounded-lg px-3 py-2 text-sm whitespace-pre-wrap ${
             isSummary ? "border-2 border-amber-300 bg-amber-50" : "border border-neutral-200 bg-white"
@@ -56,7 +63,7 @@ function StreamingBubble({ s }: { s: StreamingTurn }) {
   return (
     <div className="flex justify-start">
       <div className={s.phase === "summary" ? "w-full max-w-[85%]" : "max-w-[70%]"}>
-        <AgentHeader name={s.agentName} model={s.model} phase={s.phase} />
+        <AgentHeader name={s.agentName} model={s.model} duty={s.duty ?? (s.phase === "summary" ? "summarize" : undefined)} />
         <div
           className={`rounded-lg px-3 py-2 text-sm whitespace-pre-wrap ${
             s.phase === "summary" ? "border-2 border-amber-300 bg-amber-50" : "border border-neutral-200 bg-white"
@@ -77,16 +84,30 @@ type OrderItem = { id: string; enabled: boolean };
 function TaskComposer({ agents }: { agents: Agent[] }) {
   const { streaming, sendTask } = useStore();
   const [prompt, setPrompt] = useState("");
+  const [mode, setMode] = useState<"round_robin" | "debate">("round_robin");
   const [items, setItems] = useState<OrderItem[]>(agents.map((a) => ({ id: a.id, enabled: true })));
   const [dragId, setDragId] = useState<string | null>(null);
   const [maxRounds, setMaxRounds] = useState(2);
   const [summarizerId, setSummarizerId] = useState(agents[agents.length - 1]?.id ?? "");
+  const defaultRoles = () => ({
+    proposerId: agents[0]?.id ?? "",
+    skepticId: agents[1]?.id ?? agents[0]?.id ?? "",
+    synthesizerId: agents[2]?.id ?? agents[0]?.id ?? "",
+    judgeId: agents[agents.length - 1]?.id ?? "",
+  });
+  const [roles, setRoles] = useState(defaultRoles);
   const [showConfig, setShowConfig] = useState(false);
 
-  // 房间成员变化时重置顺序与总结者
+  // 房间成员变化时重置顺序、总结者与辩论角色
   useEffect(() => {
     setItems(agents.map((a) => ({ id: a.id, enabled: true })));
     setSummarizerId(agents[agents.length - 1]?.id ?? "");
+    setRoles({
+      proposerId: agents[0]?.id ?? "",
+      skepticId: agents[1]?.id ?? agents[0]?.id ?? "",
+      synthesizerId: agents[2]?.id ?? agents[0]?.id ?? "",
+      judgeId: agents[agents.length - 1]?.id ?? "",
+    });
   }, [agents]);
 
   const agentOf = (id: string) => agents.find((a) => a.id === id);
@@ -111,15 +132,69 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     const p = prompt.trim();
-    if (!p || speakingOrder.length === 0) return;
+    if (!p || (mode === "round_robin" && speakingOrder.length === 0)) return;
     setPrompt("");
-    await sendTask({ prompt: p, speakingOrder, maxRounds, finalSummarizerId: summarizerId });
+    await sendTask({
+      prompt: p,
+      mode,
+      speakingOrder,
+      maxRounds,
+      finalSummarizerId: summarizerId,
+      debate: mode === "debate" ? roles : undefined,
+    });
   };
 
   return (
     <form onSubmit={submit} className="space-y-2 border-t border-neutral-200 bg-white p-3">
       {showConfig && (
         <div className="flex gap-4 rounded border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm">
+          <div className="flex shrink-0 flex-col gap-1">
+            <span className="text-neutral-500">模式</span>
+            {(
+              [
+                ["round_robin", "轮流发言"],
+                ["debate", "辩论"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                className={`rounded px-2 py-1 text-xs ${
+                  mode === value ? "bg-neutral-900 text-white" : "border border-neutral-300 bg-white hover:bg-neutral-100"
+                }`}
+                onClick={() => setMode(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {mode === "debate" ? (
+            <div className="grid flex-1 grid-cols-2 gap-2">
+              {(
+                [
+                  ["proposerId", "提案者"],
+                  ["skepticId", "质疑者"],
+                  ["synthesizerId", "综合者"],
+                  ["judgeId", "裁决者"],
+                ] as const
+              ).map(([key, label]) => (
+                <label key={key} className="flex items-center gap-1">
+                  <span className="w-12 shrink-0 text-neutral-500">{label}</span>
+                  <select
+                    className="min-w-0 flex-1 rounded border border-neutral-300 px-1.5 py-0.5 text-sm"
+                    value={roles[key]}
+                    onChange={(e) => setRoles({ ...roles, [key]: e.target.value })}
+                  >
+                    {agents.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.displayName}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+            </div>
+          ) : (
           <div className="min-w-0 flex-1">
             <div className="mb-1 text-neutral-500">参与者与发言顺序（拖动排序）：</div>
             <ul className="max-h-44 space-y-1 overflow-y-auto pr-1">
@@ -149,6 +224,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
             </ul>
             {speakingOrder.length === 0 && <p className="mt-1 text-xs text-red-600">至少勾选一位参与者</p>}
           </div>
+          )}
           <div className="flex shrink-0 flex-col gap-2">
             <label className="flex items-center justify-between gap-1">
               <span className="text-neutral-500">轮数</span>
@@ -161,20 +237,22 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
                 onChange={(e) => setMaxRounds(Number(e.target.value))}
               />
             </label>
-            <label className="flex items-center justify-between gap-1">
-              <span className="text-neutral-500">总结者</span>
-              <select
-                className="rounded border border-neutral-300 px-1.5 py-0.5 text-sm"
-                value={summarizerId}
-                onChange={(e) => setSummarizerId(e.target.value)}
-              >
-                {agents.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.displayName}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {mode === "round_robin" && (
+              <label className="flex items-center justify-between gap-1">
+                <span className="text-neutral-500">总结者</span>
+                <select
+                  className="rounded border border-neutral-300 px-1.5 py-0.5 text-sm"
+                  value={summarizerId}
+                  onChange={(e) => setSummarizerId(e.target.value)}
+                >
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
         </div>
       )}
@@ -190,7 +268,11 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
         <input
           className="flex-1 rounded border border-neutral-300 px-3 py-2 text-sm"
           placeholder={
-            streaming ? "讨论进行中…" : `描述任务，${speakingOrder.length} 位 Agent 将讨论 ${maxRounds} 轮`
+            streaming
+              ? "讨论进行中…"
+              : mode === "debate"
+                ? `描述议题，四角色辩论 ${maxRounds} 轮后裁决`
+                : `描述任务，${speakingOrder.length} 位 Agent 将讨论 ${maxRounds} 轮`
           }
           value={prompt}
           disabled={!!streaming}
@@ -198,10 +280,10 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
         />
         <button
           className="rounded bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-40"
-          disabled={!!streaming || !prompt.trim() || speakingOrder.length === 0}
+          disabled={!!streaming || !prompt.trim() || (mode === "round_robin" && speakingOrder.length === 0)}
           type="submit"
         >
-          发起讨论
+          {mode === "debate" ? "发起辩论" : "发起讨论"}
         </button>
       </div>
     </form>

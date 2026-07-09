@@ -37,13 +37,23 @@ export type StreamingTurn = {
   text: string;
   round?: number;
   phase?: "discussion" | "summary";
+  duty?: string;
+};
+
+export type DebateRoleForm = {
+  proposerId: string;
+  skepticId: string;
+  synthesizerId: string;
+  judgeId: string;
 };
 
 export type TaskForm = {
   prompt: string;
+  mode: "round_robin" | "debate";
   speakingOrder: string[];
   maxRounds: number;
   finalSummarizerId: string;
+  debate?: DebateRoleForm;
 };
 
 type Store = {
@@ -134,7 +144,14 @@ export const useStore = create<Store>((set, get) => {
             set((s) => ({ messages: [...s.messages, e.message] }));
           } else if (e.type === "turn_started") {
             set({
-              streaming: { agentName: e.agentName, model: e.model, text: "", round: e.round, phase: e.phase },
+              streaming: {
+                agentName: e.agentName,
+                model: e.model,
+                text: "",
+                round: e.round,
+                phase: e.phase,
+                duty: e.duty,
+              },
             });
           } else if (e.type === "delta") {
             set((s) =>

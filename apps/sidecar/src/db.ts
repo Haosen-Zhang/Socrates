@@ -2,6 +2,18 @@ import { Database } from "bun:sqlite";
 import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
 
+function ensureColumns(db: Database, table: string, defs: string[]): void {
+  const existing = new Set(
+    db
+      .query<{ name: string }, []>(`SELECT name FROM pragma_table_info('${table}')`)
+      .all()
+      .map((c) => c.name),
+  );
+  for (const def of defs) {
+    if (!existing.has(def.split(" ")[0])) db.exec(`ALTER TABLE ${table} ADD COLUMN ${def}`);
+  }
+}
+
 export function openDb(path: string): Database {
   const db = new Database(path, { create: true });
   db.exec("PRAGMA journal_mode = WAL");
@@ -56,9 +68,11 @@ export function openDb(path: string): Database {
       id TEXT PRIMARY KEY,
       room_id TEXT NOT NULL,
       prompt TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'round_robin',
       speaking_order TEXT NOT NULL,
       max_rounds INTEGER NOT NULL,
       final_summarizer_id TEXT NOT NULL,
+      debate_roles TEXT,
       status TEXT NOT NULL,
       error TEXT,
       created_at TEXT NOT NULL,
@@ -70,6 +84,7 @@ export function openDb(path: string): Database {
       turn_index INTEGER NOT NULL,
       round INTEGER NOT NULL,
       phase TEXT NOT NULL,
+      duty TEXT,
       agent_id TEXT NOT NULL,
       agent_name TEXT NOT NULL,
       model TEXT NOT NULL,
@@ -82,14 +97,9 @@ export function openDb(path: string): Database {
     )
   `);
   // ponytail: 老库补列的最小迁移；schema 再演进就换正式 migration 表
-  for (const col of ["task_id TEXT", "round INTEGER", "phase TEXT"]) {
-    const name = col.split(" ")[0];
-    const exists = db
-      .query<{ name: string }, []>("SELECT name FROM pragma_table_info('messages')")
-      .all()
-      .some((c) => c.name === name);
-    if (!exists) db.exec(`ALTER TABLE messages ADD COLUMN ${col}`);
-  }
+  ensureColumns(db, "messages", ["task_id TEXT", "round INTEGER", "phase TEXT", "duty TEXT"]);
+  ensureColumns(db, "tasks", ["mode TEXT NOT NULL DEFAULT 'round_robin'", "debate_roles TEXT"]);
+  ensureColumns(db, "turns", ["duty TEXT"]);
   return db;
 }
 

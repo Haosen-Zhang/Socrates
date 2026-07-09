@@ -38,6 +38,8 @@ export type StoredMessage = {
   taskId?: string;
   round?: number;
   phase?: "discussion" | "summary";
+  /** turn 职责（discuss/summarize/propose/critique/synthesize/judge），UI 显示角色徽标 */
+  duty?: string;
 };
 
 /** POST /rooms/:id/messages 与 /rooms/:id/tasks 的 SSE 事件流 */
@@ -50,6 +52,7 @@ export type StreamEvent =
       model: string;
       round?: number;
       phase?: "discussion" | "summary";
+      duty?: string;
     }
   | { type: "delta"; text: string }
   | { type: "message_completed"; message: StoredMessage }
