@@ -143,6 +143,45 @@ describe("round robin task", () => {
     expect(history).toHaveLength(2);
   });
 
+  it("debate mode follows the docs sequence and persists duty", async () => {
+    const { app, db } = makeApp(echoGateway);
+    const { a, b, room } = await setupTwoAgentRoom(app);
+    const { events } = await postTask(app, room.id, {
+      prompt: "辩论一下",
+      mode: "debate",
+      maxRounds: 2,
+      debate: { proposerId: a.id, skepticId: b.id, synthesizerId: a.id, judgeId: b.id },
+    });
+    const starts = (events as StreamEvent[]).filter((e) => e.type === "turn_started");
+    expect(starts.map((s) => (s.type === "turn_started" ? s.duty : ""))).toEqual([
+      "propose", "critique", "synthesize", "critique", "propose", "judge",
+    ]);
+    expect((events as StreamEvent[]).at(-1)?.type).toBe("task_completed");
+
+    const duties = db
+      .query<{ duty: string; phase: string }, []>("SELECT duty, phase FROM turns ORDER BY turn_index")
+      .all();
+    expect(duties.map((d) => d.duty)).toEqual([
+      "propose", "critique", "synthesize", "critique", "propose", "judge",
+    ]);
+    expect(duties.at(-1)?.phase).toBe("summary");
+    const history = await (await app.request(`/rooms/${room.id}/messages`)).json();
+    expect(history.at(-1).duty).toBe("judge");
+    expect(db.query<{ mode: string }, []>("SELECT mode FROM tasks").get()?.mode).toBe("debate");
+  });
+
+  it("debate mode rejects roles outside the room", async () => {
+    const { app } = makeApp(echoGateway);
+    const { a, room } = await setupTwoAgentRoom(app);
+    const { res } = await postTask(app, room.id, {
+      prompt: "x",
+      mode: "debate",
+      maxRounds: 1,
+      debate: { proposerId: a.id, skepticId: "外人", synthesizerId: a.id, judgeId: a.id },
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("rejects invalid config with 400", async () => {
     const { app } = makeApp(echoGateway);
     const { a, room } = await setupTwoAgentRoom(app);

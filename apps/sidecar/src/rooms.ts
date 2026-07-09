@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import {
   encodeSseEvent,
   historyToChatMessages,
-  runRoundRobin,
+  runTask,
   validateTaskConfig,
   type ModelGateway,
   type OrchestrationAgent,
@@ -28,6 +28,7 @@ type MessageRow = {
   task_id: string | null;
   round: number | null;
   phase: "discussion" | "summary" | null;
+  duty: string | null;
 };
 type ProviderRow = { id: string; type: ProviderType; base_url: string; api_key_ref: string };
 
@@ -44,6 +45,7 @@ function toMessage(r: MessageRow): StoredMessage {
     taskId: r.task_id ?? undefined,
     round: r.round ?? undefined,
     phase: r.phase ?? undefined,
+    duty: r.duty ?? undefined,
   };
 }
 
@@ -102,8 +104,8 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     db.run(
-      `INSERT INTO messages (id, room_id, role, agent_id, agent_name, model, content, created_at, task_id, round, phase)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (id, room_id, role, agent_id, agent_name, model, content, created_at, task_id, round, phase, duty)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         m.roomId,
@@ -116,6 +118,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
         m.taskId ?? null,
         m.round ?? null,
         m.phase ?? null,
+        m.duty ?? null,
       ],
     );
     return { ...m, id, createdAt: now };
@@ -255,15 +258,21 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
     const b = await c.req.json<Partial<TaskConfig>>();
     const cfg: TaskConfig = {
       prompt: b.prompt ?? "",
+      mode: b.mode ?? "round_robin",
       speakingOrder: b.speakingOrder ?? roomAgentIds,
       maxRounds: b.maxRounds ?? 2,
       finalSummarizerId: b.finalSummarizerId ?? roomAgentIds[roomAgentIds.length - 1],
+      debate: b.debate,
     };
     const invalid = validateTaskConfig(cfg, roomAgentIds);
     if (invalid) return c.json({ error: invalid }, 400);
 
+    const participantIds =
+      cfg.mode === "debate"
+        ? [cfg.debate!.proposerId, cfg.debate!.skepticId, cfg.debate!.synthesizerId, cfg.debate!.judgeId]
+        : [...cfg.speakingOrder, cfg.finalSummarizerId];
     const agents: Record<string, OrchestrationAgent> = {};
-    for (const id of new Set([...cfg.speakingOrder, cfg.finalSummarizerId])) {
+    for (const id of new Set(participantIds)) {
       const resolved = resolveOrchestrationAgent(agentRows.find((a) => a.id === id)!);
       if (typeof resolved === "string") return c.json({ error: resolved }, 400);
       agents[id] = resolved;
@@ -272,9 +281,19 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
     const taskId = crypto.randomUUID();
     const now = new Date().toISOString();
     db.run(
-      `INSERT INTO tasks (id, room_id, prompt, speaking_order, max_rounds, final_summarizer_id, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
-      [taskId, room.id, cfg.prompt.trim(), JSON.stringify(cfg.speakingOrder), cfg.maxRounds, cfg.finalSummarizerId, now],
+      `INSERT INTO tasks (id, room_id, prompt, mode, speaking_order, max_rounds, final_summarizer_id, debate_roles, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)`,
+      [
+        taskId,
+        room.id,
+        cfg.prompt.trim(),
+        cfg.mode,
+        JSON.stringify(cfg.speakingOrder),
+        cfg.maxRounds,
+        cfg.finalSummarizerId,
+        cfg.debate ? JSON.stringify(cfg.debate) : null,
+        now,
+      ],
     );
     const userMessage = insertMessage({ roomId: room.id, role: "user", content: cfg.prompt.trim(), taskId });
 
@@ -286,21 +305,30 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
         taskId,
       ]);
     const traceTurn = (
-      meta: { turnIndex: number; round: number; phase: string; agentId: string; agentName: string; model: string },
+      meta: {
+        turnIndex: number;
+        round: number;
+        phase: string;
+        duty: string;
+        agentId: string;
+        agentName: string;
+        model: string;
+      },
       startedAt: string,
       status: "completed" | "failed",
       usage?: { inputTokens?: number; outputTokens?: number },
       error?: string,
     ) =>
       db.run(
-        `INSERT INTO turns (id, task_id, turn_index, round, phase, agent_id, agent_name, model, status, input_tokens, output_tokens, error, started_at, completed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO turns (id, task_id, turn_index, round, phase, duty, agent_id, agent_name, model, status, input_tokens, output_tokens, error, started_at, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           crypto.randomUUID(),
           taskId,
           meta.turnIndex,
           meta.round,
           meta.phase,
+          meta.duty,
           meta.agentId,
           meta.agentName,
           meta.model,
@@ -316,10 +344,18 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
     return sseResponse(async (emit) => {
       emit({ type: "user_message", message: userMessage });
       let turnStartedAt = now;
-      for await (const ev of runRoundRobin(cfg, { agents, gateway })) {
+      for await (const ev of runTask(cfg, { agents, gateway })) {
         if (ev.type === "turn_started") {
           turnStartedAt = new Date().toISOString();
-          emit({ type: "turn_started", agentId: ev.agentId, agentName: ev.agentName, model: ev.model, round: ev.round, phase: ev.phase });
+          emit({
+            type: "turn_started",
+            agentId: ev.agentId,
+            agentName: ev.agentName,
+            model: ev.model,
+            round: ev.round,
+            phase: ev.phase,
+            duty: ev.duty,
+          });
         } else if (ev.type === "delta") {
           emit({ type: "delta", text: ev.text });
         } else if (ev.type === "turn_completed") {
@@ -334,6 +370,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
             taskId,
             round: ev.round,
             phase: ev.phase,
+            duty: ev.duty,
           });
           emit({ type: "message_completed", message: saved });
         } else if (ev.type === "turn_failed") {
