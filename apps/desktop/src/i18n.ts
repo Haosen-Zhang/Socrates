@@ -80,6 +80,7 @@ const zhCN: Dict = {
   unarchive: "恢复",
   confirm_delete: "确认删除？",
   archived_section: "已归档 ({n})",
+  room_menu: "更多操作",
 
   // 时间线
   round_divider: "第 {n} 轮",
@@ -187,6 +188,7 @@ const zhTW: Dict = {
   unarchive: "還原",
   confirm_delete: "確認刪除？",
   archived_section: "已封存 ({n})",
+  room_menu: "更多操作",
 
   round_divider: "第 {n} 輪",
   duty_propose: "提案",
@@ -289,6 +291,7 @@ const en: Dict = {
   unarchive: "Restore",
   confirm_delete: "Confirm delete?",
   archived_section: "Archived ({n})",
+  room_menu: "More",
 
   round_divider: "Round {n}",
   duty_propose: "Proposal",
