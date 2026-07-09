@@ -1,6 +1,9 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { HANDSHAKE_PROTOCOL, serializeHandshake } from "@socrates/core";
+import { defaultDbPath, openDb } from "./db";
+import { KeychainSecrets } from "./secrets";
+import { providerRoutes } from "./providers";
 
 // 父进程（Tauri）异常退出（如 SIGKILL/SIGTERM 未走优雅关闭）时自动退出，避免孤儿进程占着端口
 setInterval(() => {
@@ -20,6 +23,7 @@ app.use("*", async (c, next) => {
 });
 
 app.get("/health", (c) => c.json({ ok: true }));
+app.route("/providers", providerRoutes(openDb(defaultDbPath()), new KeychainSecrets()));
 
 const server = Bun.serve({
   hostname: "127.0.0.1",

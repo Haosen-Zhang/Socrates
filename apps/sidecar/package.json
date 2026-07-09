@@ -6,6 +6,7 @@
     "dev": "bun run src/index.ts"
   },
   "dependencies": {
+    "@napi-rs/keyring": "^1.3.0",
     "@socrates/core": "workspace:*",
     "hono": "^4"
   }

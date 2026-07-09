@@ -1,57 +1,36 @@
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useEffect } from "react";
+import { useStore } from "./store";
+import ProvidersPage from "./ProvidersPage";
 
-type Handshake = { port: number; token: string };
-type Status = "connecting" | "connected" | "disconnected";
-
-const HANDSHAKE_POLL_MS = 250;
-const HANDSHAKE_MAX_POLLS = 40;
+const BADGE: Record<string, [string, string]> = {
+  connecting: ["连接中…", "text-amber-700"],
+  connected: ["已连接", "text-green-700"],
+  disconnected: ["未连接", "text-red-700"],
+};
 
 function App() {
-  const [status, setStatus] = useState<Status>("connecting");
-  const [port, setPort] = useState<number | null>(null);
-
+  const { status, handshake, connect } = useStore();
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      for (let i = 0; i < HANDSHAKE_MAX_POLLS && !cancelled; i++) {
-        const handshake = await invoke<Handshake | null>("sidecar_handshake");
-        if (handshake) {
-          try {
-            const res = await fetch(`http://127.0.0.1:${handshake.port}/health`, {
-              headers: { Authorization: `Bearer ${handshake.token}` },
-            });
-            if (res.ok && !cancelled) {
-              setPort(handshake.port);
-              setStatus("connected");
-              return;
-            }
-          } catch {
-            // sidecar 端口尚未就绪，继续轮询
-          }
-        }
-        await new Promise((r) => setTimeout(r, HANDSHAKE_POLL_MS));
-      }
-      if (!cancelled) setStatus("disconnected");
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    void connect();
+  }, [connect]);
 
-  const badge: Record<Status, { text: string; color: string }> = {
-    connecting: { text: "连接中…", color: "#b45309" },
-    connected: { text: `已连接 (127.0.0.1:${port})`, color: "#15803d" },
-    disconnected: { text: "未连接", color: "#b91c1c" },
-  };
-
+  const [text, cls] = BADGE[status];
   return (
-    <main style={{ fontFamily: "system-ui", padding: "2rem" }}>
-      <h1>Socrates</h1>
-      <p>
-        Sidecar:{" "}
-        <span style={{ color: badge[status].color, fontWeight: 600 }}>{badge[status].text}</span>
-      </p>
+    <main className="min-h-screen bg-neutral-50 text-neutral-900">
+      <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-6 py-3">
+        <h1 className="text-lg font-semibold">Socrates</h1>
+        <span className={`text-sm font-medium ${cls}`}>
+          Sidecar: {text}
+          {status === "connected" && handshake ? ` (127.0.0.1:${handshake.port})` : ""}
+        </span>
+      </header>
+      {status === "connected" ? (
+        <ProvidersPage />
+      ) : (
+        <p className="p-6 text-sm text-neutral-500">
+          {status === "connecting" ? "正在等待 sidecar 启动…" : "sidecar 未能启动，请查看日志。"}
+        </p>
+      )}
     </main>
   );
 }
