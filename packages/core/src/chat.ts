@@ -34,14 +34,27 @@ export type StoredMessage = {
   model?: string;
   content: string;
   createdAt: string;
+  /** 编排任务产生的消息带轮次与阶段，普通聊天消息为空 */
+  taskId?: string;
+  round?: number;
+  phase?: "discussion" | "summary";
 };
 
-/** POST /rooms/:id/messages 的 SSE 事件流 */
+/** POST /rooms/:id/messages 与 /rooms/:id/tasks 的 SSE 事件流 */
 export type StreamEvent =
   | { type: "user_message"; message: StoredMessage }
-  | { type: "turn_started"; agentId: string; agentName: string; model: string }
+  | {
+      type: "turn_started";
+      agentId: string;
+      agentName: string;
+      model: string;
+      round?: number;
+      phase?: "discussion" | "summary";
+    }
   | { type: "delta"; text: string }
   | { type: "message_completed"; message: StoredMessage }
+  | { type: "turn_failed"; agentName: string; message: string }
+  | { type: "task_completed" }
   | { type: "error"; message: string };
 
 export function encodeSseEvent(e: StreamEvent): string {
@@ -83,9 +96,11 @@ export type GatewayRequest = {
   messages: ChatMessage[];
 };
 
+export type TokenUsage = { inputTokens?: number; outputTokens?: number };
+
 export type GatewayEvent =
   | { type: "delta"; text: string }
-  | { type: "done" }
+  | { type: "done"; usage?: TokenUsage }
   | { type: "error"; message: string };
 
 export type ModelGateway = (req: GatewayRequest) => AsyncIterable<GatewayEvent>;

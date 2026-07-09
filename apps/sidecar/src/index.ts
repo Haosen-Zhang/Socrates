@@ -36,6 +36,8 @@ app.route("/rooms", roomRoutes(db, secrets, aiSdkGateway));
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
+  // 推理模型的 turn 间隔可远超默认 10s 空闲超时；连接生命周期由任务流自己管理
+  idleTimeout: 0,
   fetch: app.fetch,
 });
 if (server.port === undefined) throw new Error("TCP server has no port");

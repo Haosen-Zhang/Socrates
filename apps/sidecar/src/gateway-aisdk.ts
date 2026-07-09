@@ -18,14 +18,17 @@ export const aiSdkGateway: ModelGateway = async function* (req) {
       messages: req.messages,
       temperature: req.temperature,
     });
+    let usage: { inputTokens?: number; outputTokens?: number } | undefined;
     for await (const part of result.fullStream) {
       if (part.type === "text-delta") {
         yield { type: "delta", text: part.text };
+      } else if (part.type === "finish") {
+        usage = { inputTokens: part.totalUsage.inputTokens, outputTokens: part.totalUsage.outputTokens };
       } else if (part.type === "error") {
         yield { type: "error", message: String(part.error).slice(0, 300) };
       }
     }
-    yield { type: "done" };
+    yield { type: "done", usage };
   } catch (err) {
     yield { type: "error", message: String(err).slice(0, 300) };
   }
