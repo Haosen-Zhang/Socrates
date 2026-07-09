@@ -2,6 +2,11 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { HANDSHAKE_PROTOCOL, serializeHandshake } from "@socrates/core";
 
+// 父进程（Tauri）异常退出（如 SIGKILL/SIGTERM 未走优雅关闭）时自动退出，避免孤儿进程占着端口
+setInterval(() => {
+  if (process.ppid === 1) process.exit(0);
+}, 2000);
+
 const token = crypto.randomUUID();
 const app = new Hono();
 
