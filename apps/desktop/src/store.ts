@@ -7,6 +7,7 @@ import {
   type ProviderType,
   type Room,
   type StoredMessage,
+  type TaskSummary,
   type TestOutcome,
 } from "@socrates/core";
 
@@ -79,6 +80,9 @@ type Store = {
   messages: StoredMessage[];
   streaming: StreamingTurn | null;
   chatError: string | null;
+  /** 当前房间的历史任务（新在前） */
+  tasks: TaskSummary[];
+  loadTasks: () => Promise<void>;
   /** 运行中的编排任务；非空时禁止发起新讨论 */
   activeTaskId: string | null;
   /** 失败待处置的 turn（引擎挂起等 decision） */
@@ -181,6 +185,7 @@ export const useStore = create<Store>((set, get) => {
       set({ chatError: err instanceof Error ? err.message : String(err), streaming: null });
     } finally {
       set({ streaming: null, activeTaskId: null, failedTurn: null });
+      void get().loadTasks();
     }
   };
 
@@ -198,6 +203,7 @@ export const useStore = create<Store>((set, get) => {
     messages: [],
     streaming: null,
     chatError: null,
+    tasks: [],
     activeTaskId: null,
     failedTurn: null,
 
@@ -297,10 +303,18 @@ export const useStore = create<Store>((set, get) => {
       if (get().currentRoomId === id) set({ currentRoomId: null, messages: [] });
     },
     selectRoom: async (id) => {
-      set({ currentRoomId: id, messages: [], chatError: null });
+      set({ currentRoomId: id, messages: [], tasks: [], chatError: null });
       const messages = await requireOk<StoredMessage[]>(await sidecarFetch(hs(), `/rooms/${id}/messages`));
       // 加载期间用户可能已切换房间
       if (get().currentRoomId === id) set({ messages });
+      void get().loadTasks();
+    },
+
+    loadTasks: async () => {
+      const roomId = get().currentRoomId;
+      if (!roomId) return;
+      const tasks = await requireOk<TaskSummary[]>(await sidecarFetch(hs(), `/rooms/${roomId}/tasks`));
+      if (get().currentRoomId === roomId) set({ tasks });
     },
     clearChatError: () => set({ chatError: null }),
 

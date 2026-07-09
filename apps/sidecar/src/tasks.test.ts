@@ -260,6 +260,23 @@ describe("round robin task", () => {
     expect(db.query<{ status: string }, []>("SELECT status FROM tasks").get()?.status).toBe("completed");
   });
 
+  it("task history lists tasks with usage totals, newest first", async () => {
+    const { app } = makeApp(echoGateway);
+    const { a, b, room } = await setupTwoAgentRoom(app);
+    await postTask(app, room.id, { prompt: "第一场", speakingOrder: [a.id, b.id], maxRounds: 1, finalSummarizerId: a.id });
+    await Bun.sleep(2); // created_at 排序需要不同时间戳
+    await postTask(app, room.id, { prompt: "第二场", speakingOrder: [a.id], maxRounds: 1, finalSummarizerId: a.id });
+    const tasks = await (await app.request(`/rooms/${room.id}/tasks`)).json();
+    expect(tasks).toHaveLength(2);
+    expect(tasks[0].prompt).toBe("第二场");
+    expect(tasks.every((t: { status: string }) => t.status === "completed")).toBeTrue();
+    // 第一场：2 讨论 + 1 总结 = 3 turns × (7/3)
+    expect(tasks[1].inputTokens).toBe(21);
+    expect(tasks[1].outputTokens).toBe(9);
+    // 第二场：1 讨论 + 1 总结 = 2 turns
+    expect(tasks[0].inputTokens).toBe(14);
+  });
+
   it("rejects invalid config with 400", async () => {
     const { app } = makeApp(echoGateway);
     const { a, room } = await setupTwoAgentRoom(app);

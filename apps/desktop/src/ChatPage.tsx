@@ -1,6 +1,49 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Agent, StoredMessage } from "@socrates/core";
+import type { Agent, StoredMessage, TaskSummary } from "@socrates/core";
 import { useStore, type StreamingTurn } from "./store";
+
+const STATUS_BADGE: Record<TaskSummary["status"], [string, string]> = {
+  running: ["进行中", "bg-blue-100 text-blue-800"],
+  completed: ["已完成", "bg-green-100 text-green-800"],
+  failed: ["失败", "bg-red-100 text-red-800"],
+  cancelled: ["已取消", "bg-neutral-200 text-neutral-600"],
+};
+
+/** 历史任务面板：时间、模式、状态、token 合计；点击定位到时间线中的回放位置 */
+function TaskHistoryPanel({ onJump }: { onJump: (taskId: string) => void }) {
+  const { tasks } = useStore();
+  if (tasks.length === 0) {
+    return <p className="border-b border-neutral-200 bg-white px-4 py-2 text-xs text-neutral-500">还没有讨论任务。</p>;
+  }
+  return (
+    <ul className="max-h-56 divide-y divide-neutral-100 overflow-y-auto border-b border-neutral-200 bg-white">
+      {tasks.map((t) => {
+        const [text, cls] = STATUS_BADGE[t.status];
+        return (
+          <li
+            key={t.id}
+            className="flex cursor-pointer items-center gap-2 px-4 py-2 text-sm hover:bg-neutral-50"
+            onClick={() => onJump(t.id)}
+          >
+            <span className="shrink-0 text-xs text-neutral-400">
+              {new Date(t.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+            </span>
+            <span className="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-600">
+              {t.mode === "debate" ? "辩论" : "轮流"}
+            </span>
+            <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${cls}`} title={t.error}>
+              {text}
+            </span>
+            <span className="min-w-0 flex-1 truncate">{t.prompt}</span>
+            <span className="shrink-0 text-[10px] text-neutral-400">
+              ↑{t.inputTokens} ↓{t.outputTokens}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 const DUTY_BADGE: Record<string, [string, string]> = {
   propose: ["提案", "bg-blue-100 text-blue-800"],
@@ -25,7 +68,8 @@ function AgentHeader({ name, model, duty }: { name?: string; model?: string; dut
 function Bubble({ m }: { m: StoredMessage }) {
   if (m.role === "user") {
     return (
-      <div className="flex justify-end">
+      // 任务的用户消息作为回放跳转锚点
+      <div className="flex justify-end" id={m.taskId ? `task-${m.taskId}` : undefined}>
         <div className="max-w-[70%] rounded-lg bg-neutral-900 px-3 py-2 text-sm whitespace-pre-wrap text-white">
           {m.content}
         </div>
@@ -420,10 +464,15 @@ function NewRoomForm({ onDone }: { onDone: () => void }) {
 }
 
 export default function ChatPage() {
-  const { rooms, agents, currentRoomId, messages, streaming, chatError, selectRoom, removeRoom, clearChatError } =
+  const { rooms, agents, currentRoomId, messages, streaming, chatError, tasks, selectRoom, removeRoom, clearChatError } =
     useStore();
   const [creating, setCreating] = useState(false);
+  const [showTasks, setShowTasks] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const jumpToTask = (taskId: string) => {
+    document.getElementById(`task-${taskId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -495,6 +544,18 @@ export default function ChatPage() {
       <section className="flex min-w-0 flex-1 flex-col">
         {currentRoomId ? (
           <>
+            <div className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
+              <span className="text-sm font-medium">{currentRoom?.name}</span>
+              <button
+                className={`rounded border px-2 py-0.5 text-xs ${
+                  showTasks ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-300 text-neutral-600 hover:bg-neutral-100"
+                }`}
+                onClick={() => setShowTasks((v) => !v)}
+              >
+                历史任务 {tasks.length}
+              </button>
+            </div>
+            {showTasks && <TaskHistoryPanel onJump={jumpToTask} />}
             <div className="flex-1 space-y-3 overflow-y-auto p-4">
               {timeline.map((item) =>
                 item.kind === "divider" ? (

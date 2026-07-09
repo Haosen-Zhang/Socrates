@@ -71,6 +71,22 @@ export type OrchestrationEvent =
 /** turn 失败后的处置：重试当前 turn / 跳过继续 / 终止任务 */
 export type TurnFailureDecision = "retry" | "skip" | "abort";
 
+export type TaskStatus = "running" | "completed" | "failed" | "cancelled";
+
+/** 历史任务列表条目（GET /rooms/:id/tasks），token 为该任务全部 turn 的合计 */
+export type TaskSummary = {
+  id: string;
+  roomId: string;
+  prompt: string;
+  mode: TaskMode;
+  status: TaskStatus;
+  error?: string;
+  createdAt: string;
+  completedAt?: string;
+  inputTokens: number;
+  outputTokens: number;
+};
+
 export function validateTaskConfig(cfg: TaskConfig, roomAgentIds: string[]): string | null {
   if (!cfg.prompt.trim()) return "任务描述不能为空";
   if (!Number.isInteger(cfg.maxRounds) || cfg.maxRounds < 1 || cfg.maxRounds > 20) {
