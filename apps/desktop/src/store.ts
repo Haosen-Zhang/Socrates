@@ -31,7 +31,20 @@ export type AgentForm = {
 };
 
 export type TestResult = { outcome: TestOutcome; status?: number; detail?: string };
-export type StreamingTurn = { agentName: string; model: string; text: string };
+export type StreamingTurn = {
+  agentName: string;
+  model: string;
+  text: string;
+  round?: number;
+  phase?: "discussion" | "summary";
+};
+
+export type TaskForm = {
+  prompt: string;
+  speakingOrder: string[];
+  maxRounds: number;
+  finalSummarizerId: string;
+};
 
 type Store = {
   status: ConnStatus;
@@ -61,6 +74,7 @@ type Store = {
   removeRoom: (id: string) => Promise<void>;
   selectRoom: (id: string) => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
+  sendTask: (form: TaskForm) => Promise<void>;
   clearChatError: () => void;
 
   connect: () => Promise<void>;
@@ -90,6 +104,57 @@ export const useStore = create<Store>((set, get) => {
     const h = get().handshake;
     if (!h) throw new Error("sidecar 未连接");
     return h;
+  };
+
+  /** POST 到当前房间的流式端点并消费 SSE，把事件映射进 store */
+  const streamPost = async (suffix: string, body: unknown) => {
+    const roomId = get().currentRoomId;
+    if (!roomId || get().streaming) return;
+    set({ chatError: null });
+    try {
+      const res = await sidecarFetch(hs(), `/rooms/${roomId}${suffix}`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      if (!res.headers.get("content-type")?.includes("text/event-stream")) {
+        await requireOk(res);
+        return;
+      }
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const { events, rest } = parseSseChunk(buffer);
+        buffer = rest;
+        for (const e of events) {
+          if (e.type === "user_message") {
+            set((s) => ({ messages: [...s.messages, e.message] }));
+          } else if (e.type === "turn_started") {
+            set({
+              streaming: { agentName: e.agentName, model: e.model, text: "", round: e.round, phase: e.phase },
+            });
+          } else if (e.type === "delta") {
+            set((s) =>
+              s.streaming ? { streaming: { ...s.streaming, text: s.streaming.text + e.text } } : {},
+            );
+          } else if (e.type === "message_completed") {
+            set((s) => ({ messages: [...s.messages, e.message], streaming: null }));
+          } else if (e.type === "turn_failed") {
+            set({ chatError: `「${e.agentName}」发言失败：${e.message}`, streaming: null });
+          } else if (e.type === "error") {
+            set({ chatError: e.message, streaming: null });
+          }
+          // task_completed 无需处理：streaming 已随最后一条 message_completed 清空
+        }
+      }
+    } catch (err) {
+      set({ chatError: err instanceof Error ? err.message : String(err), streaming: null });
+    } finally {
+      if (get().streaming) set({ streaming: null });
+    }
   };
 
   return {
@@ -211,48 +276,11 @@ export const useStore = create<Store>((set, get) => {
     clearChatError: () => set({ chatError: null }),
 
     sendMessage: async (content) => {
-      const roomId = get().currentRoomId;
-      if (!roomId || get().streaming) return;
-      set({ chatError: null });
-      try {
-        const res = await sidecarFetch(hs(), `/rooms/${roomId}/messages`, {
-          method: "POST",
-          body: JSON.stringify({ content }),
-        });
-        if (!res.headers.get("content-type")?.includes("text/event-stream")) {
-          await requireOk(res);
-          return;
-        }
-        const reader = res.body!.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const { events, rest } = parseSseChunk(buffer);
-          buffer = rest;
-          for (const e of events) {
-            if (e.type === "user_message") {
-              set((s) => ({ messages: [...s.messages, e.message] }));
-            } else if (e.type === "turn_started") {
-              set({ streaming: { agentName: e.agentName, model: e.model, text: "" } });
-            } else if (e.type === "delta") {
-              set((s) =>
-                s.streaming ? { streaming: { ...s.streaming, text: s.streaming.text + e.text } } : {},
-              );
-            } else if (e.type === "message_completed") {
-              set((s) => ({ messages: [...s.messages, e.message], streaming: null }));
-            } else if (e.type === "error") {
-              set({ chatError: e.message, streaming: null });
-            }
-          }
-        }
-      } catch (err) {
-        set({ chatError: err instanceof Error ? err.message : String(err), streaming: null });
-      } finally {
-        if (get().streaming) set({ streaming: null });
-      }
+      await streamPost(`/messages`, { content });
+    },
+
+    sendTask: async (form) => {
+      await streamPost(`/tasks`, form);
     },
   };
 });
