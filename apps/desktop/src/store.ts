@@ -1,6 +1,14 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { Provider, ProviderType, TestOutcome } from "@socrates/core";
+import {
+  parseSseChunk,
+  type Agent,
+  type Provider,
+  type ProviderType,
+  type Room,
+  type StoredMessage,
+  type TestOutcome,
+} from "@socrates/core";
 
 type Handshake = { port: number; token: string };
 export type ConnStatus = "connecting" | "connected" | "disconnected";
@@ -13,18 +21,49 @@ export type ProviderForm = {
   apiKey: string;
 };
 
+export type AgentForm = {
+  displayName: string;
+  providerId: string;
+  modelId: string;
+  role: string;
+  systemPrompt: string;
+  temperature: string; // 表单态，空串=未设置
+};
+
 export type TestResult = { outcome: TestOutcome; status?: number; detail?: string };
+export type StreamingTurn = { agentName: string; model: string; text: string };
 
 type Store = {
   status: ConnStatus;
   handshake: Handshake | null;
+  view: "chat" | "settings";
+  setView: (v: "chat" | "settings") => void;
+
   providers: Provider[];
   testResults: Record<string, TestResult | "running">;
-  connect: () => Promise<void>;
   loadProviders: () => Promise<void>;
   saveProvider: (form: ProviderForm, editingId: string | null) => Promise<void>;
   removeProvider: (id: string) => Promise<void>;
   testProvider: (id: string) => Promise<void>;
+
+  agents: Agent[];
+  loadAgents: () => Promise<void>;
+  saveAgent: (form: AgentForm, editingId: string | null) => Promise<void>;
+  removeAgent: (id: string) => Promise<void>;
+
+  rooms: Room[];
+  currentRoomId: string | null;
+  messages: StoredMessage[];
+  streaming: StreamingTurn | null;
+  chatError: string | null;
+  loadRooms: () => Promise<void>;
+  createRoom: (name: string, agentIds: string[]) => Promise<void>;
+  removeRoom: (id: string) => Promise<void>;
+  selectRoom: (id: string) => Promise<void>;
+  sendMessage: (content: string) => Promise<void>;
+  clearChatError: () => void;
+
+  connect: () => Promise<void>;
 };
 
 const HANDSHAKE_POLL_MS = 250;
@@ -36,82 +75,184 @@ async function sidecarFetch(hs: Handshake, path: string, init?: RequestInit): Pr
     ...init,
     headers: { Authorization: `Bearer ${hs.token}`, ...init?.headers },
   });
-  if (!res.ok && res.status !== 400) throw new Error(`sidecar ${path} 返回 ${res.status}`);
+  if (res.status >= 500) throw new Error(`sidecar ${path} 返回 ${res.status}`);
   return res;
 }
 
-export const useStore = create<Store>((set, get) => ({
-  status: "connecting",
-  handshake: null,
-  providers: [],
-  testResults: {},
+async function requireOk<T>(res: Response): Promise<T> {
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error ?? `请求失败 (${res.status})`);
+  return body as T;
+}
 
-  connect: async () => {
-    if (connectStarted) return;
-    connectStarted = true;
-    for (let i = 0; i < HANDSHAKE_MAX_POLLS; i++) {
-      const hs = await invoke<Handshake | null>("sidecar_handshake");
-      if (hs) {
-        try {
-          const res = await fetch(`http://127.0.0.1:${hs.port}/health`, {
-            headers: { Authorization: `Bearer ${hs.token}` },
-          });
-          if (res.ok) {
-            set({ handshake: hs, status: "connected" });
-            void get().loadProviders();
-            return;
+export const useStore = create<Store>((set, get) => {
+  const hs = () => {
+    const h = get().handshake;
+    if (!h) throw new Error("sidecar 未连接");
+    return h;
+  };
+
+  return {
+    status: "connecting",
+    handshake: null,
+    view: "chat",
+    setView: (view) => set({ view }),
+
+    providers: [],
+    testResults: {},
+    agents: [],
+    rooms: [],
+    currentRoomId: null,
+    messages: [],
+    streaming: null,
+    chatError: null,
+
+    connect: async () => {
+      if (connectStarted) return;
+      connectStarted = true;
+      for (let i = 0; i < HANDSHAKE_MAX_POLLS; i++) {
+        const handshake = await invoke<Handshake | null>("sidecar_handshake");
+        if (handshake) {
+          try {
+            const res = await fetch(`http://127.0.0.1:${handshake.port}/health`, {
+              headers: { Authorization: `Bearer ${handshake.token}` },
+            });
+            if (res.ok) {
+              set({ handshake, status: "connected" });
+              await Promise.all([get().loadProviders(), get().loadAgents(), get().loadRooms()]);
+              const first = get().rooms[0];
+              if (first) void get().selectRoom(first.id);
+              return;
+            }
+          } catch {
+            // 端口尚未就绪，继续轮询
           }
-        } catch {
-          // 端口尚未就绪，继续轮询
         }
+        await new Promise((r) => setTimeout(r, HANDSHAKE_POLL_MS));
       }
-      await new Promise((r) => setTimeout(r, HANDSHAKE_POLL_MS));
-    }
-    set({ status: "disconnected" });
-  },
+      set({ status: "disconnected" });
+    },
 
-  loadProviders: async () => {
-    const hs = get().handshake;
-    if (!hs) return;
-    const res = await sidecarFetch(hs, "/providers");
-    set({ providers: await res.json() });
-  },
+    loadProviders: async () => {
+      set({ providers: await (await sidecarFetch(hs(), "/providers")).json() });
+    },
+    saveProvider: async (form, editingId) => {
+      const payload: Record<string, string> = {
+        name: form.name,
+        baseUrl: form.baseUrl,
+        defaultModel: form.defaultModel,
+      };
+      if (form.apiKey) payload.apiKey = form.apiKey;
+      const res = editingId
+        ? await sidecarFetch(hs(), `/providers/${editingId}`, { method: "PUT", body: JSON.stringify(payload) })
+        : await sidecarFetch(hs(), "/providers", {
+            method: "POST",
+            body: JSON.stringify({ ...payload, type: form.type }),
+          });
+      await requireOk(res);
+      await get().loadProviders();
+    },
+    removeProvider: async (id) => {
+      await sidecarFetch(hs(), `/providers/${id}`, { method: "DELETE" });
+      await get().loadProviders();
+    },
+    testProvider: async (id) => {
+      set((s) => ({ testResults: { ...s.testResults, [id]: "running" } }));
+      const result: TestResult = await (
+        await sidecarFetch(hs(), `/providers/${id}/test`, { method: "POST" })
+      ).json();
+      set((s) => ({ testResults: { ...s.testResults, [id]: result } }));
+    },
 
-  saveProvider: async (form, editingId) => {
-    const hs = get().handshake;
-    if (!hs) return;
-    const payload: Record<string, string> = {
-      name: form.name,
-      baseUrl: form.baseUrl,
-      defaultModel: form.defaultModel,
-    };
-    if (form.apiKey) payload.apiKey = form.apiKey;
-    const res = editingId
-      ? await sidecarFetch(hs, `/providers/${editingId}`, {
-          method: "PUT",
-          body: JSON.stringify(payload),
-        })
-      : await sidecarFetch(hs, "/providers", {
+    loadAgents: async () => {
+      set({ agents: await (await sidecarFetch(hs(), "/agents")).json() });
+    },
+    saveAgent: async (form, editingId) => {
+      const payload = {
+        displayName: form.displayName,
+        providerId: form.providerId,
+        modelId: form.modelId,
+        role: form.role,
+        systemPrompt: form.systemPrompt,
+        temperature: form.temperature === "" ? undefined : Number(form.temperature),
+      };
+      const res = editingId
+        ? await sidecarFetch(hs(), `/agents/${editingId}`, { method: "PUT", body: JSON.stringify(payload) })
+        : await sidecarFetch(hs(), "/agents", { method: "POST", body: JSON.stringify(payload) });
+      await requireOk(res);
+      await get().loadAgents();
+    },
+    removeAgent: async (id) => {
+      await sidecarFetch(hs(), `/agents/${id}`, { method: "DELETE" });
+      await Promise.all([get().loadAgents(), get().loadRooms()]);
+    },
+
+    loadRooms: async () => {
+      set({ rooms: await (await sidecarFetch(hs(), "/rooms")).json() });
+    },
+    createRoom: async (name, agentIds) => {
+      const room = await requireOk<Room>(
+        await sidecarFetch(hs(), "/rooms", { method: "POST", body: JSON.stringify({ name, agentIds }) }),
+      );
+      await get().loadRooms();
+      await get().selectRoom(room.id);
+    },
+    removeRoom: async (id) => {
+      await sidecarFetch(hs(), `/rooms/${id}`, { method: "DELETE" });
+      await get().loadRooms();
+      if (get().currentRoomId === id) set({ currentRoomId: null, messages: [] });
+    },
+    selectRoom: async (id) => {
+      set({ currentRoomId: id, messages: [], chatError: null });
+      const messages = await requireOk<StoredMessage[]>(await sidecarFetch(hs(), `/rooms/${id}/messages`));
+      // 加载期间用户可能已切换房间
+      if (get().currentRoomId === id) set({ messages });
+    },
+    clearChatError: () => set({ chatError: null }),
+
+    sendMessage: async (content) => {
+      const roomId = get().currentRoomId;
+      if (!roomId || get().streaming) return;
+      set({ chatError: null });
+      try {
+        const res = await sidecarFetch(hs(), `/rooms/${roomId}/messages`, {
           method: "POST",
-          body: JSON.stringify({ ...payload, type: form.type }),
+          body: JSON.stringify({ content }),
         });
-    if (res.status === 400) throw new Error((await res.json()).error);
-    await get().loadProviders();
-  },
-
-  removeProvider: async (id) => {
-    const hs = get().handshake;
-    if (!hs) return;
-    await sidecarFetch(hs, `/providers/${id}`, { method: "DELETE" });
-    await get().loadProviders();
-  },
-
-  testProvider: async (id) => {
-    const hs = get().handshake;
-    if (!hs) return;
-    set((s) => ({ testResults: { ...s.testResults, [id]: "running" } }));
-    const res = await sidecarFetch(hs, `/providers/${id}/test`, { method: "POST" });
-    const result: TestResult = await res.json();
-    set((s) => ({ testResults: { ...s.testResults, [id]: result } }));
-  },
-}));
+        if (!res.headers.get("content-type")?.includes("text/event-stream")) {
+          await requireOk(res);
+          return;
+        }
+        const reader = res.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const { events, rest } = parseSseChunk(buffer);
+          buffer = rest;
+          for (const e of events) {
+            if (e.type === "user_message") {
+              set((s) => ({ messages: [...s.messages, e.message] }));
+            } else if (e.type === "turn_started") {
+              set({ streaming: { agentName: e.agentName, model: e.model, text: "" } });
+            } else if (e.type === "delta") {
+              set((s) =>
+                s.streaming ? { streaming: { ...s.streaming, text: s.streaming.text + e.text } } : {},
+              );
+            } else if (e.type === "message_completed") {
+              set((s) => ({ messages: [...s.messages, e.message], streaming: null }));
+            } else if (e.type === "error") {
+              set({ chatError: e.message, streaming: null });
+            }
+          }
+        }
+      } catch (err) {
+        set({ chatError: err instanceof Error ? err.message : String(err), streaming: null });
+      } finally {
+        if (get().streaming) set({ streaming: null });
+      }
+    },
+  };
+});
