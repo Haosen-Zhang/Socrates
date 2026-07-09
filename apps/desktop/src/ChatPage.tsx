@@ -70,80 +70,112 @@ function StreamingBubble({ s }: { s: StreamingTurn }) {
   );
 }
 
-/** 多 Agent 房间的任务发起表单：需求、发言顺序、轮数、最终总结者 */
+/** 发言顺序条目：勾选决定是否参与本次讨论，列表顺序即发言顺序 */
+type OrderItem = { id: string; enabled: boolean };
+
+/** 多 Agent 房间的任务发起表单：需求、参与者与发言顺序（拖拽）、轮数、最终总结者 */
 function TaskComposer({ agents }: { agents: Agent[] }) {
   const { streaming, sendTask } = useStore();
   const [prompt, setPrompt] = useState("");
-  const [order, setOrder] = useState<string[]>(agents.map((a) => a.id));
+  const [items, setItems] = useState<OrderItem[]>(agents.map((a) => ({ id: a.id, enabled: true })));
+  const [dragId, setDragId] = useState<string | null>(null);
   const [maxRounds, setMaxRounds] = useState(2);
   const [summarizerId, setSummarizerId] = useState(agents[agents.length - 1]?.id ?? "");
   const [showConfig, setShowConfig] = useState(false);
 
   // 房间成员变化时重置顺序与总结者
   useEffect(() => {
-    setOrder(agents.map((a) => a.id));
+    setItems(agents.map((a) => ({ id: a.id, enabled: true })));
     setSummarizerId(agents[agents.length - 1]?.id ?? "");
   }, [agents]);
 
-  const nameOf = (id: string) => agents.find((a) => a.id === id)?.displayName ?? "?";
-  const moveUp = (i: number) => {
-    if (i === 0) return;
-    const next = [...order];
-    [next[i - 1], next[i]] = [next[i], next[i - 1]];
-    setOrder(next);
+  const agentOf = (id: string) => agents.find((a) => a.id === id);
+  const speakingOrder = items.filter((i) => i.enabled).map((i) => i.id);
+
+  const toggle = (id: string) =>
+    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, enabled: !i.enabled } : i)));
+
+  const dragOver = (e: React.DragEvent, overId: string) => {
+    e.preventDefault();
+    if (!dragId || dragId === overId) return;
+    setItems((prev) => {
+      const from = prev.findIndex((i) => i.id === dragId);
+      const to = prev.findIndex((i) => i.id === overId);
+      const next = [...prev];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
   };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     const p = prompt.trim();
-    if (!p) return;
+    if (!p || speakingOrder.length === 0) return;
     setPrompt("");
-    await sendTask({ prompt: p, speakingOrder: order, maxRounds, finalSummarizerId: summarizerId });
+    await sendTask({ prompt: p, speakingOrder, maxRounds, finalSummarizerId: summarizerId });
   };
 
   return (
     <form onSubmit={submit} className="space-y-2 border-t border-neutral-200 bg-white p-3">
       {showConfig && (
-        <div className="flex flex-wrap items-center gap-4 rounded border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm">
-          <div className="flex items-center gap-1">
-            <span className="text-neutral-500">顺序：</span>
-            {order.map((id, i) => (
-              <button
-                key={id}
-                type="button"
-                title="点击前移"
-                className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-xs hover:bg-neutral-100"
-                onClick={() => moveUp(i)}
-              >
-                {i + 1}.{nameOf(id)}
-              </button>
-            ))}
+        <div className="flex gap-4 rounded border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm">
+          <div className="min-w-0 flex-1">
+            <div className="mb-1 text-neutral-500">参与者与发言顺序（拖动排序）：</div>
+            <ul className="max-h-44 space-y-1 overflow-y-auto pr-1">
+              {items.map((item) => {
+                const a = agentOf(item.id);
+                if (!a) return null;
+                const position = item.enabled ? speakingOrder.indexOf(item.id) + 1 : null;
+                return (
+                  <li
+                    key={item.id}
+                    draggable
+                    onDragStart={() => setDragId(item.id)}
+                    onDragEnd={() => setDragId(null)}
+                    onDragOver={(e) => dragOver(e, item.id)}
+                    className={`flex cursor-grab items-center gap-2 rounded border bg-white px-2 py-1 ${
+                      dragId === item.id ? "border-neutral-400 opacity-60" : "border-neutral-200"
+                    } ${item.enabled ? "" : "text-neutral-400"}`}
+                  >
+                    <span className="select-none text-neutral-400">⠿</span>
+                    <input type="checkbox" checked={item.enabled} onChange={() => toggle(item.id)} />
+                    <span className="w-5 text-xs text-neutral-400">{position ? `${position}.` : "—"}</span>
+                    <span className="min-w-0 flex-1 truncate">{a.displayName}</span>
+                    <span className="shrink-0 text-xs text-neutral-400">{a.modelId}</span>
+                  </li>
+                );
+              })}
+            </ul>
+            {speakingOrder.length === 0 && <p className="mt-1 text-xs text-red-600">至少勾选一位参与者</p>}
           </div>
-          <label className="flex items-center gap-1">
-            <span className="text-neutral-500">轮数：</span>
-            <input
-              type="number"
-              min={1}
-              max={20}
-              className="w-14 rounded border border-neutral-300 px-1.5 py-0.5 text-sm"
-              value={maxRounds}
-              onChange={(e) => setMaxRounds(Number(e.target.value))}
-            />
-          </label>
-          <label className="flex items-center gap-1">
-            <span className="text-neutral-500">总结者：</span>
-            <select
-              className="rounded border border-neutral-300 px-1.5 py-0.5 text-sm"
-              value={summarizerId}
-              onChange={(e) => setSummarizerId(e.target.value)}
-            >
-              {agents.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.displayName}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="flex shrink-0 flex-col gap-2">
+            <label className="flex items-center justify-between gap-1">
+              <span className="text-neutral-500">轮数</span>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                className="w-14 rounded border border-neutral-300 px-1.5 py-0.5 text-sm"
+                value={maxRounds}
+                onChange={(e) => setMaxRounds(Number(e.target.value))}
+              />
+            </label>
+            <label className="flex items-center justify-between gap-1">
+              <span className="text-neutral-500">总结者</span>
+              <select
+                className="rounded border border-neutral-300 px-1.5 py-0.5 text-sm"
+                value={summarizerId}
+                onChange={(e) => setSummarizerId(e.target.value)}
+              >
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.displayName}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
       )}
       <div className="flex gap-2">
@@ -157,14 +189,16 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
         </button>
         <input
           className="flex-1 rounded border border-neutral-300 px-3 py-2 text-sm"
-          placeholder={streaming ? "讨论进行中…" : `描述任务，${agents.length} 位 Agent 将讨论 ${maxRounds} 轮`}
+          placeholder={
+            streaming ? "讨论进行中…" : `描述任务，${speakingOrder.length} 位 Agent 将讨论 ${maxRounds} 轮`
+          }
           value={prompt}
           disabled={!!streaming}
           onChange={(e) => setPrompt(e.target.value)}
         />
         <button
           className="rounded bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-40"
-          disabled={!!streaming || !prompt.trim()}
+          disabled={!!streaming || !prompt.trim() || speakingOrder.length === 0}
           type="submit"
         >
           发起讨论
