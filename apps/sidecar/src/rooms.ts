@@ -186,10 +186,54 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
   app.delete("/:id", (c) => {
     const room = roomById(c.req.param("id"));
     if (!room) return c.json({ error: "房间不存在" }, 404);
+    db.run("DELETE FROM turns WHERE task_id IN (SELECT id FROM tasks WHERE room_id = ?)", [room.id]);
+    db.run("DELETE FROM tasks WHERE room_id = ?", [room.id]);
     db.run("DELETE FROM messages WHERE room_id = ?", [room.id]);
     db.run("DELETE FROM room_agents WHERE room_id = ?", [room.id]);
     db.run("DELETE FROM rooms WHERE id = ?", [room.id]);
     return c.json({ ok: true });
+  });
+
+  app.get("/:id/tasks", (c) => {
+    const room = roomById(c.req.param("id"));
+    if (!room) return c.json({ error: "房间不存在" }, 404);
+    type TaskRow = {
+      id: string;
+      room_id: string;
+      prompt: string;
+      mode: "round_robin" | "debate";
+      status: "running" | "completed" | "failed" | "cancelled";
+      error: string | null;
+      created_at: string;
+      completed_at: string | null;
+      input_tokens: number;
+      output_tokens: number;
+    };
+    const rows = db
+      .query<TaskRow, [string]>(
+        `SELECT t.id, t.room_id, t.prompt, t.mode, t.status, t.error, t.created_at, t.completed_at,
+                COALESCE(SUM(tr.input_tokens), 0) AS input_tokens,
+                COALESCE(SUM(tr.output_tokens), 0) AS output_tokens
+         FROM tasks t LEFT JOIN turns tr ON tr.task_id = t.id
+         WHERE t.room_id = ?
+         GROUP BY t.id
+         ORDER BY t.created_at DESC`,
+      )
+      .all(room.id);
+    return c.json(
+      rows.map((r) => ({
+        id: r.id,
+        roomId: r.room_id,
+        prompt: r.prompt,
+        mode: r.mode,
+        status: r.status,
+        error: r.error ?? undefined,
+        createdAt: r.created_at,
+        completedAt: r.completed_at ?? undefined,
+        inputTokens: r.input_tokens,
+        outputTokens: r.output_tokens,
+      })),
+    );
   });
 
   app.get("/:id/messages", (c) => {
