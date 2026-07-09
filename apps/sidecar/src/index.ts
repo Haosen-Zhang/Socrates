@@ -4,6 +4,9 @@ import { HANDSHAKE_PROTOCOL, serializeHandshake } from "@socrates/core";
 import { defaultDbPath, openDb } from "./db";
 import { KeychainSecrets } from "./secrets";
 import { providerRoutes } from "./providers";
+import { agentRoutes } from "./agents";
+import { roomRoutes } from "./rooms";
+import { aiSdkGateway } from "./gateway-aisdk";
 
 // 父进程（Tauri）异常退出（如 SIGKILL/SIGTERM 未走优雅关闭）时自动退出，避免孤儿进程占着端口
 setInterval(() => {
@@ -22,8 +25,13 @@ app.use("*", async (c, next) => {
   await next();
 });
 
+const db = openDb(defaultDbPath());
+const secrets = new KeychainSecrets();
+
 app.get("/health", (c) => c.json({ ok: true }));
-app.route("/providers", providerRoutes(openDb(defaultDbPath()), new KeychainSecrets()));
+app.route("/providers", providerRoutes(db, secrets));
+app.route("/agents", agentRoutes(db));
+app.route("/rooms", roomRoutes(db, secrets, aiSdkGateway));
 
 const server = Bun.serve({
   hostname: "127.0.0.1",

@@ -65,7 +65,7 @@ export default function ProvidersPage() {
   const input = "rounded border border-neutral-300 px-2 py-1.5 text-sm w-full";
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 p-6">
+    <div className="space-y-4">
       <section>
         <h2 className="mb-3 text-base font-semibold">模型供应商</h2>
         {providers.length === 0 && (

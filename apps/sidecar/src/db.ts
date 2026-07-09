@@ -17,7 +17,41 @@ export function openDb(path: string): Database {
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
-    )
+    );
+    CREATE TABLE IF NOT EXISTS agents (
+      id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT '',
+      system_prompt TEXT NOT NULL DEFAULT '',
+      temperature REAL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS rooms (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS room_agents (
+      room_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      PRIMARY KEY (room_id, agent_id)
+    );
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      room_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      agent_id TEXT,
+      agent_name TEXT,
+      model TEXT,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_messages_room ON messages (room_id, created_at)
   `);
   return db;
 }
