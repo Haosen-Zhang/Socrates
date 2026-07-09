@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Provider } from "@socrates/core";
-import { useStore, type ProviderForm, type TestResult } from "./store";
+import { useStore, useT, type ProviderForm, type TestResult } from "./store";
 
 const EMPTY: ProviderForm = {
   name: "",
@@ -11,13 +11,14 @@ const EMPTY: ProviderForm = {
 };
 
 function TestBadge({ result }: { result: TestResult | "running" | undefined }) {
+  const t = useT();
   if (!result) return null;
-  if (result === "running") return <span className="text-sm text-neutral-500">测试中…</span>;
+  if (result === "running") return <span className="text-sm text-neutral-500">{t("testing")}</span>;
   const label: Record<string, [string, string]> = {
-    ok: ["连接成功", "text-green-700"],
-    auth_failed: ["鉴权失败", "text-red-700"],
-    network_error: ["网络错误", "text-amber-700"],
-    error: [`错误${result.status ? ` (${result.status})` : ""}`, "text-red-700"],
+    ok: [t("test_ok"), "text-green-700"],
+    auth_failed: [t("test_auth_failed"), "text-red-700"],
+    network_error: [t("test_network_error"), "text-amber-700"],
+    error: [t("test_error", { status: result.status ? ` (${result.status})` : "" }), "text-red-700"],
   };
   const [text, cls] = label[result.outcome];
   return (
@@ -29,6 +30,7 @@ function TestBadge({ result }: { result: TestResult | "running" | undefined }) {
 
 export default function ProvidersPage() {
   const { providers, testResults, saveProvider, removeProvider, testProvider } = useStore();
+  const t = useT();
   const [form, setForm] = useState<ProviderForm>(EMPTY);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -67,10 +69,8 @@ export default function ProvidersPage() {
   return (
     <div className="space-y-4">
       <section>
-        <h2 className="mb-3 text-base font-semibold">模型供应商</h2>
-        {providers.length === 0 && (
-          <p className="text-sm text-neutral-500">还没有供应商，用下面的表单添加一个。</p>
-        )}
+        <h2 className="mb-3 text-base font-semibold">{t("providers_title")}</h2>
+        {providers.length === 0 && <p className="text-sm text-neutral-500">{t("providers_empty")}</p>}
         <ul className="space-y-2">
           {providers.map((p) => (
             <li
@@ -89,19 +89,19 @@ export default function ProvidersPage() {
                 className="rounded border border-neutral-300 px-2 py-1 text-sm hover:bg-neutral-100"
                 onClick={() => void testProvider(p.id)}
               >
-                测试连接
+                {t("test_connection")}
               </button>
               <button
                 className="rounded border border-neutral-300 px-2 py-1 text-sm hover:bg-neutral-100"
                 onClick={() => startEdit(p)}
               >
-                编辑
+                {t("edit")}
               </button>
               <button
                 className="rounded border border-red-200 px-2 py-1 text-sm text-red-700 hover:bg-red-50"
                 onClick={() => void removeProvider(p.id)}
               >
-                删除
+                {t("delete")}
               </button>
             </li>
           ))}
@@ -109,29 +109,29 @@ export default function ProvidersPage() {
       </section>
 
       <section className="rounded border border-neutral-200 bg-white p-4">
-        <h3 className="mb-3 text-sm font-semibold">{editingId ? "编辑供应商" : "添加供应商"}</h3>
+        <h3 className="mb-3 text-sm font-semibold">{editingId ? t("provider_edit") : t("provider_add")}</h3>
         <form onSubmit={submit} className="grid grid-cols-2 gap-3">
           <label className="text-sm">
-            名称
+            {t("name")}
             <input className={input} required {...field("name")} />
           </label>
           <label className="text-sm">
-            类型
+            {t("provider_type")}
             <select className={input} disabled={editingId !== null} {...field("type")}>
               <option value="openai_compatible">OpenAI-compatible</option>
               <option value="anthropic">Anthropic</option>
             </select>
           </label>
           <label className="text-sm">
-            Base URL（留空用默认）
+            {t("base_url")}
             <input className={input} placeholder="https://…" {...field("baseUrl")} />
           </label>
           <label className="text-sm">
-            默认模型
+            {t("default_model")}
             <input className={input} placeholder="gpt-5.4 / deepseek-v4-flash" {...field("defaultModel")} />
           </label>
           <label className="col-span-2 text-sm">
-            API Key{editingId ? "（留空则不更换）" : ""}
+            {editingId ? t("api_key_keep") : t("api_key")}
             <input
               className={input}
               type="password"
@@ -146,7 +146,7 @@ export default function ProvidersPage() {
               type="submit"
               className="rounded bg-neutral-900 px-3 py-1.5 text-sm text-white hover:bg-neutral-700"
             >
-              {editingId ? "保存修改" : "添加"}
+              {editingId ? t("save") : t("add")}
             </button>
             {editingId && (
               <button
@@ -157,7 +157,7 @@ export default function ProvidersPage() {
                   setForm(EMPTY);
                 }}
               >
-                取消
+                {t("cancel")}
               </button>
             )}
           </div>
