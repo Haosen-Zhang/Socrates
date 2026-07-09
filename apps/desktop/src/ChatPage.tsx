@@ -478,13 +478,98 @@ function NewRoomForm({ onDone }: { onDone: () => void }) {
   );
 }
 
+/** 房间右键菜单（类 Codex/OpenCode）：归档/恢复、删除（二次点击确认） */
+type MenuState = { roomId: string; x: number; y: number };
+
+function RoomContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) {
+  const { rooms, archiveRoom, removeRoom } = useStore();
+  const t = useT();
+  const [confirming, setConfirming] = useState(false);
+  const room = rooms.find((r) => r.id === menu.roomId);
+
+  useEffect(() => {
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent && e.key !== "Escape") return;
+      onClose();
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("contextmenu", close);
+    window.addEventListener("keydown", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("contextmenu", close);
+      window.removeEventListener("keydown", close);
+    };
+  }, [onClose]);
+
+  if (!room) return null;
+  const item = "block w-full px-3 py-1.5 text-left text-sm hover:bg-neutral-100";
+  return (
+    <div
+      className="fixed z-50 w-36 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-lg"
+      style={{ left: menu.x, top: menu.y }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <button
+        className={item}
+        onClick={() => {
+          void archiveRoom(room.id, !room.archived);
+          onClose();
+        }}
+      >
+        {room.archived ? t("unarchive") : t("archive")}
+      </button>
+      <button
+        className={`${item} ${confirming ? "font-medium text-red-700" : "text-red-600"}`}
+        onClick={() => {
+          if (!confirming) {
+            setConfirming(true);
+            return;
+          }
+          void removeRoom(room.id);
+          onClose();
+        }}
+      >
+        {confirming ? t("confirm_delete") : t("delete")}
+      </button>
+    </div>
+  );
+}
+
 export default function ChatPage() {
-  const { rooms, agents, currentRoomId, messages, streaming, chatError, tasks, selectRoom, removeRoom, clearChatError } =
+  const { rooms, agents, currentRoomId, messages, streaming, chatError, tasks, selectRoom, clearChatError } =
     useStore();
   const t = useT();
   const [creating, setCreating] = useState(false);
   const [showTasks, setShowTasks] = useState(false);
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const activeRooms = rooms.filter((r) => !r.archived);
+  const archivedRooms = rooms.filter((r) => r.archived);
+
+  const roomRow = (r: (typeof rooms)[number]) => (
+    <div
+      key={r.id}
+      className={`group flex cursor-pointer items-center rounded px-2 py-1.5 text-sm ${
+        r.id === currentRoomId ? "bg-neutral-900 text-white" : "hover:bg-neutral-100"
+      } ${r.archived ? "opacity-60" : ""}`}
+      onClick={() => void selectRoom(r.id)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setMenu({ roomId: r.id, x: e.clientX, y: e.clientY });
+      }}
+    >
+      <span className="min-w-0 flex-1 truncate">{r.name}</span>
+      <span
+        className={`ml-1 shrink-0 text-[10px] ${r.id === currentRoomId ? "text-neutral-400" : "text-neutral-300"}`}
+      >
+        {t("room_members", { n: r.agentIds.length })}
+      </span>
+    </div>
+  );
 
   const jumpToTask = (taskId: string) => {
     document.getElementById(`task-${taskId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -526,36 +611,20 @@ export default function ChatPage() {
           {t("new_room")}
         </button>
         {creating && <NewRoomForm onDone={() => setCreating(false)} />}
-        {rooms.map((r) => (
-          <div
-            key={r.id}
-            className={`group flex cursor-pointer items-center rounded px-2 py-1.5 text-sm ${
-              r.id === currentRoomId ? "bg-neutral-900 text-white" : "hover:bg-neutral-100"
-            }`}
-            onClick={() => void selectRoom(r.id)}
-          >
-            <span className="min-w-0 flex-1 truncate">{r.name}</span>
-            <span
-              className={`ml-1 shrink-0 text-[10px] ${
-                r.id === currentRoomId ? "text-neutral-400" : "text-neutral-300"
-              }`}
-            >
-              {t("room_members", { n: r.agentIds.length })}
-            </span>
+        {activeRooms.map(roomRow)}
+        {archivedRooms.length > 0 && (
+          <div className="pt-2">
             <button
-              className={`ml-1 hidden text-xs group-hover:block ${
-                r.id === currentRoomId ? "text-neutral-300" : "text-neutral-400"
-              }`}
-              onClick={(e) => {
-                e.stopPropagation();
-                void removeRoom(r.id);
-              }}
+              className="w-full px-2 text-left text-xs text-neutral-400 hover:text-neutral-600"
+              onClick={() => setShowArchived((v) => !v)}
             >
-              {t("delete")}
+              {showArchived ? "▾" : "▸"} {t("archived_section", { n: archivedRooms.length })}
             </button>
+            {showArchived && <div className="mt-1 space-y-1">{archivedRooms.map(roomRow)}</div>}
           </div>
-        ))}
+        )}
       </aside>
+      {menu && <RoomContextMenu menu={menu} onClose={() => setMenu(null)} />}
 
       <section className="flex min-w-0 flex-1 flex-col">
         {currentRoomId ? (

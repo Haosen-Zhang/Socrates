@@ -277,6 +277,19 @@ describe("round robin task", () => {
     expect(tasks[0].inputTokens).toBe(14);
   });
 
+  it("archives and restores a room", async () => {
+    const { app } = makeApp(echoGateway);
+    const { room } = await setupTwoAgentRoom(app);
+    const put = (archived: boolean) =>
+      app.request(`/rooms/${room.id}/archive`, { method: "PUT", body: JSON.stringify({ archived }) });
+    expect((await put(true)).status).toBe(200);
+    let rooms = await (await app.request("/rooms")).json();
+    expect(rooms[0].archived).toBeTrue();
+    expect((await put(false)).status).toBe(200);
+    rooms = await (await app.request("/rooms")).json();
+    expect(rooms[0].archived).toBeFalse();
+  });
+
   it("rejects invalid config with 400", async () => {
     const { app } = makeApp(echoGateway);
     const { a, room } = await setupTwoAgentRoom(app);

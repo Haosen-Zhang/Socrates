@@ -16,7 +16,7 @@ import {
 import { toAgent, type AgentRow } from "./agents";
 import type { SecretStore } from "./secrets";
 
-type RoomRow = { id: string; name: string; created_at: string; updated_at: string };
+type RoomRow = { id: string; name: string; archived: number; created_at: string; updated_at: string };
 type MessageRow = {
   id: string;
   room_id: string;
@@ -157,10 +157,23 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
         id: r.id,
         name: r.name,
         agentIds: roomAgents(r.id).map((a) => a.id),
+        archived: r.archived === 1,
         createdAt: r.created_at,
         updatedAt: r.updated_at,
       })),
     );
+  });
+
+  app.put("/:id/archive", async (c) => {
+    const room = roomById(c.req.param("id"));
+    if (!room) return c.json({ error: "房间不存在" }, 404);
+    const b = await c.req.json<{ archived: boolean }>();
+    db.run("UPDATE rooms SET archived = ?, updated_at = ? WHERE id = ?", [
+      b.archived ? 1 : 0,
+      new Date().toISOString(),
+      room.id,
+    ]);
+    return c.json({ ok: true });
   });
 
   app.post("/", async (c) => {
@@ -180,7 +193,10 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
     b.agentIds.forEach((aid, i) =>
       db.run("INSERT INTO room_agents (room_id, agent_id, position) VALUES (?, ?, ?)", [id, aid, i]),
     );
-    return c.json({ id, name: b.name.trim(), agentIds: b.agentIds, createdAt: now, updatedAt: now }, 201);
+    return c.json(
+      { id, name: b.name.trim(), agentIds: b.agentIds, archived: false, createdAt: now, updatedAt: now },
+      201,
+    );
   });
 
   app.delete("/:id", (c) => {

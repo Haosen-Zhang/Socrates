@@ -20,6 +20,7 @@ export type Room = {
   id: string;
   name: string;
   agentIds: string[];
+  archived: boolean;
   createdAt: string;
   updatedAt: string;
 };

@@ -95,6 +95,7 @@ type Store = {
   loadRooms: () => Promise<void>;
   createRoom: (name: string, agentIds: string[]) => Promise<void>;
   removeRoom: (id: string) => Promise<void>;
+  archiveRoom: (id: string, archived: boolean) => Promise<void>;
   selectRoom: (id: string) => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
   sendTask: (form: TaskForm) => Promise<void>;
@@ -309,6 +310,14 @@ export const useStore = create<Store>((set, get) => {
       await sidecarFetch(hs(), `/rooms/${id}`, { method: "DELETE" });
       await get().loadRooms();
       if (get().currentRoomId === id) set({ currentRoomId: null, messages: [] });
+    },
+    archiveRoom: async (id, archived) => {
+      await sidecarFetch(hs(), `/rooms/${id}/archive`, {
+        method: "PUT",
+        body: JSON.stringify({ archived }),
+      });
+      await get().loadRooms();
+      if (archived && get().currentRoomId === id) set({ currentRoomId: null, messages: [], tasks: [] });
     },
     selectRoom: async (id) => {
       set({ currentRoomId: id, messages: [], tasks: [], chatError: null });

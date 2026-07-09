@@ -44,6 +44,7 @@ export function openDb(path: string): Database {
     CREATE TABLE IF NOT EXISTS rooms (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      archived INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -100,6 +101,7 @@ export function openDb(path: string): Database {
   ensureColumns(db, "messages", ["task_id TEXT", "round INTEGER", "phase TEXT", "duty TEXT"]);
   ensureColumns(db, "tasks", ["mode TEXT NOT NULL DEFAULT 'round_robin'", "debate_roles TEXT"]);
   ensureColumns(db, "turns", ["duty TEXT"]);
+  ensureColumns(db, "rooms", ["archived INTEGER NOT NULL DEFAULT 0"]);
   return db;
 }
 
