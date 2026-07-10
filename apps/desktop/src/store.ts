@@ -24,7 +24,6 @@ export type ProviderForm = {
 };
 
 export type AgentForm = {
-  displayName: string;
   nickname: string;
   avatar: string;
   providerId: string;
@@ -301,7 +300,6 @@ export const useStore = create<Store>((set, get) => {
     },
     saveAgent: async (form, editingId) => {
       const payload = {
-        displayName: form.displayName,
         nickname: form.nickname,
         avatar: form.avatar,
         providerId: form.providerId,

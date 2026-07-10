@@ -34,7 +34,7 @@ async function setupTwoAgentRoom(app: Hono) {
     (
       await app.request("/agents", {
         method: "POST",
-        body: JSON.stringify({ displayName: name, nickname: name, avatar, providerId: provider.id, modelId: model }),
+        body: JSON.stringify({ nickname: name, avatar, providerId: provider.id, modelId: model }),
       })
     ).json();
   const a = await mkAgent("甲", "model-a", AGENT_AVATARS[0]);

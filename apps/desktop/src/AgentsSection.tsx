@@ -11,7 +11,6 @@ import { useStore, useT, type AgentForm } from "./store";
 function newForm(): AgentForm {
   const identity = randomAgentIdentity();
   return {
-    displayName: "",
     nickname: identity.nickname,
     avatar: identity.avatar,
     providerId: "",
@@ -50,7 +49,6 @@ export default function AgentsSection() {
   const startEdit = (agent: Agent) => {
     setEditingId(agent.id);
     setForm({
-      displayName: agent.displayName,
       nickname: agent.nickname,
       avatar: agent.avatar,
       providerId: agent.providerId,
@@ -104,8 +102,8 @@ export default function AgentsSection() {
               <AgentAvatar src={agent.avatar} label={agent.nickname} size={72} />
               <div className="min-w-0 flex-1">
                 <div className="truncate font-bold">{agentLabel(agent)}</div>
-                <div className="mt-1 text-xs text-neutral-500">
-                  {agent.displayName} · {providerName(agent.providerId)}
+                <div className="mt-1 truncate text-xs text-neutral-500">
+                  {providerName(agent.providerId)}
                 </div>
                 {agent.role && <div className="pixel-chip mt-3 inline-block">{agent.role}</div>}
               </div>
@@ -176,10 +174,6 @@ export default function AgentsSection() {
               </div>
 
               <div className="grid grid-cols-2 gap-4">
-                <label className="text-sm">
-                  {t("name")}
-                  <input className={input} required value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} />
-                </label>
                 <label className="text-sm">
                   {t("provider")}
                   <select className={input} required value={form.providerId} onChange={(e) => setForm({ ...form, providerId: e.target.value })}>

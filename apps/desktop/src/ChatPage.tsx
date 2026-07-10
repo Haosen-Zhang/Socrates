@@ -634,7 +634,7 @@ function RoomMembersDialog({
               <AgentAvatar src={agent.avatar} label={agent.nickname} size={52} />
               <div className="min-w-0">
                 <div className="truncate text-sm font-bold">{agentLabel(agent)}</div>
-                <div className="truncate text-xs text-neutral-500">{agent.displayName}</div>
+                <div className="truncate text-xs text-neutral-500">{agent.role || agent.modelId}</div>
               </div>
             </div>
           ))}
@@ -650,7 +650,7 @@ function RoomMembersDialog({
                 <AgentAvatar src={agent.avatar} label={agent.nickname} size={42} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium">{agentLabel(agent)}</div>
-                  <div className="truncate text-xs text-neutral-500">{agent.displayName}</div>
+                  <div className="truncate text-xs text-neutral-500">{agent.role || agent.modelId}</div>
                 </div>
                 <button className="pixel-button pixel-button--primary px-3 py-1.5 text-xs" onClick={() => void addRoomAgent(roomId, agent.id)}>
                   + {t("add_to_room")}

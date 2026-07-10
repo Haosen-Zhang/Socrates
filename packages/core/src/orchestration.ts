@@ -26,8 +26,7 @@ export type TaskConfig = {
 /** 引擎所需的 Agent 视图：配置 + 已解析的供应商凭证（由 sidecar 注入，core 零 IO） */
 export type OrchestrationAgent = {
   id: string;
-  displayName: string;
-  nickname?: string;
+  nickname: string;
   avatar?: string;
   modelId: string;
   role: string;
@@ -191,12 +190,12 @@ const DUTY_TEXT: Record<TurnDuty, (round: number, maxRounds: number) => string> 
 };
 
 export function buildTurnSystem(
-  agent: Pick<OrchestrationAgent, "displayName" | "role" | "systemPrompt">,
+  agent: Pick<OrchestrationAgent, "nickname" | "role" | "systemPrompt">,
   spec: Pick<TurnSpec, "duty" | "round">,
   maxRounds: number,
 ): string {
   const identity =
-    `你是「${agent.displayName}」${agent.role ? `，角色：${agent.role}` : ""}。` +
+    `你是「${agent.nickname}」${agent.role ? `，角色：${agent.role}` : ""}。` +
     (agent.systemPrompt ? `\n${agent.systemPrompt}` : "");
   return `${identity}\n\n${DUTY_TEXT[spec.duty](spec.round, maxRounds)}`;
 }
@@ -253,7 +252,7 @@ export async function* runTask(
     const meta: TurnMeta = {
       ...spec,
       turnIndex,
-      agentName: agent.nickname ?? agent.displayName,
+      agentName: agent.nickname,
       agentAvatar: agent.avatar,
       model: agent.modelId,
     };
@@ -304,10 +303,10 @@ export async function* runTask(
         i++;
         continue;
       }
-      yield { type: "task_failed", message: `「${agent.displayName}」发言失败：${failure}` };
+      yield { type: "task_failed", message: `「${agent.nickname}」发言失败：${failure}` };
       return;
     }
-    turns.push({ agentId: spec.agentId, agentName: agent.displayName, round: spec.round, content });
+    turns.push({ agentId: spec.agentId, agentName: agent.nickname, round: spec.round, content });
     yield { type: "turn_completed", content, usage, ...meta };
     i++;
   }

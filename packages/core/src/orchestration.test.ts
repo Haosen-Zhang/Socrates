@@ -14,7 +14,7 @@ import {
 
 const agent = (id: string, name: string): OrchestrationAgent => ({
   id,
-  displayName: name,
+  nickname: name,
   modelId: `model-${id}`,
   role: `${name}的角色`,
   systemPrompt: "",
@@ -124,7 +124,7 @@ describe("buildTurnPlan / debate", () => {
 
 describe("buildTurnSystem", () => {
   it("debate duties include the output contract, judge does not", () => {
-    const a = { displayName: "甲", role: "", systemPrompt: "" };
+    const a = { nickname: "甲", role: "", systemPrompt: "" };
     expect(buildTurnSystem(a, { duty: "propose", round: 1 }, 2)).toContain("## Position");
     expect(buildTurnSystem(a, { duty: "critique", round: 1 }, 2)).toContain("## Critique");
     expect(buildTurnSystem(a, { duty: "synthesize", round: 1 }, 2)).toContain("## Proposal");
@@ -133,7 +133,7 @@ describe("buildTurnSystem", () => {
   });
   it("round-robin summary duty replaces discussion duty", () => {
     const sys = buildTurnSystem(
-      { displayName: "甲", role: "", systemPrompt: "提示词" },
+      { nickname: "甲", role: "", systemPrompt: "提示词" },
       { duty: "summarize", round: 2 },
       2,
     );
