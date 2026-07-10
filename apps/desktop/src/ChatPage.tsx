@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { agentLabel, type Agent, type StoredMessage, type TaskSummary } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import { useStore, useT, type StreamingTurn } from "./store";
@@ -39,11 +41,11 @@ function Bubble({ m }: { m: StoredMessage }) {
       <div className={isSummary ? "w-full max-w-[85%]" : "max-w-[70%]"}>
         <AgentHeader name={m.agentName} avatar={m.agentAvatar} model={m.model} duty={m.duty ?? (isSummary ? "summarize" : undefined)} />
         <div
-          className={`rounded-lg px-3 py-2 text-sm whitespace-pre-wrap ${
+          className={`md-body rounded-lg px-3 py-2 text-sm ${
             isSummary ? "border-2 border-amber-300 bg-amber-50" : "border border-neutral-200 bg-white"
           }`}
         >
-          {m.content}
+          <Markdown remarkPlugins={[remarkGfm]}>{m.content}</Markdown>
         </div>
       </div>
     </div>
@@ -67,11 +69,11 @@ function StreamingBubble({ s }: { s: StreamingTurn }) {
       <div className={s.phase === "summary" ? "w-full max-w-[85%]" : "max-w-[70%]"}>
         <AgentHeader name={s.agentName} avatar={s.agentAvatar} model={s.model} duty={s.duty ?? (s.phase === "summary" ? "summarize" : undefined)} />
         <div
-          className={`rounded-lg px-3 py-2 text-sm whitespace-pre-wrap ${
+          className={`md-body rounded-lg px-3 py-2 text-sm ${
             s.phase === "summary" ? "border-2 border-amber-300 bg-amber-50" : "border border-neutral-200 bg-white"
           }`}
         >
-          {s.text}
+          <Markdown remarkPlugins={[remarkGfm]}>{s.text}</Markdown>
           <span className="animate-pulse">▍</span>
         </div>
       </div>

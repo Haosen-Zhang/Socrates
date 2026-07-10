@@ -129,3 +129,23 @@ button, input, select, textarea { font: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .pixel-avatar--lively { animation: none; }
 }
+
+/* Agent 消息气泡里的 Markdown（react-markdown 输出，无内嵌 HTML） */
+.md-body :is(p, ul, ol, pre, table, blockquote, h1, h2, h3, h4) { margin: 0 0 8px; }
+.md-body > :last-child { margin-bottom: 0; }
+.md-body ul { list-style: disc; padding-left: 1.25rem; }
+.md-body ol { list-style: decimal; padding-left: 1.25rem; }
+.md-body li { margin: 2px 0; }
+.md-body :is(h1, h2, h3, h4) { font-weight: 700; }
+.md-body h1 { font-size: 1.05rem; }
+.md-body h2 { font-size: 1rem; }
+.md-body h3, .md-body h4 { font-size: 0.95rem; }
+.md-body code { background: #f0ece0; border-radius: 2px; padding: 0 4px; font-size: 0.85em; }
+.md-body pre { background: #1f1b33; color: #f2efe4; border-radius: 3px; padding: 8px 10px; overflow-x: auto; }
+.md-body pre code { background: none; padding: 0; color: inherit; font-size: 0.8rem; }
+.md-body table { border-collapse: collapse; display: block; overflow-x: auto; }
+.md-body :is(td, th) { border: 1px solid #d5cdb6; padding: 2px 8px; }
+.md-body th { background: #f0ece0; }
+.md-body blockquote { border-left: 3px solid #c7bea5; padding-left: 8px; color: #6b6580; }
+.md-body a { color: #6546d7; text-decoration: underline; }
+.md-body hr { border: none; border-top: 1px solid #d5cdb6; margin: 8px 0; }
