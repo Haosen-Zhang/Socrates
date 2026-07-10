@@ -290,7 +290,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
                   >
                     {agents.map((a) => (
                       <option key={a.id} value={a.id}>
-                        {a.displayName}
+                        {agentLabel(a)}
                       </option>
                     ))}
                   </select>
@@ -319,7 +319,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
                       <span className="select-none text-neutral-400">⠿</span>
                       <input type="checkbox" checked={item.enabled} onChange={() => toggle(item.id)} />
                       <span className="w-5 text-xs text-neutral-400">{position ? `${position}.` : "—"}</span>
-                      <span className="min-w-0 flex-1 truncate">{a.displayName}</span>
+                      <span className="min-w-0 flex-1 truncate">{a.nickname}</span>
                       <span className="shrink-0 text-xs text-neutral-400">{a.modelId}</span>
                     </li>
                   );
@@ -350,7 +350,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
                 >
                   {agents.map((a) => (
                     <option key={a.id} value={a.id}>
-                      {a.displayName}
+                      {agentLabel(a)}
                     </option>
                   ))}
                 </select>
@@ -458,7 +458,7 @@ function NewRoomForm({ onDone }: { onDone: () => void }) {
         {agents.map((a) => (
           <label key={a.id} className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={selected.includes(a.id)} onChange={() => toggle(a.id)} />
-            {a.displayName}
+            {a.nickname}
             <span className="text-xs text-neutral-400">{a.modelId}</span>
           </label>
         ))}
