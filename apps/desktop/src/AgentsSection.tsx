@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AGENT_AVATARS,
   agentLabel,
@@ -23,12 +23,19 @@ function newForm(): AgentForm {
 }
 
 export default function AgentsSection() {
-  const { agents, providers, saveAgent, removeAgent } = useStore();
+  const { agents, providers, modelLists, loadModels, saveAgent, removeAgent } = useStore();
   const t = useT();
   const [form, setForm] = useState<AgentForm>(newForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [manualModel, setManualModel] = useState(false);
+
+  // 选中供应商后拉取其可用型号（缓存于 store）
+  useEffect(() => {
+    if (open && form.providerId) void loadModels(form.providerId);
+  }, [open, form.providerId, loadModels]);
+  const models = form.providerId ? modelLists[form.providerId] : undefined;
 
   const providerName = (id: string) => providers.find((p) => p.id === id)?.name ?? t("provider_deleted");
   const close = () => {
@@ -182,7 +189,52 @@ export default function AgentsSection() {
                 </label>
                 <label className="text-sm">
                   {t("model_optional")}
-                  <input className={input} placeholder={providers.find((p) => p.id === form.providerId)?.defaultModel ?? ""} value={form.modelId} onChange={(e) => setForm({ ...form, modelId: e.target.value })} />
+                  {models && models.length > 0 && !manualModel ? (
+                    <div className="flex gap-1">
+                      <select
+                        className={input}
+                        value={form.modelId}
+                        onChange={(e) => setForm({ ...form, modelId: e.target.value })}
+                      >
+                        <option value="">{t("model_default_option")}</option>
+                        {form.modelId && !models.includes(form.modelId) && (
+                          <option value={form.modelId}>{form.modelId}</option>
+                        )}
+                        {models.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="pixel-button shrink-0 px-2 text-sm"
+                        title={t("model_manual")}
+                        onClick={() => setManualModel(true)}
+                      >
+                        ✎
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-1">
+                      <input
+                        className={input}
+                        placeholder={providers.find((p) => p.id === form.providerId)?.defaultModel ?? ""}
+                        value={form.modelId}
+                        onChange={(e) => setForm({ ...form, modelId: e.target.value })}
+                      />
+                      {models && models.length > 0 && (
+                        <button
+                          type="button"
+                          className="pixel-button shrink-0 px-2 text-sm"
+                          title={t("model_from_list")}
+                          onClick={() => setManualModel(false)}
+                        >
+                          ☰
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </label>
                 <label className="text-sm">
                   {t("temperature_optional")}

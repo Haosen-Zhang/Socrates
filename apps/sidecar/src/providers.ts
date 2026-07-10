@@ -102,6 +102,27 @@ export function providerRoutes(db: Database, secrets: SecretStore, fetchFn: Fetc
     return c.json({ ok: true });
   });
 
+  // 列出该供应商的可用模型型号（OpenAI-compatible 与 Anthropic 的列模型端点都返回 {data:[{id}]}）
+  app.get("/:id/models", async (c) => {
+    const row = byId(c.req.param("id"));
+    if (!row) return c.json({ error: "provider 不存在" }, 404);
+    const key = secrets.get(row.api_key_ref);
+    if (!key) return c.json({ error: "Keychain 中找不到 API Key" }, 400);
+    const req = buildTestRequest(row.type, row.base_url, key);
+    try {
+      const res = await fetchFn(req.url, { headers: req.headers, signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) return c.json({ error: `供应商返回 ${res.status}` }, 502);
+      const body = (await res.json()) as { data?: Array<{ id?: string; name?: string }> };
+      const models = (body.data ?? [])
+        .map((m) => m.id ?? m.name)
+        .filter((x): x is string => typeof x === "string" && x.length > 0)
+        .sort();
+      return c.json(models);
+    } catch (err) {
+      return c.json({ error: String(err).slice(0, 200) }, 502);
+    }
+  });
+
   app.post("/:id/test", async (c) => {
     const row = byId(c.req.param("id"));
     if (!row) return c.json({ error: "provider 不存在" }, 404);
