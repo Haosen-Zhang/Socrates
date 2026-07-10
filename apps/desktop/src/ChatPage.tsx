@@ -182,6 +182,47 @@ function TaskControlBar() {
 type OrderItem = { id: string; enabled: boolean };
 
 /** 多 Agent 房间的任务发起表单：需求、参与者与发言顺序（拖拽）、轮数、最终总结者 */
+/** 自适应高度的输入框：Enter 发送、Shift+Enter 换行；中文输入法组词中的 Enter 不触发发送 */
+function ComposerTextarea({
+  value,
+  placeholder,
+  disabled,
+  onChange,
+  onSubmit,
+}: {
+  value: string;
+  placeholder?: string;
+  disabled?: boolean;
+  onChange: (v: string) => void;
+  onSubmit: () => void;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [value]);
+  return (
+    <textarea
+      ref={ref}
+      rows={1}
+      className="flex-1 rounded border border-neutral-300 px-3 py-2 text-sm"
+      style={{ resize: "none" }}
+      placeholder={placeholder}
+      disabled={disabled}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+          e.preventDefault();
+          onSubmit();
+        }
+      }}
+    />
+  );
+}
+
 function TaskComposer({ agents }: { agents: Agent[] }) {
   const { streaming, activeTaskId, sendTask } = useStore();
   const t = useT();
@@ -219,9 +260,17 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
   const toggle = (id: string) =>
     setItems((prev) => prev.map((i) => (i.id === id ? { ...i, enabled: !i.enabled } : i)));
 
-  const dragOver = (e: React.DragEvent, overId: string) => {
-    e.preventDefault();
-    if (!dragId || dragId === overId) return;
+  // WKWebView 不可靠支持 HTML5 DnD（同 #23 的 contextmenu），用 pointer 事件自实现拖拽
+  const listRef = useRef<HTMLUListElement>(null);
+  const moveDragOver = (clientY: number) => {
+    if (!dragId || !listRef.current) return;
+    const rows = Array.from(listRef.current.querySelectorAll<HTMLElement>("[data-order-id]"));
+    const over = rows.find((row) => {
+      const r = row.getBoundingClientRect();
+      return clientY >= r.top && clientY <= r.bottom;
+    });
+    const overId = over?.dataset.orderId;
+    if (!overId || overId === dragId) return;
     setItems((prev) => {
       const from = prev.findIndex((i) => i.id === dragId);
       const to = prev.findIndex((i) => i.id === overId);
@@ -232,10 +281,9 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
     });
   };
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const doSubmit = async () => {
     const p = prompt.trim();
-    if (!p || (mode === "round_robin" && speakingOrder.length === 0)) return;
+    if (busy || !p || (mode === "round_robin" && speakingOrder.length === 0)) return;
     setPrompt("");
     await sendTask({
       prompt: p,
@@ -248,7 +296,13 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
   };
 
   return (
-    <form onSubmit={submit} className="space-y-2 border-t border-neutral-200 bg-white p-3">
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        void doSubmit();
+      }}
+      className="space-y-2 border-t border-neutral-200 bg-white p-3"
+    >
       {showConfig && (
         <div className="flex gap-4 rounded border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm">
           <div className="flex shrink-0 flex-col gap-1">
@@ -300,7 +354,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
           ) : (
             <div className="min-w-0 flex-1">
               <div className="mb-1 text-neutral-500">{t("order_hint")}</div>
-              <ul className="max-h-44 space-y-1 overflow-y-auto pr-1">
+              <ul ref={listRef} className="max-h-44 space-y-1 overflow-y-auto pr-1">
                 {items.map((item) => {
                   const a = agentOf(item.id);
                   if (!a) return null;
@@ -308,15 +362,24 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
                   return (
                     <li
                       key={item.id}
-                      draggable
-                      onDragStart={() => setDragId(item.id)}
-                      onDragEnd={() => setDragId(null)}
-                      onDragOver={(e) => dragOver(e, item.id)}
-                      className={`flex cursor-grab items-center gap-2 rounded border bg-white px-2 py-1 ${
+                      data-order-id={item.id}
+                      className={`flex items-center gap-2 rounded border bg-white px-2 py-1 ${
                         dragId === item.id ? "border-neutral-400 opacity-60" : "border-neutral-200"
                       } ${item.enabled ? "" : "text-neutral-400"}`}
                     >
-                      <span className="select-none text-neutral-400">⠿</span>
+                      <span
+                        className="cursor-grab touch-none select-none px-1 text-neutral-400 active:cursor-grabbing"
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.currentTarget.setPointerCapture(e.pointerId);
+                          setDragId(item.id);
+                        }}
+                        onPointerMove={(e) => moveDragOver(e.clientY)}
+                        onPointerUp={() => setDragId(null)}
+                        onPointerCancel={() => setDragId(null)}
+                      >
+                        ⠿
+                      </span>
                       <input type="checkbox" checked={item.enabled} onChange={() => toggle(item.id)} />
                       <span className="w-5 text-xs text-neutral-400">{position ? `${position}.` : "—"}</span>
                       <span className="min-w-0 flex-1 truncate">{a.nickname}</span>
@@ -368,8 +431,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
         >
           ⚙
         </button>
-        <input
-          className="flex-1 rounded border border-neutral-300 px-3 py-2 text-sm"
+        <ComposerTextarea
           placeholder={
             busy
               ? t("task_running")
@@ -379,7 +441,8 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
           }
           value={prompt}
           disabled={busy}
-          onChange={(e) => setPrompt(e.target.value)}
+          onChange={setPrompt}
+          onSubmit={() => void doSubmit()}
         />
         <button
           className="rounded bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-40"
@@ -397,21 +460,26 @@ function SimpleComposer() {
   const { streaming, sendMessage } = useStore();
   const t = useT();
   const [draft, setDraft] = useState("");
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const doSubmit = async () => {
     const content = draft.trim();
-    if (!content) return;
+    if (!content || streaming) return;
     setDraft("");
     await sendMessage(content);
   };
   return (
-    <form onSubmit={submit} className="flex gap-2 border-t border-neutral-200 bg-white p-3">
-      <input
-        className="flex-1 rounded border border-neutral-300 px-3 py-2 text-sm"
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        void doSubmit();
+      }}
+      className="flex gap-2 border-t border-neutral-200 bg-white p-3"
+    >
+      <ComposerTextarea
         placeholder={streaming ? t("replying") : t("message_placeholder")}
         value={draft}
         disabled={!!streaming}
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={setDraft}
+        onSubmit={() => void doSubmit()}
       />
       <button
         className="rounded bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-40"
