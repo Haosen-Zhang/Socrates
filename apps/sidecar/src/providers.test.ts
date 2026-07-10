@@ -75,6 +75,29 @@ describe("provider CRUD", () => {
   });
 });
 
+describe("model list", () => {
+  it("returns sorted model ids from the provider", async () => {
+    const fetchFn: FetchLike = async () =>
+      new Response(JSON.stringify({ data: [{ id: "gpt-5.5" }, { id: "gpt-5.4" }, { name: "named-only" }] }), {
+        status: 200,
+      });
+    const { app } = makeApp(fetchFn);
+    const p = await (await createProvider(app)).json();
+    const res = await app.request(`/providers/${p.id}/models`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(["gpt-5.4", "gpt-5.5", "named-only"]);
+  });
+
+  it("maps provider failure to 502 with readable error", async () => {
+    const fetchFn: FetchLike = async () => new Response("nope", { status: 401 });
+    const { app } = makeApp(fetchFn);
+    const p = await (await createProvider(app)).json();
+    const res = await app.request(`/providers/${p.id}/models`);
+    expect(res.status).toBe(502);
+    expect((await res.json()).error).toContain("401");
+  });
+});
+
 describe("connection test", () => {
   const cases: Array<[string, FetchLike, string]> = [
     ["200 → ok", async () => new Response("{}", { status: 200 }), "ok"],

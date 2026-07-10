@@ -76,6 +76,10 @@ type Store = {
   removeProvider: (id: string) => Promise<void>;
   testProvider: (id: string) => Promise<void>;
 
+  /** providerId → 该供应商的可用模型型号（拉取失败为 []，前端退化为手输） */
+  modelLists: Record<string, string[]>;
+  loadModels: (providerId: string) => Promise<void>;
+
   agents: Agent[];
   loadAgents: () => Promise<void>;
   saveAgent: (form: AgentForm, editingId: string | null) => Promise<void>;
@@ -277,6 +281,19 @@ export const useStore = create<Store>((set, get) => {
         await sidecarFetch(hs(), `/providers/${id}/test`, { method: "POST" })
       ).json();
       set((s) => ({ testResults: { ...s.testResults, [id]: result } }));
+    },
+
+    modelLists: {},
+    loadModels: async (providerId) => {
+      if (get().modelLists[providerId]) return;
+      let models: string[] = [];
+      try {
+        const res = await sidecarFetch(hs(), `/providers/${providerId}/models`);
+        if (res.ok) models = await res.json();
+      } catch {
+        // 网络失败 → 空列表，UI 退化为手输
+      }
+      set((s) => ({ modelLists: { ...s.modelLists, [providerId]: models } }));
     },
 
     loadAgents: async () => {
