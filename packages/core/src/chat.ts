@@ -3,10 +3,58 @@ import type { ProviderType } from "./provider";
 export type ChatRole = "system" | "user" | "assistant";
 export type ChatMessage = { role: ChatRole; content: string };
 
+export const AGENT_AVATARS = [
+  "/avatars/robot-archivist.webp",
+  "/avatars/cyber-fox.webp",
+  "/avatars/owl-engineer.webp",
+  "/avatars/axolotl-mechanic.webp",
+  "/avatars/slime-alchemist.webp",
+  "/avatars/cat-astronaut.webp",
+] as const;
+
+const AGENT_NICKNAMES = [
+  "青铜档案员",
+  "紫镜狐狸",
+  "蓝羽工程师",
+  "珊瑚修理匠",
+  "薄荷炼金师",
+  "星港领航员",
+  "月面记录官",
+  "霓虹侦察兵",
+  "齿轮观察员",
+  "琥珀质疑者",
+  "电波整理师",
+  "像素裁决官",
+] as const;
+
+export type AgentIdentity = { nickname: string; avatar: (typeof AGENT_AVATARS)[number] };
+
+function identityAt(index: number): AgentIdentity {
+  const safe = Math.abs(index) % AGENT_NICKNAMES.length;
+  return { nickname: AGENT_NICKNAMES[safe], avatar: AGENT_AVATARS[safe % AGENT_AVATARS.length] };
+}
+
+export function randomAgentIdentity(random: () => number = Math.random): AgentIdentity {
+  return identityAt(Math.floor(random() * AGENT_NICKNAMES.length));
+}
+
+/** 老数据没有 persona 字段时，用 id 得到稳定且无需落库的身份。 */
+export function agentIdentityFromSeed(seed: string): AgentIdentity {
+  let hash = 0;
+  for (const char of seed) hash = (hash * 31 + char.charCodeAt(0)) | 0;
+  return identityAt(hash);
+}
+
+export function agentLabel(agent: Pick<Agent, "nickname" | "modelId">): string {
+  return `${agent.nickname} (${agent.modelId})`;
+}
+
 /** Agent = 模型 + 角色 + 提示词（docs/03 §2.3 的 MVP 子集） */
 export type Agent = {
   id: string;
   displayName: string;
+  nickname: string;
+  avatar: string;
   providerId: string;
   modelId: string;
   role: string;
@@ -32,6 +80,7 @@ export type StoredMessage = {
   role: "user" | "agent";
   agentId?: string;
   agentName?: string;
+  agentAvatar?: string;
   model?: string;
   content: string;
   createdAt: string;
@@ -50,6 +99,7 @@ export type StreamEvent =
       type: "turn_started";
       agentId: string;
       agentName: string;
+      agentAvatar?: string;
       model: string;
       round?: number;
       phase?: "discussion" | "summary";

@@ -1,8 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import {
+  AGENT_AVATARS,
+  agentIdentityFromSeed,
+  agentLabel,
   encodeSseEvent,
   historyToChatMessages,
   parseSseChunk,
+  randomAgentIdentity,
   type StoredMessage,
   type StreamEvent,
 } from "./chat";
@@ -50,5 +54,14 @@ describe("historyToChatMessages", () => {
       { role: "user", content: "问题" },
       { role: "assistant", content: "回答" },
     ]);
+  });
+});
+
+describe("agent identity", () => {
+  it("assigns a catalog avatar and formats the model label", () => {
+    const identity = randomAgentIdentity(() => 0.51);
+    expect(AGENT_AVATARS).toContain(identity.avatar);
+    expect(agentLabel({ ...identity, modelId: "gpt-5.4" })).toBe(`${identity.nickname} (gpt-5.4)`);
+    expect(agentIdentityFromSeed("agent-1")).toEqual(agentIdentityFromSeed("agent-1"));
   });
 });

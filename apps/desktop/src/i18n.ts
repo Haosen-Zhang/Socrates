@@ -59,8 +59,12 @@ const zhCN: Dict = {
 
   // Agent 设置
   agents_empty: "还没有 Agent，用下面的表单创建一个。",
+  agents_title: "像素 Agent",
+  agents_subtitle: "为每个模型配置职责，并给它一个可识别的群聊身份。",
   agent_create: "创建 Agent",
   agent_edit: "编辑 Agent",
+  nickname: "群聊昵称",
+  shuffle_identity: "随机身份",
   provider: "供应商",
   provider_select: "选择供应商…",
   provider_deleted: "已删除的供应商",
@@ -81,6 +85,10 @@ const zhCN: Dict = {
   confirm_delete: "确认删除？",
   archived_section: "已归档 ({n})",
   room_menu: "更多操作",
+  room_members_title: "群成员",
+  invite_agents: "邀请更多 Agent",
+  all_agents_joined: "所有 Agent 都已经在这个房间里。",
+  add_to_room: "加入",
 
   // 时间线
   round_divider: "第 {n} 轮",
@@ -168,8 +176,12 @@ const zhTW: Dict = {
   test_error: "錯誤{status}",
 
   agents_empty: "還沒有 Agent，用下面的表單建立一個。",
+  agents_title: "像素 Agent",
+  agents_subtitle: "為每個模型設定職責，並給它一個可辨識的群聊身份。",
   agent_create: "建立 Agent",
   agent_edit: "編輯 Agent",
+  nickname: "群聊暱稱",
+  shuffle_identity: "隨機身份",
   provider: "供應商",
   provider_select: "選擇供應商…",
   provider_deleted: "已刪除的供應商",
@@ -189,6 +201,10 @@ const zhTW: Dict = {
   confirm_delete: "確認刪除？",
   archived_section: "已封存 ({n})",
   room_menu: "更多操作",
+  room_members_title: "群成員",
+  invite_agents: "邀請更多 Agent",
+  all_agents_joined: "所有 Agent 都已經在這個房間裡。",
+  add_to_room: "加入",
 
   round_divider: "第 {n} 輪",
   duty_propose: "提案",
@@ -271,8 +287,12 @@ const en: Dict = {
   test_error: "Error{status}",
 
   agents_empty: "No agents yet — create one with the form below.",
+  agents_title: "Pixel agents",
+  agents_subtitle: "Give every model a job and a recognizable group-chat identity.",
   agent_create: "Create agent",
   agent_edit: "Edit agent",
+  nickname: "Chat nickname",
+  shuffle_identity: "Shuffle identity",
   provider: "Provider",
   provider_select: "Select a provider…",
   provider_deleted: "Deleted provider",
@@ -292,6 +312,10 @@ const en: Dict = {
   confirm_delete: "Confirm delete?",
   archived_section: "Archived ({n})",
   room_menu: "More",
+  room_members_title: "Room members",
+  invite_agents: "Invite more agents",
+  all_agents_joined: "Every agent is already in this room.",
+  add_to_room: "Add",
 
   round_divider: "Round {n}",
   duty_propose: "Proposal",

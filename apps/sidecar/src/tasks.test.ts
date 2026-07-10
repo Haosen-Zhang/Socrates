@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Hono } from "hono";
 import { Database } from "bun:sqlite";
-import { parseSseChunk, type ModelGateway, type StreamEvent } from "@socrates/core";
+import { AGENT_AVATARS, parseSseChunk, type ModelGateway, type StreamEvent } from "@socrates/core";
 import { openDb } from "./db";
 import { MemorySecrets } from "./secrets";
 import { providerRoutes } from "./providers";
@@ -30,15 +30,15 @@ async function setupTwoAgentRoom(app: Hono) {
       body: JSON.stringify({ name: "DS", type: "openai_compatible", apiKey: "sk-x" }),
     })
   ).json();
-  const mkAgent = async (name: string, model: string) =>
+  const mkAgent = async (name: string, model: string, avatar: string) =>
     (
       await app.request("/agents", {
         method: "POST",
-        body: JSON.stringify({ displayName: name, providerId: provider.id, modelId: model }),
+        body: JSON.stringify({ displayName: name, nickname: name, avatar, providerId: provider.id, modelId: model }),
       })
     ).json();
-  const a = await mkAgent("甲", "model-a");
-  const b = await mkAgent("乙", "model-b");
+  const a = await mkAgent("甲", "model-a", AGENT_AVATARS[0]);
+  const b = await mkAgent("乙", "model-b", AGENT_AVATARS[1]);
   const room = await (
     await app.request("/rooms", {
       method: "POST",

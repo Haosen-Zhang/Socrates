@@ -1,10 +1,17 @@
 import { Hono } from "hono";
 import type { Database } from "bun:sqlite";
-import type { Agent } from "@socrates/core";
+import {
+  AGENT_AVATARS,
+  agentIdentityFromSeed,
+  randomAgentIdentity,
+  type Agent,
+} from "@socrates/core";
 
 export type AgentRow = {
   id: string;
   display_name: string;
+  nickname: string | null;
+  avatar: string | null;
   provider_id: string;
   model_id: string;
   role: string;
@@ -15,9 +22,12 @@ export type AgentRow = {
 };
 
 export function toAgent(r: AgentRow): Agent {
+  const fallback = agentIdentityFromSeed(r.id);
   return {
     id: r.id,
     displayName: r.display_name,
+    nickname: r.nickname ?? fallback.nickname,
+    avatar: r.avatar ?? fallback.avatar,
     providerId: r.provider_id,
     modelId: r.model_id,
     role: r.role,
@@ -42,6 +52,8 @@ export function agentRoutes(db: Database) {
   app.post("/", async (c) => {
     const b = await c.req.json<{
       displayName: string;
+      nickname?: string;
+      avatar?: string;
       providerId: string;
       modelId: string;
       role?: string;
@@ -51,12 +63,28 @@ export function agentRoutes(db: Database) {
     if (!b.displayName?.trim()) return c.json({ error: "名称不能为空" }, 400);
     if (!b.modelId?.trim()) return c.json({ error: "模型不能为空" }, 400);
     if (!providerExists(b.providerId)) return c.json({ error: "供应商不存在" }, 400);
+    if (b.avatar !== undefined && !AGENT_AVATARS.includes(b.avatar as (typeof AGENT_AVATARS)[number])) {
+      return c.json({ error: "头像不存在" }, 400);
+    }
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
+    const identity = randomAgentIdentity();
     db.run(
-      `INSERT INTO agents (id, display_name, provider_id, model_id, role, system_prompt, temperature, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, b.displayName.trim(), b.providerId, b.modelId.trim(), b.role ?? "", b.systemPrompt ?? "", b.temperature ?? null, now, now],
+      `INSERT INTO agents (id, display_name, nickname, avatar, provider_id, model_id, role, system_prompt, temperature, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        b.displayName.trim(),
+        b.nickname?.trim() || identity.nickname,
+        b.avatar ?? identity.avatar,
+        b.providerId,
+        b.modelId.trim(),
+        b.role ?? "",
+        b.systemPrompt ?? "",
+        b.temperature ?? null,
+        now,
+        now,
+      ],
     );
     return c.json(toAgent(byId(id)!), 201);
   });
@@ -66,6 +94,8 @@ export function agentRoutes(db: Database) {
     if (!row) return c.json({ error: "agent 不存在" }, 404);
     const b = await c.req.json<Partial<{
       displayName: string;
+      nickname: string;
+      avatar: string;
       providerId: string;
       modelId: string;
       role: string;
@@ -75,11 +105,16 @@ export function agentRoutes(db: Database) {
     if (b.providerId !== undefined && !providerExists(b.providerId)) {
       return c.json({ error: "供应商不存在" }, 400);
     }
+    if (b.avatar !== undefined && !AGENT_AVATARS.includes(b.avatar as (typeof AGENT_AVATARS)[number])) {
+      return c.json({ error: "头像不存在" }, 400);
+    }
     db.run(
-      `UPDATE agents SET display_name = ?, provider_id = ?, model_id = ?, role = ?, system_prompt = ?, temperature = ?, updated_at = ?
+      `UPDATE agents SET display_name = ?, nickname = ?, avatar = ?, provider_id = ?, model_id = ?, role = ?, system_prompt = ?, temperature = ?, updated_at = ?
        WHERE id = ?`,
       [
         b.displayName?.trim() || row.display_name,
+        b.nickname?.trim() || row.nickname || agentIdentityFromSeed(row.id).nickname,
+        b.avatar ?? row.avatar ?? agentIdentityFromSeed(row.id).avatar,
         b.providerId ?? row.provider_id,
         b.modelId?.trim() || row.model_id,
         b.role ?? row.role,

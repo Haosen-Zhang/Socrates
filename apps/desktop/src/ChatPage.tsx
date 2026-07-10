@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Agent, StoredMessage, TaskSummary } from "@socrates/core";
+import { agentLabel, type Agent, type StoredMessage, type TaskSummary } from "@socrates/core";
+import AgentAvatar from "./AgentAvatar";
 import { useStore, useT, type StreamingTurn } from "./store";
 
 const DUTY_CLS: Record<string, string> = {
@@ -10,16 +11,13 @@ const DUTY_CLS: Record<string, string> = {
   summarize: "bg-amber-100 text-amber-800",
 };
 
-function AgentHeader({ name, model, duty }: { name?: string; model?: string; duty?: string }) {
+function AgentHeader({ name, model, duty, avatar }: { name?: string; model?: string; duty?: string; avatar?: string }) {
   const t = useT();
   return (
-    <div className="mb-0.5 text-xs text-neutral-500">
-      {name} · {model}
-      {duty && DUTY_CLS[duty] && (
-        <span className={`ml-2 rounded px-1.5 py-0.5 text-[10px] font-medium ${DUTY_CLS[duty]}`}>
-          {t(`duty_${duty}`)}
-        </span>
-      )}
+    <div className="mb-1.5 flex items-center gap-2 text-xs text-neutral-500">
+      <AgentAvatar src={avatar} label={name ?? "Agent"} size={30} />
+      <span>{name} · {model}</span>
+      {duty && DUTY_CLS[duty] && <span className={`px-1.5 py-0.5 text-[10px] font-medium ${DUTY_CLS[duty]}`}>{t(`duty_${duty}`)}</span>}
     </div>
   );
 }
@@ -39,7 +37,7 @@ function Bubble({ m }: { m: StoredMessage }) {
   return (
     <div className="flex justify-start">
       <div className={isSummary ? "w-full max-w-[85%]" : "max-w-[70%]"}>
-        <AgentHeader name={m.agentName} model={m.model} duty={m.duty ?? (isSummary ? "summarize" : undefined)} />
+        <AgentHeader name={m.agentName} avatar={m.agentAvatar} model={m.model} duty={m.duty ?? (isSummary ? "summarize" : undefined)} />
         <div
           className={`rounded-lg px-3 py-2 text-sm whitespace-pre-wrap ${
             isSummary ? "border-2 border-amber-300 bg-amber-50" : "border border-neutral-200 bg-white"
@@ -67,7 +65,7 @@ function StreamingBubble({ s }: { s: StreamingTurn }) {
   return (
     <div className="flex justify-start">
       <div className={s.phase === "summary" ? "w-full max-w-[85%]" : "max-w-[70%]"}>
-        <AgentHeader name={s.agentName} model={s.model} duty={s.duty ?? (s.phase === "summary" ? "summarize" : undefined)} />
+        <AgentHeader name={s.agentName} avatar={s.agentAvatar} model={s.model} duty={s.duty ?? (s.phase === "summary" ? "summarize" : undefined)} />
         <div
           className={`rounded-lg px-3 py-2 text-sm whitespace-pre-wrap ${
             s.phase === "summary" ? "border-2 border-amber-300 bg-amber-50" : "border border-neutral-200 bg-white"
@@ -537,6 +535,65 @@ function RoomContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => vo
   );
 }
 
+function RoomMembersDialog({
+  roomId,
+  memberIds,
+  onClose,
+}: {
+  roomId: string;
+  memberIds: string[];
+  onClose: () => void;
+}) {
+  const { agents, addRoomAgent } = useStore();
+  const t = useT();
+  const members = memberIds.map((id) => agents.find((agent) => agent.id === id)).filter((agent): agent is Agent => !!agent);
+  const available = agents.filter((agent) => !memberIds.includes(agent.id));
+  return (
+    <div className="pixel-dialog-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="pixel-dialog w-[min(560px,calc(100vw-48px))] p-5" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="mb-4 flex items-start justify-between">
+          <div>
+            <div className="pixel-kicker">ROOM ROSTER</div>
+            <h3 className="text-lg font-bold">{t("room_members_title")}</h3>
+          </div>
+          <button className="pixel-button h-8 w-8" onClick={onClose} aria-label={t("close")}>×</button>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          {members.map((agent) => (
+            <div key={agent.id} className="pixel-card flex items-center gap-3 p-3">
+              <AgentAvatar src={agent.avatar} label={agent.nickname} size={52} />
+              <div className="min-w-0">
+                <div className="truncate text-sm font-bold">{agentLabel(agent)}</div>
+                <div className="truncate text-xs text-neutral-500">{agent.displayName}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="my-5 h-[2px] bg-neutral-200" />
+        <h4 className="mb-2 text-sm font-bold">{t("invite_agents")}</h4>
+        {available.length === 0 ? (
+          <p className="text-sm text-neutral-500">{t("all_agents_joined")}</p>
+        ) : (
+          <div className="space-y-2">
+            {available.map((agent) => (
+              <div key={agent.id} className="flex items-center gap-3 border-b border-neutral-200 py-2 last:border-0">
+                <AgentAvatar src={agent.avatar} label={agent.nickname} size={42} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{agentLabel(agent)}</div>
+                  <div className="truncate text-xs text-neutral-500">{agent.displayName}</div>
+                </div>
+                <button className="pixel-button pixel-button--primary px-3 py-1.5 text-xs" onClick={() => void addRoomAgent(roomId, agent.id)}>
+                  + {t("add_to_room")}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 export default function ChatPage() {
   const { rooms, agents, currentRoomId, messages, streaming, chatError, tasks, selectRoom, clearChatError } =
     useStore();
@@ -545,6 +602,7 @@ export default function ChatPage() {
   const [showTasks, setShowTasks] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [showMembers, setShowMembers] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const activeRooms = rooms.filter((r) => !r.archived);
@@ -639,20 +697,29 @@ export default function ChatPage() {
         )}
       </aside>
       {menu && <RoomContextMenu menu={menu} onClose={() => setMenu(null)} />}
+      {showMembers && currentRoom && (
+        <RoomMembersDialog roomId={currentRoom.id} memberIds={currentRoom.agentIds} onClose={() => setShowMembers(false)} />
+      )}
 
       <section className="flex min-w-0 flex-1 flex-col">
         {currentRoomId ? (
           <>
             <div className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
-              <span className="text-sm font-medium">{currentRoom?.name}</span>
-              <button
-                className={`rounded border px-2 py-0.5 text-xs ${
-                  showTasks ? "border-neutral-900 bg-neutral-900 text-white" : "border-neutral-300 text-neutral-600 hover:bg-neutral-100"
-                }`}
-                onClick={() => setShowTasks((v) => !v)}
-              >
-                {t("task_history", { n: tasks.length })}
-              </button>
+              <span className="text-sm font-bold">{currentRoom?.name}</span>
+              <div className="flex items-center gap-2">
+                <button className="pixel-member-button flex items-center gap-1 px-2 py-1" onClick={() => setShowMembers(true)} title={t("room_members_title")}>
+                  <span className="flex -space-x-2">
+                    {roomAgents.slice(0, 4).map((agent) => <AgentAvatar key={agent.id} src={agent.avatar} label={agent.nickname} size={26} lively={false} />)}
+                  </span>
+                  <span className="ml-1 text-xs">{roomAgents.length}</span>
+                </button>
+                <button
+                  className={`pixel-button px-2 py-1 text-xs ${showTasks ? "pixel-button--primary" : ""}`}
+                  onClick={() => setShowTasks((v) => !v)}
+                >
+                  {t("task_history", { n: tasks.length })}
+                </button>
+              </div>
             </div>
             {showTasks && <TaskHistoryPanel onJump={jumpToTask} />}
             <div className="flex-1 space-y-3 overflow-y-auto p-4">
