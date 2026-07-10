@@ -33,6 +33,8 @@ export function openDb(path: string): Database {
     CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY,
       display_name TEXT NOT NULL,
+      nickname TEXT,
+      avatar TEXT,
       provider_id TEXT NOT NULL,
       model_id TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT '',
@@ -60,6 +62,7 @@ export function openDb(path: string): Database {
       role TEXT NOT NULL,
       agent_id TEXT,
       agent_name TEXT,
+      agent_avatar TEXT,
       model TEXT,
       content TEXT NOT NULL,
       created_at TEXT NOT NULL
@@ -99,9 +102,11 @@ export function openDb(path: string): Database {
   `);
   // ponytail: 老库补列的最小迁移；schema 再演进就换正式 migration 表
   ensureColumns(db, "messages", ["task_id TEXT", "round INTEGER", "phase TEXT", "duty TEXT"]);
+  ensureColumns(db, "messages", ["agent_avatar TEXT"]);
   ensureColumns(db, "tasks", ["mode TEXT NOT NULL DEFAULT 'round_robin'", "debate_roles TEXT"]);
   ensureColumns(db, "turns", ["duty TEXT"]);
   ensureColumns(db, "rooms", ["archived INTEGER NOT NULL DEFAULT 0"]);
+  ensureColumns(db, "agents", ["nickname TEXT", "avatar TEXT"]);
   return db;
 }
 

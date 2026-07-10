@@ -55,8 +55,8 @@ function App() {
   );
 
   return (
-    <main className="min-h-screen bg-neutral-50 text-neutral-900">
-      <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2.5">
+    <main className="pixel-app min-h-screen text-neutral-900">
+      <header className="pixel-header flex items-center justify-between bg-white px-4 py-2.5">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold">Socrates</h1>
           {tab("chat", t("tab_chat"))}

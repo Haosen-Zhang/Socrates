@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach } from "bun:test";
 import { Hono } from "hono";
-import { parseSseChunk, type GatewayRequest, type ModelGateway, type StreamEvent } from "@socrates/core";
+import { AGENT_AVATARS, parseSseChunk, type GatewayRequest, type ModelGateway, type StreamEvent } from "@socrates/core";
 import { openDb } from "./db";
 import { MemorySecrets } from "./secrets";
 import { providerRoutes } from "./providers";
@@ -35,6 +35,8 @@ async function setupRoom(app: Hono) {
       method: "POST",
       body: JSON.stringify({
         displayName: "小助手",
+        nickname: "小助手",
+        avatar: AGENT_AVATARS[0],
         providerId: provider.id,
         modelId: "deepseek-v4-flash",
         systemPrompt: "你是助手",
@@ -81,6 +83,37 @@ describe("agent & room CRUD", () => {
       body: JSON.stringify({ name: "空房", agentIds: [] }),
     });
     expect(res.status).toBe(400);
+  });
+
+  it("invites another agent after the room is created", async () => {
+    const { provider, room } = await setupRoom(app);
+    const newcomer = await (
+      await app.request("/agents", {
+        method: "POST",
+        body: JSON.stringify({
+          displayName: "新成员",
+          nickname: "紫镜狐狸",
+          avatar: AGENT_AVATARS[1],
+          providerId: provider.id,
+          modelId: "model-b",
+        }),
+      })
+    ).json();
+    const added = await app.request(`/rooms/${room.id}/agents`, {
+      method: "POST",
+      body: JSON.stringify({ agentId: newcomer.id }),
+    });
+    expect(added.status).toBe(201);
+    const rooms = await (await app.request("/rooms")).json();
+    expect(rooms[0].agentIds).toEqual([room.agentIds[0], newcomer.id]);
+    expect(
+      (
+        await app.request(`/rooms/${room.id}/agents`, {
+          method: "POST",
+          body: JSON.stringify({ agentId: newcomer.id }),
+        })
+      ).status,
+    ).toBe(409);
   });
 });
 

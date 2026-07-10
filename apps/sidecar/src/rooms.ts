@@ -23,6 +23,7 @@ type MessageRow = {
   role: "user" | "agent";
   agent_id: string | null;
   agent_name: string | null;
+  agent_avatar: string | null;
   model: string | null;
   content: string;
   created_at: string;
@@ -40,6 +41,7 @@ function toMessage(r: MessageRow): StoredMessage {
     role: r.role,
     agentId: r.agent_id ?? undefined,
     agentName: r.agent_name ?? undefined,
+    agentAvatar: r.agent_avatar ?? undefined,
     model: r.model ?? undefined,
     content: r.content,
     createdAt: r.created_at,
@@ -108,14 +110,15 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     db.run(
-      `INSERT INTO messages (id, room_id, role, agent_id, agent_name, model, content, created_at, task_id, round, phase, duty)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (id, room_id, role, agent_id, agent_name, agent_avatar, model, content, created_at, task_id, round, phase, duty)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         m.roomId,
         m.role,
         m.agentId ?? null,
         m.agentName ?? null,
+        m.agentAvatar ?? null,
         m.model ?? null,
         m.content,
         now,
@@ -140,6 +143,8 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
     return {
       id: agent.id,
       displayName: agent.displayName,
+      nickname: agent.nickname,
+      avatar: agent.avatar,
       modelId: agent.modelId,
       role: agent.role,
       systemPrompt: agent.systemPrompt,
@@ -174,6 +179,24 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
       room.id,
     ]);
     return c.json({ ok: true });
+  });
+
+  app.post("/:id/agents", async (c) => {
+    const room = roomById(c.req.param("id"));
+    if (!room) return c.json({ error: "房间不存在" }, 404);
+    const b = await c.req.json<{ agentId: string }>();
+    if (!db.query("SELECT id FROM agents WHERE id = ?").get(b.agentId)) {
+      return c.json({ error: "Agent 不存在" }, 400);
+    }
+    if (db.query("SELECT 1 FROM room_agents WHERE room_id = ? AND agent_id = ?").get(room.id, b.agentId)) {
+      return c.json({ error: "Agent 已在房间中" }, 409);
+    }
+    const next = db
+      .query<{ position: number }, [string]>("SELECT COALESCE(MAX(position), -1) + 1 AS position FROM room_agents WHERE room_id = ?")
+      .get(room.id)!;
+    db.run("INSERT INTO room_agents (room_id, agent_id, position) VALUES (?, ?, ?)", [room.id, b.agentId, next.position]);
+    db.run("UPDATE rooms SET updated_at = ? WHERE id = ?", [new Date().toISOString(), room.id]);
+    return c.json({ ok: true }, 201);
   });
 
   app.post("/", async (c) => {
@@ -274,7 +297,13 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
 
     return sseResponse(async (emit) => {
       emit({ type: "user_message", message: userMessage });
-      emit({ type: "turn_started", agentId: agent.id, agentName: agent.displayName, model: agent.modelId });
+      emit({
+        type: "turn_started",
+        agentId: agent.id,
+        agentName: agent.nickname ?? agent.displayName,
+        agentAvatar: agent.avatar,
+        model: agent.modelId,
+      });
       let text = "";
       let failed = false;
       try {
@@ -304,7 +333,8 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
           roomId: room.id,
           role: "agent",
           agentId: agent.id,
-          agentName: agent.displayName,
+          agentName: agent.nickname ?? agent.displayName,
+          agentAvatar: agent.avatar,
           model: agent.modelId,
           content: text,
         });
@@ -433,6 +463,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
             type: "turn_started",
             agentId: ev.agentId,
             agentName: ev.agentName,
+            agentAvatar: ev.agentAvatar,
             model: ev.model,
             round: ev.round,
             phase: ev.phase,
@@ -447,6 +478,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
             role: "agent",
             agentId: ev.agentId,
             agentName: ev.agentName,
+            agentAvatar: ev.agentAvatar,
             model: ev.model,
             content: ev.content,
             taskId,

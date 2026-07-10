@@ -27,6 +27,8 @@ export type TaskConfig = {
 export type OrchestrationAgent = {
   id: string;
   displayName: string;
+  nickname?: string;
+  avatar?: string;
   modelId: string;
   role: string;
   systemPrompt: string;
@@ -56,6 +58,7 @@ export type CompletedTurn = {
 type TurnMeta = TurnSpec & {
   turnIndex: number;
   agentName: string;
+  agentAvatar?: string;
   model: string;
 };
 
@@ -247,7 +250,13 @@ export async function* runTask(
       yield { type: "task_failed", message: `Agent ${spec.agentId} 不存在` };
       return;
     }
-    const meta: TurnMeta = { ...spec, turnIndex, agentName: agent.displayName, model: agent.modelId };
+    const meta: TurnMeta = {
+      ...spec,
+      turnIndex,
+      agentName: agent.nickname ?? agent.displayName,
+      agentAvatar: agent.avatar,
+      model: agent.modelId,
+    };
     yield { type: "turn_started", ...meta };
 
     let content = "";

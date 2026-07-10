@@ -25,6 +25,8 @@ export type ProviderForm = {
 
 export type AgentForm = {
   displayName: string;
+  nickname: string;
+  avatar: string;
   providerId: string;
   modelId: string;
   role: string;
@@ -35,6 +37,7 @@ export type AgentForm = {
 export type TestResult = { outcome: TestOutcome; status?: number; detail?: string };
 export type StreamingTurn = {
   agentName: string;
+  agentAvatar?: string;
   model: string;
   text: string;
   round?: number;
@@ -94,6 +97,7 @@ type Store = {
   decideTurn: (action: "retry" | "skip" | "abort") => Promise<void>;
   loadRooms: () => Promise<void>;
   createRoom: (name: string, agentIds: string[]) => Promise<void>;
+  addRoomAgent: (roomId: string, agentId: string) => Promise<void>;
   removeRoom: (id: string) => Promise<void>;
   archiveRoom: (id: string, archived: boolean) => Promise<void>;
   selectRoom: (id: string) => Promise<void>;
@@ -161,6 +165,8 @@ export const useStore = create<Store>((set, get) => {
               failedTurn: null,
               streaming: {
                 agentName: e.agentName,
+                agentAvatar:
+                  e.agentAvatar ?? get().agents.find((agent) => agent.id === e.agentId)?.avatar,
                 model: e.model,
                 text: "",
                 round: e.round,
@@ -279,6 +285,8 @@ export const useStore = create<Store>((set, get) => {
     saveAgent: async (form, editingId) => {
       const payload = {
         displayName: form.displayName,
+        nickname: form.nickname,
+        avatar: form.avatar,
         providerId: form.providerId,
         modelId: form.modelId,
         role: form.role,
@@ -305,6 +313,15 @@ export const useStore = create<Store>((set, get) => {
       );
       await get().loadRooms();
       await get().selectRoom(room.id);
+    },
+    addRoomAgent: async (roomId, agentId) => {
+      await requireOk(
+        await sidecarFetch(hs(), `/rooms/${roomId}/agents`, {
+          method: "POST",
+          body: JSON.stringify({ agentId }),
+        }),
+      );
+      await get().loadRooms();
     },
     removeRoom: async (id) => {
       await sidecarFetch(hs(), `/rooms/${id}`, { method: "DELETE" });
