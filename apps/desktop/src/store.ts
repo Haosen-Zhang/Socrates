@@ -6,6 +6,7 @@ import {
   type Agent,
   type Provider,
   type ProviderType,
+  type AppConfig,
   type Room,
   type StoredMessage,
   type TaskSummary,
@@ -67,6 +68,10 @@ type Store = {
   setView: (v: "chat" | "settings") => void;
   lang: Lang;
   setLang: (lang: Lang) => void;
+
+  /** config.toml（sidecar 持久化的非敏感配置）；连接后加载 */
+  config: AppConfig | null;
+  updateConfig: (patch: Partial<AppConfig>) => Promise<void>;
 
   providers: Provider[];
   testResults: Record<string, TestResult | "running">;
@@ -211,6 +216,18 @@ export const useStore = create<Store>((set, get) => {
     setLang: (lang) => {
       persistLang(lang);
       set({ lang });
+      if (get().handshake) void get().updateConfig({ language: lang });
+    },
+
+    config: null,
+    updateConfig: async (patch) => {
+      const res = await sidecarFetch(hs(), "/config", { method: "PUT", body: JSON.stringify(patch) });
+      const config = (await res.json()) as AppConfig;
+      set({ config });
+      if (config.language !== get().lang) {
+        persistLang(config.language);
+        set({ lang: config.language });
+      }
     },
 
     providers: [],
@@ -237,6 +254,13 @@ export const useStore = create<Store>((set, get) => {
             });
             if (res.ok) {
               set({ handshake, status: "connected" });
+              try {
+                const cfg = (await (await sidecarFetch(handshake, "/config")).json()) as AppConfig;
+                set({ config: cfg, lang: cfg.language });
+                persistLang(cfg.language);
+              } catch {
+                // 配置加载失败不阻塞连接，沿用本地默认
+              }
               await Promise.all([get().loadProviders(), get().loadAgents(), get().loadRooms()]);
               const first = get().rooms[0];
               if (first) void get().selectRoom(first.id);
