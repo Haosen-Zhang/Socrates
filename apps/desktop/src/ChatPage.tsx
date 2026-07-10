@@ -563,6 +563,20 @@ export default function ChatPage() {
       }}
     >
       <span className="min-w-0 flex-1 truncate">{r.name}</span>
+      {/* macOS WKWebView 不可靠派发 contextmenu，用常驻 ⋯ 按钮作主入口，右键作补充 */}
+      <button
+        title={t("room_menu")}
+        className={`ml-1 shrink-0 rounded px-1 text-sm opacity-0 group-hover:opacity-100 ${
+          r.id === currentRoomId ? "text-neutral-300 hover:bg-neutral-700" : "text-neutral-400 hover:bg-neutral-200"
+        } ${menu?.roomId === r.id ? "opacity-100" : ""}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          const rect = e.currentTarget.getBoundingClientRect();
+          setMenu({ roomId: r.id, x: rect.right - 144, y: rect.bottom + 4 });
+        }}
+      >
+        ⋯
+      </button>
       <span
         className={`ml-1 shrink-0 text-[10px] ${r.id === currentRoomId ? "text-neutral-400" : "text-neutral-300"}`}
       >
