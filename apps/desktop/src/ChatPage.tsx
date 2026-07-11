@@ -209,7 +209,7 @@ function ComposerTextarea({
     <textarea
       ref={ref}
       rows={1}
-      className="flex-1 rounded border border-neutral-300 px-3 py-2 text-sm"
+      className="flex-1 px-1 py-1.5 text-sm"
       style={{ resize: "none" }}
       placeholder={placeholder}
       disabled={disabled}
@@ -424,15 +424,16 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
           </div>
         </div>
       )}
-      <div className="flex gap-2">
+      <div className="pixel-composer flex items-end gap-2 px-3 py-2">
         <button
           type="button"
-          className="rounded border border-neutral-300 px-2 text-sm text-neutral-500 hover:bg-neutral-100"
+          className="mb-1 shrink-0 text-lg text-neutral-500 hover:text-neutral-800"
           title={t("config_tooltip")}
           onClick={() => setShowConfig((v) => !v)}
         >
           ⚙
         </button>
+        <span className="pixel-composer-chevron mb-1.5 shrink-0">›</span>
         <ComposerTextarea
           placeholder={
             busy
@@ -447,11 +448,12 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
           onSubmit={() => void doSubmit()}
         />
         <button
-          className="rounded bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-40"
+          className="pixel-send shrink-0"
+          title={mode === "debate" ? t("start_debate") : t("start_discussion")}
           disabled={busy || !prompt.trim() || (mode === "round_robin" && speakingOrder.length === 0)}
           type="submit"
         >
-          {mode === "debate" ? t("start_debate") : t("start_discussion")}
+          ↑
         </button>
       </div>
     </form>
@@ -474,22 +476,21 @@ function SimpleComposer() {
         e.preventDefault();
         void doSubmit();
       }}
-      className="flex gap-2 border-t border-neutral-200 bg-white p-3"
+      className="border-t border-neutral-200 bg-white p-3"
     >
-      <ComposerTextarea
-        placeholder={streaming ? t("replying") : t("message_placeholder")}
-        value={draft}
-        disabled={!!streaming}
-        onChange={setDraft}
-        onSubmit={() => void doSubmit()}
-      />
-      <button
-        className="rounded bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-40"
-        disabled={!!streaming || !draft.trim()}
-        type="submit"
-      >
-        {t("send")}
-      </button>
+      <div className="pixel-composer flex items-end gap-2 px-3 py-2">
+        <span className="pixel-composer-chevron mb-1.5 shrink-0">›</span>
+        <ComposerTextarea
+          placeholder={streaming ? t("replying") : t("message_placeholder")}
+          value={draft}
+          disabled={!!streaming}
+          onChange={setDraft}
+          onSubmit={() => void doSubmit()}
+        />
+        <button className="pixel-send shrink-0" title={t("send")} disabled={!!streaming || !draft.trim()} type="submit">
+          ↑
+        </button>
+      </div>
     </form>
   );
 }

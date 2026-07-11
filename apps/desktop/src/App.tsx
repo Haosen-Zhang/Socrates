@@ -16,12 +16,17 @@ function App() {
     void connect();
   }, [connect]);
 
-  // 主题与字号来自 config.toml，套到根元素供 CSS 变量消费（深色调色板见 #37）
+  // 主题/字号/字体来自 config.toml，套到根元素供 CSS 变量消费
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.theme = config?.theme ?? "light";
     root.style.setProperty("--app-font-size", `${config?.appearance.fontSize ?? 14}px`);
-  }, [config?.theme, config?.appearance.fontSize]);
+    const family =
+      config?.appearance.fontFamily === "system"
+        ? 'system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif'
+        : 'ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace';
+    root.style.setProperty("--app-font-family", family);
+  }, [config?.theme, config?.appearance.fontSize, config?.appearance.fontFamily]);
 
   const tab = (v: "chat" | "settings", label: string, icon: string) => (
     <button

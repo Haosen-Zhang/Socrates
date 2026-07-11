@@ -1,5 +1,19 @@
 import { describe, expect, it } from "bun:test";
-import { DEFAULT_CONFIG, mergeConfig, normalizeConfig } from "./config";
+import { DEFAULT_CONFIG, buildProxyUrl, isHostBypassed, mergeConfig, normalizeConfig } from "./config";
+
+describe("buildProxyUrl / isHostBypassed", () => {
+  const base = DEFAULT_CONFIG.proxy;
+  it("builds from parts and honors url override", () => {
+    expect(buildProxyUrl({ ...base, host: "127.0.0.1", port: "7890", type: "socks5" })).toBe("socks5://127.0.0.1:7890");
+    expect(buildProxyUrl({ ...base, host: "x", url: "http://p:1" })).toBe("http://p:1");
+    expect(buildProxyUrl({ ...base, host: "" })).toBeUndefined();
+  });
+  it("matches exact hosts and dot-suffix domains", () => {
+    expect(isHostBypassed("localhost,127.0.0.1,.local", "localhost")).toBeTrue();
+    expect(isHostBypassed("localhost,.local", "printer.local")).toBeTrue();
+    expect(isHostBypassed("localhost", "api.openai.com")).toBeFalse();
+  });
+});
 
 describe("normalizeConfig", () => {
   it("returns defaults for empty/garbage input", () => {
@@ -13,13 +27,17 @@ describe("normalizeConfig", () => {
       language: "en",
       theme: "dark",
       closeBehavior: "quit",
-      proxy: { mode: "custom", url: "http://127.0.0.1:7890" },
+      proxy: { mode: "custom", type: "socks5", host: "127.0.0.1", port: "7890" },
       appearance: { fontSize: 99, fontFamily: "Menlo" },
     });
     expect(c.language).toBe("en");
     expect(c.theme).toBe("dark");
     expect(c.closeBehavior).toBe("quit");
-    expect(c.proxy).toEqual({ mode: "custom", url: "http://127.0.0.1:7890" });
+    expect(c.proxy.mode).toBe("custom");
+    expect(c.proxy.type).toBe("socks5");
+    expect(c.proxy.host).toBe("127.0.0.1");
+    expect(c.proxy.port).toBe("7890");
+    expect(c.proxy.noProxy).toBe(DEFAULT_CONFIG.proxy.noProxy); // default filled in
     expect(c.appearance.fontSize).toBe(DEFAULT_CONFIG.appearance.fontSize); // 99 out of range → default
     expect(c.appearance.fontFamily).toBe("Menlo");
   });
@@ -29,7 +47,7 @@ describe("mergeConfig", () => {
   it("shallow-merges nested proxy/appearance without dropping siblings", () => {
     const merged = mergeConfig(DEFAULT_CONFIG, { proxy: { mode: "auto" } as never });
     expect(merged.proxy.mode).toBe("auto");
-    expect(merged.proxy.url).toBe(""); // sibling preserved
+    expect(merged.proxy.noProxy).toBe(DEFAULT_CONFIG.proxy.noProxy); // sibling preserved
     const themed = mergeConfig(merged, { theme: "dark" });
     expect(themed.theme).toBe("dark");
     expect(themed.proxy.mode).toBe("auto"); // earlier patch preserved
