@@ -1,9 +1,7 @@
 import { useEffect } from "react";
 import { useStore, useT } from "./store";
-import { LANGS } from "./i18n";
-import ProvidersPage from "./ProvidersPage";
-import AgentsSection from "./AgentsSection";
 import ChatPage from "./ChatPage";
+import Settings from "./Settings";
 
 const BADGE_CLS: Record<string, string> = {
   connecting: "text-amber-700",
@@ -11,45 +9,28 @@ const BADGE_CLS: Record<string, string> = {
   disconnected: "text-red-700",
 };
 
-function LanguageSection() {
-  const { lang, setLang } = useStore();
-  const t = useT();
-  return (
-    <section className="rounded border border-neutral-200 bg-white p-4">
-      <h3 className="mb-3 text-sm font-semibold">{t("language")}</h3>
-      <div className="flex gap-2">
-        {LANGS.map((l) => (
-          <button
-            key={l.value}
-            className={`rounded px-3 py-1 text-sm ${
-              lang === l.value
-                ? "bg-neutral-900 text-white"
-                : "border border-neutral-300 text-neutral-600 hover:bg-neutral-100"
-            }`}
-            onClick={() => setLang(l.value)}
-          >
-            {l.label}
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function App() {
-  const { status, view, setView, connect } = useStore();
+  const { status, view, setView, config, connect } = useStore();
   const t = useT();
   useEffect(() => {
     void connect();
   }, [connect]);
 
-  const tab = (v: "chat" | "settings", label: string) => (
+  // 主题与字号来自 config.toml，套到根元素供 CSS 变量消费（深色调色板见 #37）
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.theme = config?.theme ?? "light";
+    root.style.setProperty("--app-font-size", `${config?.appearance.fontSize ?? 14}px`);
+  }, [config?.theme, config?.appearance.fontSize]);
+
+  const tab = (v: "chat" | "settings", label: string, icon: string) => (
     <button
-      className={`rounded px-3 py-1 text-sm ${
+      className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm ${
         view === v ? "bg-neutral-900 text-white" : "text-neutral-600 hover:bg-neutral-100"
       }`}
       onClick={() => setView(v)}
     >
+      <span aria-hidden>{icon}</span>
       {label}
     </button>
   );
@@ -59,8 +40,8 @@ function App() {
       <header className="pixel-header flex items-center justify-between bg-white px-4 py-2.5">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold">Socrates</h1>
-          {tab("chat", t("tab_chat"))}
-          {tab("settings", t("tab_settings"))}
+          {tab("chat", t("tab_chat"), "💬")}
+          {tab("settings", t("tab_settings"), "⚙️")}
         </div>
         <span className={`text-sm font-medium ${BADGE_CLS[status]}`}>{t(status)}</span>
       </header>
@@ -71,11 +52,7 @@ function App() {
       ) : view === "chat" ? (
         <ChatPage />
       ) : (
-        <div className="mx-auto max-w-3xl space-y-8 p-6">
-          <LanguageSection />
-          <ProvidersPage />
-          <AgentsSection />
-        </div>
+        <Settings />
       )}
     </main>
   );

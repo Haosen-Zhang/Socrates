@@ -6,7 +6,9 @@ import { KeychainSecrets } from "./secrets";
 import { providerRoutes } from "./providers";
 import { agentRoutes } from "./agents";
 import { roomRoutes } from "./rooms";
-import { aiSdkGateway } from "./gateway-aisdk";
+import { makeAiSdkGateway } from "./gateway-aisdk";
+import { ConfigStore, configRoutes } from "./config-store";
+import { makeProxiedFetch } from "./net";
 
 // 父进程（Tauri）异常退出（如 SIGKILL/SIGTERM 未走优雅关闭）时自动退出，避免孤儿进程占着端口
 setInterval(() => {
@@ -27,11 +29,15 @@ app.use("*", async (c, next) => {
 
 const db = openDb(defaultDbPath());
 const secrets = new KeychainSecrets();
+const config = new ConfigStore();
+// 所有出站请求（连接测试/列模型/模型调用）都按 config.toml 的代理设置走
+const proxiedFetch = makeProxiedFetch(() => config.get());
 
 app.get("/health", (c) => c.json({ ok: true }));
-app.route("/providers", providerRoutes(db, secrets));
+app.route("/config", configRoutes(config));
+app.route("/providers", providerRoutes(db, secrets, proxiedFetch));
 app.route("/agents", agentRoutes(db));
-app.route("/rooms", roomRoutes(db, secrets, aiSdkGateway));
+app.route("/rooms", roomRoutes(db, secrets, makeAiSdkGateway(proxiedFetch)));
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
