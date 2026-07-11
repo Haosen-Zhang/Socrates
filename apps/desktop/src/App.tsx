@@ -54,10 +54,10 @@ function App() {
         <p className="p-6 text-sm text-neutral-500">
           {status === "connecting" ? t("waiting_sidecar") : t("sidecar_failed")}
         </p>
-      ) : view === "chat" ? (
-        <ChatPage />
       ) : (
-        <Settings />
+        <div key={view} className="anim-view">
+          {view === "chat" ? <ChatPage /> : <Settings />}
+        </div>
       )}
     </main>
   );

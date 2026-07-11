@@ -205,3 +205,31 @@ button, input, select, textarea { font: inherit; }
 .pixel-send:hover:not(:disabled) { filter: brightness(1.08); }
 .pixel-send:active:not(:disabled) { transform: scale(0.92); }
 .pixel-send:disabled { opacity: 0.4; box-shadow: none; }
+
+/* 全局像素动效（#40）：steps 缓动，短促干脆；reduced-motion 全部关闭 */
+@keyframes pixel-pop-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes pixel-slide-down {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes pixel-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes pixel-dialog-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.anim-msg { animation: pixel-pop-in 160ms steps(3, end) both; }
+.anim-panel { animation: pixel-slide-down 140ms steps(3, end) both; }
+.anim-view { animation: pixel-fade 180ms steps(4, end) both; }
+.pixel-dialog { animation: pixel-dialog-in 170ms steps(3, end) both; }
+.pixel-dialog-backdrop { animation: pixel-fade 140ms linear both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-msg, .anim-panel, .anim-view, .pixel-dialog, .pixel-dialog-backdrop { animation: none; }
+}

@@ -270,7 +270,7 @@ export default function Settings() {
         ))}
       </nav>
       <div className="min-w-0 flex-1 overflow-y-auto p-6">
-        <div className="mx-auto max-w-3xl">
+        <div key={section} className="anim-view mx-auto max-w-3xl">
           {section === "general" && <GeneralSection />}
           {section === "providers" && <ProvidersPage />}
           {section === "bots" && <AgentsSection />}
