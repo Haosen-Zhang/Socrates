@@ -82,7 +82,7 @@ type Store = {
 
   /** providerId → 该供应商的可用模型型号（拉取失败为 []，前端退化为手输） */
   modelLists: Record<string, string[]>;
-  loadModels: (providerId: string) => Promise<void>;
+  loadModels: (providerId: string, force?: boolean) => Promise<void>;
 
   agents: Agent[];
   loadAgents: () => Promise<void>;
@@ -309,8 +309,8 @@ export const useStore = create<Store>((set, get) => {
     },
 
     modelLists: {},
-    loadModels: async (providerId) => {
-      if (get().modelLists[providerId]) return;
+    loadModels: async (providerId, force = false) => {
+      if (!force && get().modelLists[providerId]) return;
       let models: string[] = [];
       try {
         const res = await sidecarFetch(hs(), `/providers/${providerId}/models`);

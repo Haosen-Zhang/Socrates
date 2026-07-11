@@ -28,11 +28,102 @@ function TestBadge({ result }: { result: TestResult | "running" | undefined }) {
   );
 }
 
+/** Reasonix 式接入卡：徽章 + 元信息 + 已启用模型 chips + 操作按钮 */
+function ProviderCard({
+  provider,
+  onEdit,
+}: {
+  provider: Provider;
+  onEdit: (p: Provider) => void;
+}) {
+  const { agents, testResults, modelLists, testProvider, removeProvider, loadModels } = useStore();
+  const t = useT();
+  const [confirming, setConfirming] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // 「已启用」= 被 Agent 实际使用的模型 + 默认模型
+  const enabled = [
+    ...new Set([
+      ...(provider.defaultModel ? [provider.defaultModel] : []),
+      ...agents.filter((a) => a.providerId === provider.id).map((a) => a.modelId),
+    ]),
+  ];
+  const available = modelLists[provider.id];
+
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      await loadModels(provider.id, true);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  return (
+    <article className="pixel-card p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-base font-bold">{provider.name}</span>
+            <span className="pixel-chip">{provider.type === "anthropic" ? "Anthropic" : "OpenAI-compatible"}</span>
+            {provider.apiKeyRef && (
+              <span className="pixel-chip !border-green-700 !bg-green-100 !text-green-800">{t("provider_key_set")}</span>
+            )}
+            <TestBadge result={testResults[provider.id]} />
+          </div>
+          <div className="mt-1 truncate text-xs text-neutral-500">
+            {provider.baseUrl}
+            {available ? ` · ${t("models_total", { n: available.length })}` : ""}
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+          <button className="pixel-button px-2 py-1 text-xs" onClick={() => void testProvider(provider.id)}>
+            {t("test_connection")}
+          </button>
+          <button className="pixel-button px-2 py-1 text-xs" disabled={refreshing} onClick={() => void refresh()}>
+            {refreshing ? "…" : t("refresh_models")}
+          </button>
+          <button className="pixel-button px-2 py-1 text-xs" onClick={() => onEdit(provider)}>
+            {t("configure")}
+          </button>
+          <button
+            className="pixel-button pixel-button--danger px-2 py-1 text-xs"
+            onClick={() => {
+              if (!confirming) {
+                setConfirming(true);
+                setTimeout(() => setConfirming(false), 3000);
+                return;
+              }
+              void removeProvider(provider.id);
+            }}
+          >
+            {confirming ? t("confirm_delete") : t("delete")}
+          </button>
+        </div>
+      </div>
+      {enabled.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1 text-xs font-semibold text-neutral-500">{t("enabled_models")}</div>
+          <div className="flex flex-wrap gap-1.5">
+            {enabled.map((m) => (
+              <span key={m} className="pixel-chip normal-case">
+                {m}
+                {m === provider.defaultModel && ` · ${t("default_badge")}`}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </article>
+  );
+}
+
 export default function ProvidersPage() {
-  const { providers, testResults, saveProvider, removeProvider, testProvider } = useStore();
+  const { providers, saveProvider } = useStore();
   const t = useT();
   const [form, setForm] = useState<ProviderForm>(EMPTY);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const field = (key: keyof ProviderForm) => ({
@@ -41,15 +132,19 @@ export default function ProvidersPage() {
       setForm({ ...form, [key]: e.target.value }),
   });
 
+  const close = () => {
+    setOpen(false);
+    setError(null);
+  };
+  const startCreate = () => {
+    setEditingId(null);
+    setForm(EMPTY);
+    setOpen(true);
+  };
   const startEdit = (p: Provider) => {
     setEditingId(p.id);
-    setForm({
-      name: p.name,
-      type: p.type,
-      baseUrl: p.baseUrl,
-      defaultModel: p.defaultModel ?? "",
-      apiKey: "",
-    });
+    setForm({ name: p.name, type: p.type, baseUrl: p.baseUrl, defaultModel: p.defaultModel ?? "", apiKey: "" });
+    setOpen(true);
   };
 
   const submit = async (e: React.FormEvent) => {
@@ -57,112 +152,100 @@ export default function ProvidersPage() {
     setError(null);
     try {
       await saveProvider(form, editingId);
-      setForm(EMPTY);
-      setEditingId(null);
+      close();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
-  const input = "rounded border border-neutral-300 px-2 py-1.5 text-sm w-full";
+  const input = "pixel-input w-full px-3 py-2 text-sm";
 
   return (
-    <div className="space-y-4">
-      <section>
-        <h2 className="mb-3 text-base font-semibold">{t("providers_title")}</h2>
-        {providers.length === 0 && <p className="text-sm text-neutral-500">{t("providers_empty")}</p>}
-        <ul className="space-y-2">
-          {providers.map((p) => (
-            <li
-              key={p.id}
-              className="flex items-center gap-3 rounded border border-neutral-200 bg-white px-4 py-3"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="font-medium">{p.name}</div>
-                <div className="truncate text-xs text-neutral-500">
-                  {p.type} · {p.baseUrl}
-                  {p.defaultModel ? ` · ${p.defaultModel}` : ""}
-                </div>
-              </div>
-              <TestBadge result={testResults[p.id]} />
-              <button
-                className="rounded border border-neutral-300 px-2 py-1 text-sm hover:bg-neutral-100"
-                onClick={() => void testProvider(p.id)}
-              >
-                {t("test_connection")}
-              </button>
-              <button
-                className="rounded border border-neutral-300 px-2 py-1 text-sm hover:bg-neutral-100"
-                onClick={() => startEdit(p)}
-              >
-                {t("edit")}
-              </button>
-              <button
-                className="rounded border border-red-200 px-2 py-1 text-sm text-red-700 hover:bg-red-50"
-                onClick={() => void removeProvider(p.id)}
-              >
-                {t("delete")}
-              </button>
-            </li>
-          ))}
-        </ul>
-      </section>
+    <section className="space-y-4">
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <div className="pixel-kicker">PROVIDER ACCESS</div>
+          <h2 className="text-xl font-bold">{t("provider_access")}</h2>
+          <p className="mt-1 text-sm text-neutral-500">{t("provider_access_desc")}</p>
+        </div>
+        <button className="pixel-button pixel-button--primary px-4 py-2 text-sm" onClick={startCreate}>
+          + {t("provider_add")}
+        </button>
+      </div>
 
-      <section className="rounded border border-neutral-200 bg-white p-4">
-        <h3 className="mb-3 text-sm font-semibold">{editingId ? t("provider_edit") : t("provider_add")}</h3>
-        <form onSubmit={submit} className="grid grid-cols-2 gap-3">
-          <label className="text-sm">
-            {t("name")}
-            <input className={input} required {...field("name")} />
-          </label>
-          <label className="text-sm">
-            {t("provider_type")}
-            <select className={input} disabled={editingId !== null} {...field("type")}>
-              <option value="openai_compatible">OpenAI-compatible</option>
-              <option value="anthropic">Anthropic</option>
-            </select>
-          </label>
-          <label className="text-sm">
-            {t("base_url")}
-            <input className={input} placeholder="https://…" {...field("baseUrl")} />
-          </label>
-          <label className="text-sm">
-            {t("default_model")}
-            <input className={input} placeholder="gpt-5.4 / deepseek-v4-flash" {...field("defaultModel")} />
-          </label>
-          <label className="col-span-2 text-sm">
-            {editingId ? t("api_key_keep") : t("api_key")}
-            <input
-              className={input}
-              type="password"
-              required={editingId === null}
-              autoComplete="off"
-              {...field("apiKey")}
-            />
-          </label>
-          {error && <p className="col-span-2 text-sm text-red-700">{error}</p>}
-          <div className="col-span-2 flex gap-2">
-            <button
-              type="submit"
-              className="rounded bg-neutral-900 px-3 py-1.5 text-sm text-white hover:bg-neutral-700"
-            >
-              {editingId ? t("save") : t("add")}
-            </button>
-            {editingId && (
-              <button
-                type="button"
-                className="rounded border border-neutral-300 px-3 py-1.5 text-sm"
-                onClick={() => {
-                  setEditingId(null);
-                  setForm(EMPTY);
-                }}
-              >
-                {t("cancel")}
+      {providers.length === 0 ? (
+        <button className="pixel-empty w-full p-8 text-sm text-neutral-500" onClick={startCreate}>
+          {t("providers_empty")}
+        </button>
+      ) : (
+        <div className="space-y-3">
+          {providers.map((p) => (
+            <ProviderCard key={p.id} provider={p} onEdit={startEdit} />
+          ))}
+        </div>
+      )}
+
+      {open && (
+        <div className="pixel-dialog-backdrop" role="presentation" onMouseDown={close}>
+          <div
+            className="pixel-dialog w-[min(620px,calc(100vw-48px))] p-5"
+            role="dialog"
+            aria-modal="true"
+            aria-label={editingId ? t("provider_edit") : t("provider_add")}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="mb-5 flex items-start justify-between">
+              <div>
+                <div className="pixel-kicker">PROVIDER CONFIG</div>
+                <h3 className="text-lg font-bold">{editingId ? t("provider_edit") : t("provider_add")}</h3>
+              </div>
+              <button className="pixel-button h-8 w-8" onClick={close} aria-label={t("close")}>
+                ×
               </button>
-            )}
+            </div>
+            <form onSubmit={submit} className="grid grid-cols-2 gap-4">
+              <label className="text-sm">
+                {t("name")}
+                <input className={input} required {...field("name")} />
+              </label>
+              <label className="text-sm">
+                {t("provider_type")}
+                <select className={input} disabled={editingId !== null} {...field("type")}>
+                  <option value="openai_compatible">OpenAI-compatible</option>
+                  <option value="anthropic">Anthropic</option>
+                </select>
+              </label>
+              <label className="text-sm">
+                {t("base_url")}
+                <input className={input} placeholder="https://…" {...field("baseUrl")} />
+              </label>
+              <label className="text-sm">
+                {t("default_model")}
+                <input className={input} placeholder="gpt-5.4 / deepseek-v4-flash" {...field("defaultModel")} />
+              </label>
+              <label className="col-span-2 text-sm">
+                {editingId ? t("api_key_keep") : t("api_key")}
+                <input
+                  className={input}
+                  type="password"
+                  required={editingId === null}
+                  autoComplete="off"
+                  {...field("apiKey")}
+                />
+              </label>
+              {error && <p className="col-span-2 text-sm text-red-700">{error}</p>}
+              <div className="col-span-2 flex justify-end gap-2">
+                <button type="button" className="pixel-button px-4 py-2 text-sm" onClick={close}>
+                  {t("cancel")}
+                </button>
+                <button type="submit" className="pixel-button pixel-button--primary px-4 py-2 text-sm">
+                  {editingId ? t("save") : t("add")}
+                </button>
+              </div>
+            </form>
           </div>
-        </form>
-      </section>
-    </div>
+        </div>
+      )}
+    </section>
   );
 }
