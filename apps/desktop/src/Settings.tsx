@@ -200,6 +200,14 @@ function AppearanceSection() {
   const { config, updateConfig } = useStore();
   const t = useT();
   const appearance: AppConfig["appearance"] = config?.appearance ?? { fontSize: 14, fontFamily: "system" };
+  // 拖动时只更新数字预览，松手（pointerup/keyup）才应用并落盘——避免整个界面跟着滑块抖动
+  const [sizeDraft, setSizeDraft] = useState(appearance.fontSize);
+  useEffect(() => {
+    setSizeDraft(appearance.fontSize);
+  }, [appearance.fontSize]);
+  const commitSize = (v: number) => {
+    if (v !== appearance.fontSize) void updateConfig({ appearance: { ...appearance, fontSize: v } });
+  };
   return (
     <SectionShell title={t("nav_appearance")} desc={t("appearance_desc")}>
       <div className="pixel-card p-4">
@@ -209,10 +217,12 @@ function AppearanceSection() {
             min={10}
             max={24}
             disabled={!config}
-            value={appearance.fontSize}
-            onChange={(e) => void updateConfig({ appearance: { ...appearance, fontSize: Number(e.target.value) } })}
+            value={sizeDraft}
+            onChange={(e) => setSizeDraft(Number(e.target.value))}
+            onPointerUp={(e) => commitSize(Number((e.target as HTMLInputElement).value))}
+            onKeyUp={(e) => commitSize(Number((e.target as HTMLInputElement).value))}
           />
-          <span className="ml-2 text-sm">{appearance.fontSize}px</span>
+          <span className="ml-2 text-sm">{sizeDraft}px</span>
         </Row>
         <Row label={t("font_family")}>
           <Segmented

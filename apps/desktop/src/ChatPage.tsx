@@ -24,20 +24,90 @@ function AgentHeader({ name, model, duty, avatar }: { name?: string; model?: str
   );
 }
 
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // WKWebView 里 clipboard API 可能不可用，退回 execCommand
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  }
+}
+
+const DATE_LOCALE_OF: Record<string, string> = { "zh-CN": "zh-CN", "zh-TW": "zh-TW", en: "en-US" };
+
+/** 悬停消息时的操作条：时间 · 复制 · 回溯（二次点击确认） */
+function MsgActions({ m, align }: { m: StoredMessage; align: "left" | "right" }) {
+  const { lang, streaming, activeTaskId, rewindTo } = useStore();
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const busy = !!streaming || !!activeTaskId;
+  const btn = "hover:text-neutral-700 hover:underline";
+
+  return (
+    <div
+      className={`mt-0.5 flex items-center gap-2 text-[11px] text-neutral-400 opacity-0 transition-opacity group-hover:opacity-100 ${
+        align === "right" ? "justify-end" : ""
+      }`}
+    >
+      <span>
+        {new Date(m.createdAt).toLocaleTimeString(DATE_LOCALE_OF[lang], { hour: "2-digit", minute: "2-digit" })}
+      </span>
+      <button
+        className={btn}
+        onClick={() => {
+          void copyText(m.content).then((ok) => {
+            if (ok) {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            }
+          });
+        }}
+      >
+        {copied ? t("msg_copied") : t("msg_copy")}
+      </button>
+      {!busy && (
+        <button
+          className={`${btn} ${confirming ? "font-medium text-red-500" : ""}`}
+          title={t("msg_rewind_confirm")}
+          onClick={() => {
+            if (!confirming) {
+              setConfirming(true);
+              setTimeout(() => setConfirming(false), 3000);
+              return;
+            }
+            void rewindTo(m.id);
+          }}
+        >
+          {confirming ? t("confirm_delete") : t("msg_rewind")}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function Bubble({ m }: { m: StoredMessage }) {
   if (m.role === "user") {
     return (
       // 任务的用户消息作为回放跳转锚点
-      <div className="flex justify-end" id={m.taskId ? `task-${m.taskId}` : undefined}>
+      <div className="group flex flex-col items-end" id={m.taskId ? `task-${m.taskId}` : undefined}>
         <div className="max-w-[70%] rounded-lg bg-neutral-900 px-3 py-2 text-sm whitespace-pre-wrap text-white">
           {m.content}
         </div>
+        <MsgActions m={m} align="right" />
       </div>
     );
   }
   const isSummary = m.phase === "summary";
   return (
-    <div className="flex justify-start">
+    <div className="group flex justify-start">
       <div className={isSummary ? "w-full max-w-[85%]" : "max-w-[70%]"}>
         <AgentHeader name={m.agentName} avatar={m.agentAvatar} model={m.model} duty={m.duty ?? (isSummary ? "summarize" : undefined)} />
         <div
@@ -47,6 +117,7 @@ function Bubble({ m }: { m: StoredMessage }) {
         >
           <Markdown remarkPlugins={[remarkGfm]}>{m.content}</Markdown>
         </div>
+        <MsgActions m={m} align="left" />
       </div>
     </div>
   );

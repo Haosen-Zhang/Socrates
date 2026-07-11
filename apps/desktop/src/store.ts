@@ -101,6 +101,8 @@ type Store = {
   activeTaskId: string | null;
   /** 失败待处置的 turn（引擎挂起等 decision） */
   failedTurn: { agentName: string; message: string } | null;
+  /** 回溯到某条消息（删除它与其后的所有消息），随后重载房间 */
+  rewindTo: (messageId: string) => Promise<void>;
   cancelTask: () => Promise<void>;
   decideTurn: (action: "retry" | "skip" | "abort") => Promise<void>;
   loadRooms: () => Promise<void>;
@@ -397,6 +399,18 @@ export const useStore = create<Store>((set, get) => {
 
     sendTask: async (form) => {
       await streamPost(`/tasks`, form);
+    },
+
+    rewindTo: async (messageId) => {
+      const roomId = get().currentRoomId;
+      if (!roomId || get().streaming || get().activeTaskId) return;
+      await requireOk(
+        await sidecarFetch(hs(), `/rooms/${roomId}/rewind`, {
+          method: "POST",
+          body: JSON.stringify({ messageId }),
+        }),
+      );
+      await get().selectRoom(roomId);
     },
 
     cancelTask: async () => {

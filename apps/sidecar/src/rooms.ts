@@ -274,6 +274,35 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
     );
   });
 
+  // 回溯：删除锚点消息（含）之后的所有消息；随之失去用户消息的任务连同 turns 一并清除
+  app.post("/:id/rewind", async (c) => {
+    const room = roomById(c.req.param("id"));
+    if (!room) return c.json({ error: "房间不存在" }, 404);
+    const b = await c.req.json<{ messageId: string }>();
+    // 用 rowid（插入序）作边界：同毫秒创建的相邻消息用时间戳会误删
+    const target = db
+      .query<{ rid: number }, [string, string]>("SELECT rowid AS rid FROM messages WHERE id = ? AND room_id = ?")
+      .get(b.messageId, room.id);
+    if (!target) return c.json({ error: "消息不存在" }, 404);
+    if (db.query("SELECT id FROM tasks WHERE room_id = ? AND status = 'running'").get(room.id)) {
+      return c.json({ error: "讨论进行中，无法回溯" }, 409);
+    }
+    db.run("DELETE FROM messages WHERE room_id = ? AND rowid >= ?", [room.id, target.rid]);
+    db.run(
+      `DELETE FROM turns WHERE task_id IN (
+         SELECT id FROM tasks WHERE room_id = ?
+         AND id NOT IN (SELECT DISTINCT task_id FROM messages WHERE room_id = ? AND task_id IS NOT NULL)
+       )`,
+      [room.id, room.id],
+    );
+    db.run(
+      `DELETE FROM tasks WHERE room_id = ?
+       AND id NOT IN (SELECT DISTINCT task_id FROM messages WHERE room_id = ? AND task_id IS NOT NULL)`,
+      [room.id, room.id],
+    );
+    return c.json({ ok: true });
+  });
+
   app.get("/:id/messages", (c) => {
     const room = roomById(c.req.param("id"));
     if (!room) return c.json({ error: "房间不存在" }, 404);

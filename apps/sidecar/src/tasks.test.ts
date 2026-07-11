@@ -277,6 +277,32 @@ describe("round robin task", () => {
     expect(tasks[0].inputTokens).toBe(14);
   });
 
+  it("rewind truncates messages and clears orphaned tasks/turns", async () => {
+    const { app, db } = makeApp(echoGateway);
+    const { a, b, room } = await setupTwoAgentRoom(app);
+    await postTask(app, room.id, { prompt: "讨论", speakingOrder: [a.id, b.id], maxRounds: 1, finalSummarizerId: a.id });
+    let history = await (await app.request(`/rooms/${room.id}/messages`)).json();
+    expect(history).toHaveLength(4); // user + 2 讨论 + 总结
+
+    // 锚到第一条 agent 消息：user 消息保留，任务仍有消息 → 任务保留
+    await app.request(`/rooms/${room.id}/rewind`, { method: "POST", body: JSON.stringify({ messageId: history[1].id }) });
+    history = await (await app.request(`/rooms/${room.id}/messages`)).json();
+    expect(history).toHaveLength(1);
+    expect(history[0].role).toBe("user");
+    expect(db.query<{ n: number }, []>("SELECT COUNT(*) n FROM tasks").get()?.n).toBe(1);
+
+    // 锚到 user 消息：全部清空，孤儿任务与 turns 一并删除
+    await app.request(`/rooms/${room.id}/rewind`, { method: "POST", body: JSON.stringify({ messageId: history[0].id }) });
+    history = await (await app.request(`/rooms/${room.id}/messages`)).json();
+    expect(history).toHaveLength(0);
+    expect(db.query<{ n: number }, []>("SELECT COUNT(*) n FROM tasks").get()?.n).toBe(0);
+    expect(db.query<{ n: number }, []>("SELECT COUNT(*) n FROM turns").get()?.n).toBe(0);
+
+    // 不存在的消息 → 404
+    const res = await app.request(`/rooms/${room.id}/rewind`, { method: "POST", body: JSON.stringify({ messageId: "nope" }) });
+    expect(res.status).toBe(404);
+  });
+
   it("archives and restores a room", async () => {
     const { app } = makeApp(echoGateway);
     const { room } = await setupTwoAgentRoom(app);
