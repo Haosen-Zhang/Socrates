@@ -25,8 +25,8 @@ export function toAgent(r: AgentRow): Agent {
   const fallback = agentIdentityFromSeed(r.id);
   return {
     id: r.id,
-    displayName: r.display_name,
-    nickname: r.nickname ?? fallback.nickname,
+    // display_name 列保留（NOT NULL / 老数据），但 nickname 是唯一对外名称
+    nickname: r.nickname ?? r.display_name ?? fallback.nickname,
     avatar: r.avatar ?? fallback.avatar,
     providerId: r.provider_id,
     modelId: r.model_id,
@@ -51,7 +51,6 @@ export function agentRoutes(db: Database) {
 
   app.post("/", async (c) => {
     const b = await c.req.json<{
-      displayName: string;
       nickname?: string;
       avatar?: string;
       providerId: string;
@@ -60,7 +59,7 @@ export function agentRoutes(db: Database) {
       systemPrompt?: string;
       temperature?: number;
     }>();
-    if (!b.displayName?.trim()) return c.json({ error: "名称不能为空" }, 400);
+    if (!b.nickname?.trim()) return c.json({ error: "昵称不能为空" }, 400);
     if (!b.modelId?.trim()) return c.json({ error: "模型不能为空" }, 400);
     if (!providerExists(b.providerId)) return c.json({ error: "供应商不存在" }, 400);
     if (b.avatar !== undefined && !AGENT_AVATARS.includes(b.avatar as (typeof AGENT_AVATARS)[number])) {
@@ -69,13 +68,14 @@ export function agentRoutes(db: Database) {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const identity = randomAgentIdentity();
+    const nickname = b.nickname.trim();
     db.run(
       `INSERT INTO agents (id, display_name, nickname, avatar, provider_id, model_id, role, system_prompt, temperature, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
-        b.displayName.trim(),
-        b.nickname?.trim() || identity.nickname,
+        nickname, // display_name 列沿用 nickname（NOT NULL 约束）
+        nickname,
         b.avatar ?? identity.avatar,
         b.providerId,
         b.modelId.trim(),
@@ -93,7 +93,6 @@ export function agentRoutes(db: Database) {
     const row = byId(c.req.param("id"));
     if (!row) return c.json({ error: "agent 不存在" }, 404);
     const b = await c.req.json<Partial<{
-      displayName: string;
       nickname: string;
       avatar: string;
       providerId: string;
@@ -108,12 +107,13 @@ export function agentRoutes(db: Database) {
     if (b.avatar !== undefined && !AGENT_AVATARS.includes(b.avatar as (typeof AGENT_AVATARS)[number])) {
       return c.json({ error: "头像不存在" }, 400);
     }
+    const nickname = b.nickname?.trim() || row.nickname || agentIdentityFromSeed(row.id).nickname;
     db.run(
       `UPDATE agents SET display_name = ?, nickname = ?, avatar = ?, provider_id = ?, model_id = ?, role = ?, system_prompt = ?, temperature = ?, updated_at = ?
        WHERE id = ?`,
       [
-        b.displayName?.trim() || row.display_name,
-        b.nickname?.trim() || row.nickname || agentIdentityFromSeed(row.id).nickname,
+        nickname,
+        nickname,
         b.avatar ?? row.avatar ?? agentIdentityFromSeed(row.id).avatar,
         b.providerId ?? row.provider_id,
         b.modelId?.trim() || row.model_id,

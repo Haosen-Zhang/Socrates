@@ -34,7 +34,6 @@ async function setupRoom(app: Hono) {
     await app.request("/agents", {
       method: "POST",
       body: JSON.stringify({
-        displayName: "小助手",
         nickname: "小助手",
         avatar: AGENT_AVATARS[0],
         providerId: provider.id,
@@ -91,7 +90,6 @@ describe("agent & room CRUD", () => {
       await app.request("/agents", {
         method: "POST",
         body: JSON.stringify({
-          displayName: "新成员",
           nickname: "紫镜狐狸",
           avatar: AGENT_AVATARS[1],
           providerId: provider.id,

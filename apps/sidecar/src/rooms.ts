@@ -137,12 +137,11 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
     const provider = db
       .query<ProviderRow, [string]>("SELECT id, type, base_url, api_key_ref FROM providers WHERE id = ?")
       .get(agent.providerId);
-    if (!provider) return `Agent「${agent.displayName}」引用的供应商已被删除`;
+    if (!provider) return `Agent「${agent.nickname}」引用的供应商已被删除`;
     const apiKey = secrets.get(provider.api_key_ref);
-    if (!apiKey) return `Keychain 中找不到「${agent.displayName}」所用供应商的 API Key`;
+    if (!apiKey) return `Keychain 中找不到「${agent.nickname}」所用供应商的 API Key`;
     return {
       id: agent.id,
-      displayName: agent.displayName,
       nickname: agent.nickname,
       avatar: agent.avatar,
       modelId: agent.modelId,
@@ -300,7 +299,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
       emit({
         type: "turn_started",
         agentId: agent.id,
-        agentName: agent.nickname ?? agent.displayName,
+        agentName: agent.nickname,
         agentAvatar: agent.avatar,
         model: agent.modelId,
       });
@@ -333,7 +332,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
           roomId: room.id,
           role: "agent",
           agentId: agent.id,
-          agentName: agent.nickname ?? agent.displayName,
+          agentName: agent.nickname,
           agentAvatar: agent.avatar,
           model: agent.modelId,
           content: text,

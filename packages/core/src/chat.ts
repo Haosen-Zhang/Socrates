@@ -52,7 +52,6 @@ export function agentLabel(agent: Pick<Agent, "nickname" | "modelId">): string {
 /** Agent = 模型 + 角色 + 提示词（docs/03 §2.3 的 MVP 子集） */
 export type Agent = {
   id: string;
-  displayName: string;
   nickname: string;
   avatar: string;
   providerId: string;
