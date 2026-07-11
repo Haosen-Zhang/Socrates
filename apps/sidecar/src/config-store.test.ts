@@ -14,11 +14,13 @@ describe("ConfigStore", () => {
     try {
       const store = new ConfigStore(path);
       expect(store.get().theme).toBe("light");
-      store.update({ theme: "dark", proxy: { mode: "custom", url: "http://127.0.0.1:7890" } });
+      store.update({ theme: "dark", proxy: { mode: "custom", type: "socks5", host: "127.0.0.1", port: "7890" } as never });
       // reload from disk proves persistence
       const reopened = new ConfigStore(path);
       expect(reopened.get().theme).toBe("dark");
-      expect(reopened.get().proxy).toEqual({ mode: "custom", url: "http://127.0.0.1:7890" });
+      expect(reopened.get().proxy.mode).toBe("custom");
+      expect(reopened.get().proxy.host).toBe("127.0.0.1");
+      expect(reopened.get().proxy.type).toBe("socks5");
     } finally {
       rmSync(path, { force: true });
     }

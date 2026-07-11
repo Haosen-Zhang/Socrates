@@ -1,26 +1,54 @@
 @import "tailwindcss";
 
 :root {
-  font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  --app-font-size: 14px;
+  --app-font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-family: var(--app-font-family);
+  font-size: var(--app-font-size);
   color: #242038;
   background: #ede8d8;
   font-synthesis: none;
 }
 
-body { margin: 0; }
+body { margin: 0; font-size: var(--app-font-size); }
 button, input, select, textarea { font: inherit; }
+
+/* 字号跟随 config：非固定 px 的文本用 em，随根 --app-font-size 缩放 */
+.pixel-app { font-size: var(--app-font-size); }
 
 .pixel-app {
   --pixel-ink: #28233f;
   --pixel-paper: #fffdf4;
   --pixel-accent: #6546d7;
+  --pixel-bg: #f1eddf;
+  --pixel-grid: rgba(40, 35, 63, 0.035);
+  --pixel-shadow: #c7bea5;
+  --pixel-muted: #6b6580;
   min-height: 100vh;
-  background-color: #f1eddf;
+  color: var(--pixel-ink);
+  background-color: var(--pixel-bg);
   background-image:
-    linear-gradient(rgba(40, 35, 63, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(40, 35, 63, 0.035) 1px, transparent 1px);
+    linear-gradient(var(--pixel-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--pixel-grid) 1px, transparent 1px);
   background-size: 12px 12px;
 }
+
+/* 深色调色板（#37）：切到 data-theme=dark 时重定义变量 */
+:root[data-theme="dark"] { color: #e8e4f5; background: #14121f; }
+:root[data-theme="dark"] .pixel-app {
+  --pixel-ink: #e8e4f5;
+  --pixel-paper: #201c30;
+  --pixel-accent: #8a6ff0;
+  --pixel-bg: #14121f;
+  --pixel-grid: rgba(180, 170, 220, 0.05);
+  --pixel-shadow: #000000;
+  --pixel-muted: #9a93b5;
+}
+:root[data-theme="dark"] .pixel-app .bg-white,
+:root[data-theme="dark"] .pixel-app .bg-neutral-50 { background: var(--pixel-paper) !important; }
+:root[data-theme="dark"] .pixel-app .text-neutral-500,
+:root[data-theme="dark"] .pixel-app .text-neutral-600 { color: var(--pixel-muted) !important; }
+:root[data-theme="dark"] .pixel-app .border-neutral-200 { border-color: #322c46 !important; }
 
 .pixel-app .rounded,
 .pixel-app .rounded-md,
@@ -38,11 +66,12 @@ button, input, select, textarea { font: inherit; }
   border: 2px solid var(--pixel-ink);
   border-radius: 3px;
   background: var(--pixel-paper);
-  box-shadow: 4px 4px 0 #c7bea5;
+  box-shadow: 4px 4px 0 var(--pixel-shadow);
+  color: var(--pixel-ink);
 }
 
 .pixel-empty { border-style: dashed; }
-.pixel-identity-panel { background: #f0ebff; }
+.pixel-identity-panel { background: color-mix(in srgb, var(--pixel-accent) 12%, var(--pixel-paper)); }
 
 .pixel-kicker {
   margin-bottom: 4px;
@@ -56,14 +85,14 @@ button, input, select, textarea { font: inherit; }
 .pixel-member-button {
   border: 2px solid var(--pixel-ink);
   border-radius: 2px;
-  background: #fffdf4;
+  background: var(--pixel-paper);
   color: var(--pixel-ink);
-  box-shadow: 2px 2px 0 #b9af96;
+  box-shadow: 2px 2px 0 var(--pixel-shadow);
   transition: transform 80ms ease, box-shadow 80ms ease;
 }
 
 .pixel-button:hover,
-.pixel-member-button:hover { background: #f0ebff; }
+.pixel-member-button:hover { background: color-mix(in srgb, var(--pixel-accent) 12%, var(--pixel-paper)); }
 .pixel-button:active,
 .pixel-member-button:active { transform: translate(2px, 2px); box-shadow: none; }
 .pixel-button--primary { background: var(--pixel-accent); color: white; }
@@ -73,7 +102,8 @@ button, input, select, textarea { font: inherit; }
 .pixel-input {
   border: 2px solid #756d88;
   border-radius: 2px;
-  background: #fffef9;
+  background: var(--pixel-paper);
+  color: var(--pixel-ink);
   outline: none;
 }
 .pixel-input:focus { border-color: var(--pixel-accent); box-shadow: 0 0 0 2px #dcd2ff; }
@@ -149,3 +179,29 @@ button, input, select, textarea { font: inherit; }
 .md-body blockquote { border-left: 3px solid #c7bea5; padding-left: 8px; color: #6b6580; }
 .md-body a { color: #6546d7; text-decoration: underline; }
 .md-body hr { border: none; border-top: 1px solid #d5cdb6; margin: 8px 0; }
+
+/* Reasonix 风格聊天输入区 */
+.pixel-composer {
+  border: 2px solid var(--pixel-ink);
+  border-radius: 8px;
+  background: var(--pixel-paper);
+  box-shadow: 3px 3px 0 var(--pixel-shadow);
+  transition: box-shadow 120ms ease, border-color 120ms ease;
+}
+.pixel-composer:focus-within { border-color: var(--pixel-accent); box-shadow: 3px 3px 0 var(--pixel-accent); }
+.pixel-composer textarea { background: transparent; border: none; outline: none; resize: none; }
+.pixel-composer-chevron { color: var(--pixel-accent); font-weight: 800; }
+.pixel-send {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  color: white;
+  background: linear-gradient(135deg, #5b9dff, #9b7bff);
+  box-shadow: 0 2px 8px rgba(91, 157, 255, 0.4);
+  transition: transform 90ms ease, filter 90ms ease;
+}
+.pixel-send:hover:not(:disabled) { filter: brightness(1.08); }
+.pixel-send:active:not(:disabled) { transform: scale(0.92); }
+.pixel-send:disabled { opacity: 0.4; box-shadow: none; }

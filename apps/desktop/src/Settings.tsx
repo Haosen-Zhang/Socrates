@@ -1,6 +1,8 @@
-import { useState } from "react";
-import type { AppConfig } from "@socrates/core";
+import { useEffect, useState } from "react";
+import { DEFAULT_CONFIG, type AppConfig, type ProxyConfig } from "@socrates/core";
 import { useStore, useT } from "./store";
+
+const DEFAULT_PROXY = DEFAULT_CONFIG.proxy;
 import { LANGS } from "./i18n";
 import ProvidersPage from "./ProvidersPage";
 import AgentsSection from "./AgentsSection";
@@ -110,36 +112,87 @@ function GeneralSection() {
 function NetworkSection() {
   const { config, updateConfig } = useStore();
   const t = useT();
-  const proxy = config?.proxy ?? { mode: "off" as const, url: "" };
-  const [url, setUrl] = useState(proxy.url);
+  // 网络字段多，采用暂存 + 「保存」显式提交，而非逐字段即时写盘
+  const [draft, setDraft] = useState<ProxyConfig>(config?.proxy ?? DEFAULT_PROXY);
+  useEffect(() => {
+    if (config) setDraft(config.proxy);
+  }, [config]);
+  const set = (patch: Partial<ProxyConfig>) => setDraft((d) => ({ ...d, ...patch }));
+  const field = "pixel-input w-full px-3 py-2 text-sm";
+  const custom = draft.mode === "custom";
+
   return (
-    <SectionShell title={t("nav_network")} desc={t("network_desc")}>
-      <div className="pixel-card p-4">
-        <Row label={t("proxy_mode")}>
-          <Segmented
-            value={proxy.mode}
-            disabled={!config}
-            options={[
-              { value: "off", label: t("proxy_off") },
-              { value: "auto", label: t("proxy_auto") },
-              { value: "custom", label: t("proxy_custom") },
-            ]}
-            onChange={(mode) => void updateConfig({ proxy: { mode, url } })}
-          />
-        </Row>
-        {proxy.mode === "custom" && (
-          <Row label={t("proxy_url")}>
-            <input
-              className="pixel-input w-64 px-2 py-1 text-sm"
-              placeholder="http://127.0.0.1:7890"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              onBlur={() => void updateConfig({ proxy: { mode: "custom", url } })}
+    <div className="pixel-card p-5">
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-xl font-bold">{t("nav_network")}</h2>
+        <button
+          className="pixel-button pixel-button--primary px-3 py-1.5 text-sm"
+          disabled={!config}
+          onClick={() => void updateConfig({ proxy: draft })}
+        >
+          {t("save_network")}
+        </button>
+      </div>
+
+      <Row label={t("proxy_mode")}>
+        <Segmented
+          value={draft.mode}
+          disabled={!config}
+          options={[
+            { value: "auto", label: t("proxy_auto") },
+            { value: "custom", label: t("proxy_custom") },
+            { value: "off", label: t("proxy_off") },
+          ]}
+          onChange={(mode) => set({ mode })}
+        />
+      </Row>
+
+      {custom && (
+        <>
+          <Row label={t("proxy_type")}>
+            <Segmented
+              value={draft.type}
+              options={[
+                { value: "http", label: "HTTP" },
+                { value: "https", label: "HTTPS" },
+                { value: "socks5", label: "SOCKS5" },
+                { value: "socks5h", label: "SOCKS5H" },
+              ]}
+              onChange={(type) => set({ type })}
             />
           </Row>
-        )}
-      </div>
-    </SectionShell>
+          <div className="grid grid-cols-[3fr_1fr] gap-3 py-3">
+            <label className="text-sm">
+              {t("proxy_host")}
+              <input className={field} placeholder="127.0.0.1" value={draft.host} onChange={(e) => set({ host: e.target.value })} />
+            </label>
+            <label className="text-sm">
+              {t("proxy_port")}
+              <input className={field} placeholder="7890" value={draft.port} onChange={(e) => set({ port: e.target.value })} />
+            </label>
+          </div>
+          <div className="grid grid-cols-2 gap-3 pb-3">
+            <label className="text-sm">
+              {t("proxy_username")}
+              <input className={field} value={draft.username} onChange={(e) => set({ username: e.target.value })} />
+            </label>
+            <label className="text-sm">
+              {t("proxy_password")}
+              <input className={field} type="password" value={draft.password} onChange={(e) => set({ password: e.target.value })} />
+            </label>
+          </div>
+          <label className="block border-t border-neutral-200 py-3 text-sm">
+            {t("proxy_url")}
+            <span className="ml-2 text-xs text-neutral-500">{t("proxy_url_hint")}</span>
+            <input className={field} placeholder="socks5://127.0.0.1:7890" value={draft.url} onChange={(e) => set({ url: e.target.value })} />
+          </label>
+        </>
+      )}
+      <label className="block border-t border-neutral-200 pt-3 text-sm">
+        {t("proxy_no")}
+        <input className={field} placeholder="localhost,127.0.0.1,.local" value={draft.noProxy} onChange={(e) => set({ noProxy: e.target.value })} />
+      </label>
+    </div>
   );
 }
 
