@@ -97,7 +97,7 @@ function Bubble({ m }: { m: StoredMessage }) {
   if (m.role === "user") {
     return (
       // 任务的用户消息作为回放跳转锚点
-      <div className="group flex flex-col items-end" id={m.taskId ? `task-${m.taskId}` : undefined}>
+      <div className="anim-msg group flex flex-col items-end" id={m.taskId ? `task-${m.taskId}` : undefined}>
         <div className="max-w-[70%] rounded-lg bg-neutral-900 px-3 py-2 text-sm whitespace-pre-wrap text-white">
           {m.content}
         </div>
@@ -107,7 +107,7 @@ function Bubble({ m }: { m: StoredMessage }) {
   }
   const isSummary = m.phase === "summary";
   return (
-    <div className="group flex justify-start">
+    <div className="anim-msg group flex justify-start">
       <div className={isSummary ? "w-full max-w-[85%]" : "max-w-[70%]"}>
         <AgentHeader name={m.agentName} avatar={m.agentAvatar} model={m.model} duty={m.duty ?? (isSummary ? "summarize" : undefined)} />
         <div
@@ -136,7 +136,7 @@ function RoundDivider({ round }: { round: number }) {
 
 function StreamingBubble({ s }: { s: StreamingTurn }) {
   return (
-    <div className="flex justify-start">
+    <div className="anim-msg flex justify-start">
       <div className={s.phase === "summary" ? "w-full max-w-[85%]" : "max-w-[70%]"}>
         <AgentHeader name={s.agentName} avatar={s.agentAvatar} model={s.model} duty={s.duty ?? (s.phase === "summary" ? "summarize" : undefined)} />
         <div
@@ -169,7 +169,7 @@ function TaskHistoryPanel({ onJump }: { onJump: (taskId: string) => void }) {
     return <p className="border-b border-neutral-200 bg-white px-4 py-2 text-xs text-neutral-500">{t("no_tasks")}</p>;
   }
   return (
-    <ul className="max-h-56 divide-y divide-neutral-100 overflow-y-auto border-b border-neutral-200 bg-white">
+    <ul className="anim-panel max-h-56 divide-y divide-neutral-100 overflow-y-auto border-b border-neutral-200 bg-white">
       {tasks.map((task) => (
         <li
           key={task.id}
@@ -210,7 +210,7 @@ function TaskControlBar() {
   if (!activeTaskId) return null;
   if (failedTurn) {
     return (
-      <div className="mx-4 mb-2 flex items-center gap-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+      <div className="anim-panel mx-4 mb-2 flex items-center gap-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
         <span className="min-w-0 flex-1 truncate" title={failedTurn.message}>
           {t("turn_failed_msg", { name: failedTurn.agentName, msg: failedTurn.message })}
         </span>
@@ -236,7 +236,7 @@ function TaskControlBar() {
     );
   }
   return (
-    <div className="mx-4 mb-2 flex items-center justify-between rounded border border-neutral-200 bg-neutral-100 px-3 py-2 text-sm text-neutral-600">
+    <div className="anim-panel mx-4 mb-2 flex items-center justify-between rounded border border-neutral-200 bg-neutral-100 px-3 py-2 text-sm text-neutral-600">
       <span className="flex items-center gap-2">
         <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-green-600" />
         {streaming ? t("speaking_now", { name: streaming.agentName }) : t("task_running")}
@@ -377,7 +377,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
       className="space-y-2 border-t border-neutral-200 bg-white p-3"
     >
       {showConfig && (
-        <div className="flex gap-4 rounded border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm">
+        <div className="anim-panel flex gap-4 rounded border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm">
           <div className="flex shrink-0 flex-col gap-1">
             <span className="text-neutral-500">{t("mode")}</span>
             {(
@@ -646,7 +646,7 @@ function RoomContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => vo
   const item = "block w-full px-3 py-1.5 text-left text-sm hover:bg-neutral-100";
   return (
     <div
-      className="fixed z-50 w-36 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-lg"
+      className="anim-panel fixed z-50 w-36 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-lg"
       style={{ left: menu.x, top: menu.y }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -864,7 +864,7 @@ export default function ChatPage() {
               </div>
             </div>
             {showTasks && <TaskHistoryPanel onJump={jumpToTask} />}
-            <div className="flex-1 space-y-3 overflow-y-auto p-4">
+            <div key={currentRoomId} className="anim-view flex-1 space-y-3 overflow-y-auto p-4">
               {timeline.map((item) =>
                 item.kind === "divider" ? (
                   <RoundDivider key={item.key} round={item.round} />
