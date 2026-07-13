@@ -1,5 +1,7 @@
 import { useEffect } from "react";
 import { useStore, useT } from "./store";
+import { setSfxEnabled, sfx } from "./fx";
+import PixelIcon from "./PixelIcon";
 import ChatPage from "./ChatPage";
 import Settings from "./Settings";
 
@@ -28,6 +30,27 @@ function App() {
     root.style.setProperty("--app-font-family", family);
   }, [config?.theme, config?.appearance.fontSize, config?.appearance.fontFamily]);
 
+  useEffect(() => {
+    setSfxEnabled(config?.soundEnabled ?? true);
+  }, [config?.soundEnabled]);
+
+  // 全局按钮音效：委托到 document，不逐个组件接线；enabled 由 fx 内部把关
+  useEffect(() => {
+    const isBtn = (t: EventTarget | null) => (t as HTMLElement | null)?.closest?.("button");
+    const onOver = (e: MouseEvent) => {
+      if (isBtn(e.target)) sfx.hover();
+    };
+    const onDown = (e: PointerEvent) => {
+      if (isBtn(e.target)) sfx.click();
+    };
+    document.addEventListener("pointerover", onOver, { passive: true });
+    document.addEventListener("pointerdown", onDown, { passive: true });
+    return () => {
+      document.removeEventListener("pointerover", onOver);
+      document.removeEventListener("pointerdown", onDown);
+    };
+  }, []);
+
   const tab = (v: "chat" | "settings", label: string, icon: string) => (
     <button
       className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm ${
@@ -35,7 +58,7 @@ function App() {
       }`}
       onClick={() => setView(v)}
     >
-      <span aria-hidden>{icon}</span>
+      <PixelIcon name={icon} size={15} />
       {label}
     </button>
   );
@@ -45,8 +68,8 @@ function App() {
       <header className="pixel-header flex items-center justify-between bg-white px-4 py-2.5">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold">Socrates</h1>
-          {tab("chat", t("tab_chat"), "💬")}
-          {tab("settings", t("tab_settings"), "⚙️")}
+          {tab("chat", t("tab_chat"), "chat")}
+          {tab("settings", t("tab_settings"), "gear")}
         </div>
         <span className={`text-sm font-medium ${BADGE_CLS[status]}`}>{t(status)}</span>
       </header>

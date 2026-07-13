@@ -20,6 +20,8 @@ export type AppConfig = {
   theme: "light" | "dark";
   /** 关闭窗口时：后台驻留 / 直接退出 */
   closeBehavior: "background" | "quit";
+  /** 8-bit 界面音效 */
+  soundEnabled: boolean;
   proxy: ProxyConfig;
   appearance: { fontSize: number; fontFamily: string };
 };
@@ -28,6 +30,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   language: "zh-CN",
   theme: "light",
   closeBehavior: "background",
+  soundEnabled: true,
   proxy: {
     mode: "off",
     type: "http",
@@ -62,6 +65,7 @@ export function normalizeConfig(raw: unknown): AppConfig {
     language: pick(LANGS, r.language, DEFAULT_CONFIG.language),
     theme: pick(THEMES, r.theme, DEFAULT_CONFIG.theme),
     closeBehavior: pick(CLOSE, r.closeBehavior, DEFAULT_CONFIG.closeBehavior),
+    soundEnabled: typeof r.soundEnabled === "boolean" ? r.soundEnabled : DEFAULT_CONFIG.soundEnabled,
     proxy: {
       mode: pick(PROXY, proxy.mode, DEFAULT_CONFIG.proxy.mode),
       type: pick(PROXY_TYPE, proxy.type, DEFAULT_CONFIG.proxy.type),
