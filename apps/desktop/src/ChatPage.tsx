@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import { agentLabel, type Agent, type StoredMessage, type TaskSummary } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import { useStore, useT, type StreamingTurn } from "./store";
+import { pixelBurst, sfx } from "./fx";
 
 const DUTY_CLS: Record<string, string> = {
   propose: "bg-blue-100 text-blue-800",
@@ -498,7 +499,9 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
       <div className="pixel-composer flex items-end gap-2 px-3 py-2">
         <button
           type="button"
-          className="mb-1 shrink-0 text-lg text-neutral-500 hover:text-neutral-800"
+          className={`mb-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-md text-sm ${
+            showConfig ? "bg-neutral-200 text-neutral-800" : "text-neutral-500 hover:bg-neutral-100"
+          }`}
           title={t("config_tooltip")}
           onClick={() => setShowConfig((v) => !v)}
         >
@@ -653,7 +656,9 @@ function RoomContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => vo
     >
       <button
         className={item}
-        onClick={() => {
+        onClick={(e) => {
+          sfx.delete();
+          pixelBurst(e.currentTarget);
           void archiveRoom(room.id, !room.archived);
           onClose();
         }}
@@ -662,11 +667,13 @@ function RoomContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => vo
       </button>
       <button
         className={`${item} ${confirming ? "font-medium text-red-700" : "text-red-600"}`}
-        onClick={() => {
+        onClick={(e) => {
           if (!confirming) {
             setConfirming(true);
             return;
           }
+          sfx.delete();
+          pixelBurst(e.currentTarget, "#b4233b");
           void removeRoom(room.id);
           onClose();
         }}
@@ -698,7 +705,17 @@ function RoomMembersDialog({
             <div className="pixel-kicker">ROOM ROSTER</div>
             <h3 className="text-lg font-bold">{t("room_members_title")}</h3>
           </div>
-          <button className="pixel-button h-8 w-8" onClick={onClose} aria-label={t("close")}>×</button>
+          <button
+            className="pixel-button h-8 w-8"
+            onClick={(e) => {
+              sfx.close();
+              pixelBurst(e.currentTarget);
+              onClose();
+            }}
+            aria-label={t("close")}
+          >
+            ×
+          </button>
         </div>
         <div className="grid grid-cols-2 gap-3">
           {members.map((agent) => (

@@ -1,22 +1,23 @@
 import { useEffect, useState } from "react";
 import { DEFAULT_CONFIG, type AppConfig, type ProxyConfig } from "@socrates/core";
 import { useStore, useT } from "./store";
-
-const DEFAULT_PROXY = DEFAULT_CONFIG.proxy;
 import { LANGS } from "./i18n";
+import PixelIcon from "./PixelIcon";
 import ProvidersPage from "./ProvidersPage";
 import AgentsSection from "./AgentsSection";
+
+const DEFAULT_PROXY = DEFAULT_CONFIG.proxy;
 
 type SectionId = "general" | "providers" | "bots" | "skills" | "memory" | "network" | "appearance";
 
 const NAV: Array<{ id: SectionId; icon: string; labelKey: string }> = [
-  { id: "general", icon: "⚙", labelKey: "nav_general" },
-  { id: "providers", icon: "🔌", labelKey: "nav_providers" },
-  { id: "bots", icon: "🤖", labelKey: "nav_bots" },
-  { id: "skills", icon: "✨", labelKey: "nav_skills" },
-  { id: "memory", icon: "🧠", labelKey: "nav_memory" },
-  { id: "network", icon: "🌐", labelKey: "nav_network" },
-  { id: "appearance", icon: "🎨", labelKey: "nav_appearance" },
+  { id: "general", icon: "gear", labelKey: "nav_general" },
+  { id: "providers", icon: "plug", labelKey: "nav_providers" },
+  { id: "bots", icon: "robot", labelKey: "nav_bots" },
+  { id: "skills", icon: "spark", labelKey: "nav_skills" },
+  { id: "memory", icon: "brain", labelKey: "nav_memory" },
+  { id: "network", icon: "globe", labelKey: "nav_network" },
+  { id: "appearance", icon: "palette", labelKey: "nav_appearance" },
 ];
 
 /** 分段单选（像素风），config 尚未加载时禁用 */
@@ -102,6 +103,17 @@ function GeneralSection() {
               { value: "quit", label: t("close_quit") },
             ]}
             onChange={(v) => void updateConfig({ closeBehavior: v })}
+          />
+        </Row>
+        <Row label={t("sound_effects")}>
+          <Segmented
+            value={config?.soundEnabled === false ? "off" : "on"}
+            disabled={!config}
+            options={[
+              { value: "on", label: t("on") },
+              { value: "off", label: t("off") },
+            ]}
+            onChange={(v) => void updateConfig({ soundEnabled: v === "on" })}
           />
         </Row>
       </div>
@@ -264,7 +276,7 @@ export default function Settings() {
             }`}
             onClick={() => setSection(n.id)}
           >
-            <span aria-hidden>{n.icon}</span>
+            <PixelIcon name={n.icon} size={16} />
             {t(n.labelKey)}
           </button>
         ))}

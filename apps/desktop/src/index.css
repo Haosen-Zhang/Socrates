@@ -45,10 +45,20 @@ button, input, select, textarea { font: inherit; }
   --pixel-muted: #9a93b5;
 }
 :root[data-theme="dark"] .pixel-app .bg-white,
-:root[data-theme="dark"] .pixel-app .bg-neutral-50 { background: var(--pixel-paper) !important; }
+:root[data-theme="dark"] .pixel-app .bg-neutral-50,
+:root[data-theme="dark"] .pixel-app .bg-neutral-100 { background: var(--pixel-paper) !important; }
 :root[data-theme="dark"] .pixel-app .text-neutral-500,
 :root[data-theme="dark"] .pixel-app .text-neutral-600 { color: var(--pixel-muted) !important; }
-:root[data-theme="dark"] .pixel-app .border-neutral-200 { border-color: #322c46 !important; }
+:root[data-theme="dark"] .pixel-app .border-neutral-200,
+:root[data-theme="dark"] .pixel-app .border-neutral-300 { border-color: #322c46 !important; }
+/* 深色下暗底按钮反相为浅底深字（用户消息气泡例外，保持深底白字对话感） */
+:root[data-theme="dark"] .pixel-app .bg-neutral-900:not(.rounded-lg) { background: var(--pixel-accent) !important; }
+/* 金色总结/警告块：深色下换成暗琥珀底 + 亮字，保留高亮但可读 */
+:root[data-theme="dark"] .pixel-app .bg-amber-50 { background: #3a2e14 !important; }
+:root[data-theme="dark"] .pixel-app .border-amber-300 { border-color: #8a6d2a !important; }
+:root[data-theme="dark"] .pixel-app .text-amber-900 { color: #f0d9a0 !important; }
+:root[data-theme="dark"] .pixel-app .md-body code { background: #2c2740; }
+:root[data-theme="dark"] .pixel-app .md-body th { background: #2c2740; }
 
 .pixel-app .rounded,
 .pixel-app .rounded-md,
@@ -148,7 +158,8 @@ button, input, select, textarea { font: inherit; }
   background: rgba(29, 25, 49, 0.58);
   backdrop-filter: blur(2px);
 }
-.pixel-dialog { background: #fffdf4; }
+/* 对话框更像素：厚边框 + 硬阴影（背景继承 --pixel-paper，随主题走） */
+.pixel-dialog { border-width: 3px; box-shadow: 6px 6px 0 var(--pixel-shadow); }
 
 @keyframes pixel-pet-idle {
   0%, 82%, 100% { transform: translateY(0) rotate(0); }

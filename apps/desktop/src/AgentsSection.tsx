@@ -7,6 +7,7 @@ import {
 } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import { useStore, useT, type AgentForm } from "./store";
+import { pixelBurst, sfx } from "./fx";
 
 function newForm(): AgentForm {
   const identity = randomAgentIdentity();
@@ -113,7 +114,11 @@ export default function AgentsSection() {
                 </button>
                 <button
                   className="pixel-button pixel-button--danger px-2 py-1 text-xs"
-                  onClick={() => void removeAgent(agent.id)}
+                  onClick={(e) => {
+                    sfx.delete();
+                    pixelBurst(e.currentTarget, "#b4233b");
+                    void removeAgent(agent.id);
+                  }}
                 >
                   {t("delete")}
                 </button>
@@ -137,7 +142,17 @@ export default function AgentsSection() {
                 <div className="pixel-kicker">PERSONA CONFIG</div>
                 <h3 className="text-lg font-bold">{editingId ? t("agent_edit") : t("agent_create")}</h3>
               </div>
-              <button className="pixel-button h-8 w-8" onClick={close} aria-label={t("close")}>×</button>
+              <button
+                className="pixel-button h-8 w-8"
+                onClick={(e) => {
+                  sfx.close();
+                  pixelBurst(e.currentTarget);
+                  close();
+                }}
+                aria-label={t("close")}
+              >
+                ×
+              </button>
             </div>
 
             <form onSubmit={submit} className="space-y-5">
