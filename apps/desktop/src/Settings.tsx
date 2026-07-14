@@ -11,7 +11,7 @@ const DEFAULT_PROXY = DEFAULT_CONFIG.proxy;
 type SectionId = "general" | "providers" | "bots" | "skills" | "memory" | "network" | "appearance";
 
 const NAV: Array<{ id: SectionId; icon: string; labelKey: string }> = [
-  { id: "general", icon: "gear", labelKey: "nav_general" },
+  { id: "general", icon: "general", labelKey: "nav_general" },
   { id: "providers", icon: "plug", labelKey: "nav_providers" },
   { id: "bots", icon: "robot", labelKey: "nav_bots" },
   { id: "skills", icon: "spark", labelKey: "nav_skills" },
@@ -211,7 +211,7 @@ function NetworkSection() {
 function AppearanceSection() {
   const { config, updateConfig } = useStore();
   const t = useT();
-  const appearance: AppConfig["appearance"] = config?.appearance ?? { fontSize: 14, fontFamily: "system" };
+  const appearance: AppConfig["appearance"] = config?.appearance ?? DEFAULT_CONFIG.appearance;
   // 拖动时只更新数字预览，松手（pointerup/keyup）才应用并落盘——避免整个界面跟着滑块抖动
   const [sizeDraft, setSizeDraft] = useState(appearance.fontSize);
   useEffect(() => {
@@ -223,6 +223,34 @@ function AppearanceSection() {
   return (
     <SectionShell title={t("nav_appearance")} desc={t("appearance_desc")}>
       <div className="pixel-card p-4">
+        <div className="border-b border-neutral-200 pb-4">
+          <div className="text-sm font-medium">{t("ui_theme")}</div>
+          <div className="mb-3 text-xs text-neutral-500">{t("ui_theme_desc")}</div>
+          <div className="grid grid-cols-2 gap-3">
+            {(
+              [
+                { value: "socrates-classic", label: t("ui_theme_classic"), desc: t("ui_theme_classic_desc") },
+                { value: "pixel-1998", label: t("ui_theme_pixel_1998"), desc: t("ui_theme_pixel_1998_desc") },
+              ] as const
+            ).map((option) => (
+              <button
+                key={option.value}
+                className={`pixel-theme-choice p-3 text-left ${appearance.uiTheme === option.value ? "is-selected" : ""}`}
+                disabled={!config}
+                aria-pressed={appearance.uiTheme === option.value}
+                onClick={() => void updateConfig({ appearance: { ...appearance, uiTheme: option.value } })}
+              >
+                <span className="mb-3 flex items-center gap-3">
+                  <PixelIcon name="chat" size={28} theme={option.value} />
+                  <PixelIcon name="gear" size={28} theme={option.value} />
+                  <PixelIcon name="robot" size={28} theme={option.value} />
+                </span>
+                <span className="block text-sm font-bold">{option.label}</span>
+                <span className="mt-1 block text-xs text-neutral-500">{option.desc}</span>
+              </button>
+            ))}
+          </div>
+        </div>
         <Row label={t("font_size")}>
           <input
             type="range"
