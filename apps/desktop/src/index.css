@@ -13,6 +13,33 @@
 body { margin: 0; font-size: var(--app-font-size); }
 button, input, select, textarea { font: inherit; }
 
+.pixel-icon {
+  position: relative;
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  line-height: 0;
+}
+.pixel-icon__classic,
+.pixel-icon__generated { grid-area: 1 / 1; }
+.pixel-icon__classic { display: block; }
+.pixel-icon__generated {
+  display: none;
+  width: 100%;
+  height: 100%;
+  background-image: url("/icons/pixel-1998-sprite-clean.png");
+  background-repeat: no-repeat;
+  background-size: 300% 300%;
+  image-rendering: pixelated;
+  transform: scale(1.16);
+}
+:root[data-ui-theme="pixel-1998"] .pixel-icon--has-generated:not([data-icon-theme="socrates-classic"]) > .pixel-icon__classic,
+.pixel-icon--has-generated[data-icon-theme="pixel-1998"] > .pixel-icon__classic { display: none; }
+:root[data-ui-theme="pixel-1998"] .pixel-icon--has-generated:not([data-icon-theme="socrates-classic"]) > .pixel-icon__generated,
+.pixel-icon--has-generated[data-icon-theme="pixel-1998"] > .pixel-icon__generated { display: block; }
+.pixel-icon--has-generated[data-icon-theme="socrates-classic"] > .pixel-icon__classic { display: block; }
+.pixel-icon--has-generated[data-icon-theme="socrates-classic"] > .pixel-icon__generated { display: none; }
+
 /* 字号跟随 config：非固定 px 的文本用 em，随根 --app-font-size 缩放 */
 .pixel-app { font-size: var(--app-font-size); }
 
@@ -109,6 +136,18 @@ button, input, select, textarea { font: inherit; }
 .pixel-button--primary:hover { background: #7659e6; }
 .pixel-button--danger { color: #b4233b; border-color: #b4233b; box-shadow: 2px 2px 0 #e8a9b3; }
 .pixel-button:disabled { cursor: not-allowed; opacity: 0.45; box-shadow: none; }
+
+.pixel-theme-choice {
+  border: 2px solid color-mix(in srgb, var(--pixel-ink) 42%, transparent);
+  border-radius: 2px;
+  color: var(--pixel-ink);
+  background: var(--pixel-paper);
+  box-shadow: 2px 2px 0 var(--pixel-shadow);
+  transition: transform 120ms steps(2, end), border-color 120ms steps(2, end), background 120ms steps(2, end);
+}
+.pixel-theme-choice:hover:not(:disabled) { transform: translateY(-2px); border-color: var(--pixel-accent); }
+.pixel-theme-choice.is-selected { border-color: var(--pixel-accent); background: color-mix(in srgb, var(--pixel-accent) 12%, var(--pixel-paper)); box-shadow: inset 0 0 0 1px var(--pixel-accent), 3px 3px 0 var(--pixel-shadow); }
+.pixel-theme-choice:disabled { opacity: 0.55; }
 
 .pixel-room-sidebar {
   border-right: 3px solid var(--pixel-ink);

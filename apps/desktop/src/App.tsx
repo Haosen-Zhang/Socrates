@@ -22,13 +22,14 @@ function App() {
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.theme = config?.theme ?? "light";
+    root.dataset.uiTheme = config?.appearance.uiTheme ?? "socrates-classic";
     root.style.setProperty("--app-font-size", `${config?.appearance.fontSize ?? 14}px`);
     const family =
       config?.appearance.fontFamily === "system"
         ? 'system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif'
         : 'ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace';
     root.style.setProperty("--app-font-family", family);
-  }, [config?.theme, config?.appearance.fontSize, config?.appearance.fontFamily]);
+  }, [config?.theme, config?.appearance.fontSize, config?.appearance.fontFamily, config?.appearance.uiTheme]);
 
   useEffect(() => {
     setSfxEnabled(config?.soundEnabled ?? true);

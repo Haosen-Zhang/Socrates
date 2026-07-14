@@ -1,6 +1,7 @@
 /** 应用配置（config.toml 的形状）。只放非敏感项——API Key 仍在 Keychain（NFR-001）。 */
 export type ProxyMode = "off" | "auto" | "custom";
 export type ProxyType = "http" | "https" | "socks5" | "socks5h";
+export type UiTheme = "socrates-classic" | "pixel-1998";
 
 export type ProxyConfig = {
   mode: ProxyMode;
@@ -23,7 +24,7 @@ export type AppConfig = {
   /** 8-bit 界面音效 */
   soundEnabled: boolean;
   proxy: ProxyConfig;
-  appearance: { fontSize: number; fontFamily: string };
+  appearance: { fontSize: number; fontFamily: string; uiTheme: UiTheme };
 };
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -41,7 +42,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     url: "",
     noProxy: "localhost,127.0.0.1,.local",
   },
-  appearance: { fontSize: 14, fontFamily: "system" },
+  appearance: { fontSize: 14, fontFamily: "system", uiTheme: "socrates-classic" },
 };
 
 const LANGS = ["zh-CN", "zh-TW", "en"] as const;
@@ -49,6 +50,7 @@ const THEMES = ["light", "dark"] as const;
 const CLOSE = ["background", "quit"] as const;
 const PROXY = ["off", "auto", "custom"] as const;
 const PROXY_TYPE = ["http", "https", "socks5", "socks5h"] as const;
+const UI_THEMES = ["socrates-classic", "pixel-1998"] as const;
 const str = (v: unknown, fallback: string) => (typeof v === "string" ? v : fallback);
 
 function pick<T extends readonly string[]>(vals: T, v: unknown, fallback: T[number]): T[number] {
@@ -79,6 +81,7 @@ export function normalizeConfig(raw: unknown): AppConfig {
     appearance: {
       fontSize: Number.isFinite(size) && size >= 10 && size <= 24 ? size : DEFAULT_CONFIG.appearance.fontSize,
       fontFamily: typeof appearance.fontFamily === "string" ? appearance.fontFamily : DEFAULT_CONFIG.appearance.fontFamily,
+      uiTheme: pick(UI_THEMES, appearance.uiTheme, DEFAULT_CONFIG.appearance.uiTheme),
     },
   };
 }

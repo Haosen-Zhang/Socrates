@@ -28,7 +28,7 @@ describe("normalizeConfig", () => {
       theme: "dark",
       closeBehavior: "quit",
       proxy: { mode: "custom", type: "socks5", host: "127.0.0.1", port: "7890" },
-      appearance: { fontSize: 99, fontFamily: "Menlo" },
+      appearance: { fontSize: 99, fontFamily: "Menlo", uiTheme: "pixel-1998" },
     });
     expect(c.language).toBe("en");
     expect(c.theme).toBe("dark");
@@ -40,6 +40,12 @@ describe("normalizeConfig", () => {
     expect(c.proxy.noProxy).toBe(DEFAULT_CONFIG.proxy.noProxy); // default filled in
     expect(c.appearance.fontSize).toBe(DEFAULT_CONFIG.appearance.fontSize); // 99 out of range → default
     expect(c.appearance.fontFamily).toBe("Menlo");
+    expect(c.appearance.uiTheme).toBe("pixel-1998");
+  });
+
+  it("falls back to Socrates Classic for an unknown UI theme", () => {
+    const c = normalizeConfig({ appearance: { uiTheme: "future-neon" } });
+    expect(c.appearance.uiTheme).toBe("socrates-classic");
   });
 });
 
