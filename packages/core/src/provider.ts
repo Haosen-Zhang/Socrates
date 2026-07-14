@@ -64,3 +64,37 @@ export function classifyTestOutcome(status?: number): TestOutcome {
   if (status >= 200 && status < 300) return "ok";
   return "error";
 }
+
+const LOW_COST_OPENAI_ALIASES = [
+  "gpt-5-nano",
+  "gpt-4o-mini",
+  "gpt-5.4-nano",
+  "gpt-5-mini",
+  "gpt-5.4-mini",
+  "gpt-5.6-luna",
+] as const;
+
+const NON_CHAT_MODEL =
+  /(?:embedding|moderation|audio|realtime|transcri|tts|whisper|image|dall-e|search|computer-use|sora)/i;
+
+function openAiCostRank(model: string): number {
+  const known = LOW_COST_OPENAI_ALIASES.indexOf(model as (typeof LOW_COST_OPENAI_ALIASES)[number]);
+  if (known >= 0) return known;
+  if (/(?:^|[-_.])nano(?:$|[-_.])/i.test(model)) return 20;
+  if (/(?:^|[-_.])mini(?:$|[-_.])/i.test(model)) return 30;
+  if (/(?:^|[-_.])luna(?:$|[-_.])/i.test(model)) return 35;
+  if (/(?:^|[-_.])terra(?:$|[-_.])/i.test(model)) return 50;
+  if (/(?:^|[-_.])(?:sol|pro)(?:$|[-_.])/i.test(model)) return 80;
+  return 60;
+}
+
+/**
+ * Pick a low-cost text/chat alias from the models returned by OpenAI.
+ * Known aliases follow current published token prices; tier-name scoring keeps
+ * the fallback useful when OpenAI adds a new family before Socrates updates.
+ */
+export function selectCheapestOpenAiModel(models: string[]): string | undefined {
+  return models
+    .filter((model) => /^(?:gpt-|chatgpt-|o\d)/i.test(model) && !NON_CHAT_MODEL.test(model))
+    .sort((a, b) => openAiCostRank(a) - openAiCostRank(b) || a.length - b.length || a.localeCompare(b))[0];
+}

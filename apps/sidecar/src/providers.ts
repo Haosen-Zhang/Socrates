@@ -39,6 +39,22 @@ function toProvider(r: Row): Provider {
 /** 路由只需要「可调用的 fetch」，收窄类型好让测试注入替身 */
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
+async function listModels(type: ProviderType, baseUrl: string, apiKey: string, fetchFn: FetchLike) {
+  const req = buildTestRequest(type, baseUrl, apiKey);
+  try {
+    const res = await fetchFn(req.url, { headers: req.headers, signal: AbortSignal.timeout(10_000) });
+    if (!res.ok) return { error: `供应商返回 ${res.status}`, status: 502 as const };
+    const body = (await res.json()) as { data?: Array<{ id?: string; name?: string }> };
+    const models = (body.data ?? [])
+      .map((model) => model.id ?? model.name)
+      .filter((model): model is string => typeof model === "string" && model.length > 0)
+      .sort();
+    return { models };
+  } catch (err) {
+    return { error: String(err).slice(0, 200), status: 502 as const };
+  }
+}
+
 export function providerRoutes(db: Database, secrets: SecretStore, fetchFn: FetchLike = fetch) {
   const app = new Hono();
   const byId = (id: string) => db.query<Row, [string]>("SELECT * FROM providers WHERE id = ?").get(id);
@@ -77,19 +93,24 @@ export function providerRoutes(db: Database, secrets: SecretStore, fetchFn: Fetc
     if (!row) return c.json({ error: "provider 不存在" }, 404);
     const body = await c.req.json<{
       name?: string;
+      type?: ProviderType;
       baseUrl?: string;
       defaultModel?: string;
       apiKey?: string;
       enabled?: boolean;
     }>();
     const name = body.name?.trim() || row.name;
-    const baseUrl = body.baseUrl !== undefined ? resolveBaseUrl(row.type, body.baseUrl) : row.base_url;
+    const type = body.type ?? row.type;
+    const baseUrlInput = body.baseUrl !== undefined ? body.baseUrl : type === row.type ? row.base_url : undefined;
+    const invalid = validateProviderInput({ name, type, baseUrl: baseUrlInput });
+    if (invalid) return c.json({ error: invalid }, 400);
+    const baseUrl = resolveBaseUrl(type, baseUrlInput);
     const defaultModel = body.defaultModel !== undefined ? body.defaultModel || null : row.default_model;
     const enabled = body.enabled !== undefined ? (body.enabled ? 1 : 0) : row.enabled;
     if (body.apiKey?.trim()) secrets.set(row.api_key_ref, body.apiKey);
     db.run(
-      "UPDATE providers SET name = ?, base_url = ?, default_model = ?, enabled = ?, updated_at = ? WHERE id = ?",
-      [name, baseUrl, defaultModel, enabled, new Date().toISOString(), row.id],
+      "UPDATE providers SET name = ?, type = ?, base_url = ?, default_model = ?, enabled = ?, updated_at = ? WHERE id = ?",
+      [name, type, baseUrl, defaultModel, enabled, new Date().toISOString(), row.id],
     );
     return c.json(toProvider(byId(row.id)!));
   });
@@ -102,25 +123,40 @@ export function providerRoutes(db: Database, secrets: SecretStore, fetchFn: Fetc
     return c.json({ ok: true });
   });
 
+  // 新建/编辑弹窗预览模型：新建时用表单 key，编辑时 key 留空可回退 Keychain。
+  app.post("/models/discover", async (c) => {
+    const body = await c.req.json<{
+      providerId?: string;
+      type?: ProviderType;
+      baseUrl?: string;
+      apiKey?: string;
+    }>();
+    const row = body.providerId ? byId(body.providerId) : undefined;
+    if (body.providerId && !row) return c.json({ error: "provider 不存在" }, 404);
+
+    const type = body.type ?? row?.type;
+    if (!type) return c.json({ error: "provider 类型不能为空" }, 400);
+    const baseUrlInput = body.baseUrl !== undefined ? body.baseUrl : row?.base_url;
+    const invalid = validateProviderInput({ name: "preview", type, baseUrl: baseUrlInput });
+    if (invalid) return c.json({ error: invalid }, 400);
+    const baseUrl = resolveBaseUrl(type, baseUrlInput);
+    const key = body.apiKey?.trim() || (row ? secrets.get(row.api_key_ref) : null);
+    if (!key) return c.json({ error: "请先填写 API Key" }, 400);
+
+    const result = await listModels(type, baseUrl, key, fetchFn);
+    if ("error" in result) return c.json({ error: result.error }, result.status);
+    return c.json(result.models);
+  });
+
   // 列出该供应商的可用模型型号（OpenAI-compatible 与 Anthropic 的列模型端点都返回 {data:[{id}]}）
   app.get("/:id/models", async (c) => {
     const row = byId(c.req.param("id"));
     if (!row) return c.json({ error: "provider 不存在" }, 404);
     const key = secrets.get(row.api_key_ref);
     if (!key) return c.json({ error: "Keychain 中找不到 API Key" }, 400);
-    const req = buildTestRequest(row.type, row.base_url, key);
-    try {
-      const res = await fetchFn(req.url, { headers: req.headers, signal: AbortSignal.timeout(10_000) });
-      if (!res.ok) return c.json({ error: `供应商返回 ${res.status}` }, 502);
-      const body = (await res.json()) as { data?: Array<{ id?: string; name?: string }> };
-      const models = (body.data ?? [])
-        .map((m) => m.id ?? m.name)
-        .filter((x): x is string => typeof x === "string" && x.length > 0)
-        .sort();
-      return c.json(models);
-    } catch (err) {
-      return c.json({ error: String(err).slice(0, 200) }, 502);
-    }
+    const result = await listModels(row.type, row.base_url, key, fetchFn);
+    if ("error" in result) return c.json({ error: result.error }, result.status);
+    return c.json(result.models);
   });
 
   app.post("/:id/test", async (c) => {

@@ -65,6 +65,17 @@ describe("provider CRUD", () => {
     expect(ctx.secrets.get(p.apiKeyRef)).toBe("sk-new");
   });
 
+  it("updates provider type and resolves its new default base URL", async () => {
+    const p = await (await createProvider(ctx.app, { baseUrl: "" })).json();
+    const res = await ctx.app.request(`/providers/${p.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ type: "anthropic", baseUrl: "" }),
+    });
+    const updated = await res.json();
+    expect(updated.type).toBe("anthropic");
+    expect(updated.baseUrl).toBe("https://api.anthropic.com");
+  });
+
   it("deletes row and keychain entry together", async () => {
     const p = await (await createProvider(ctx.app)).json();
     await ctx.app.request(`/providers/${p.id}`, { method: "DELETE" });
@@ -95,6 +106,56 @@ describe("model list", () => {
     const res = await app.request(`/providers/${p.id}/models`);
     expect(res.status).toBe(502);
     expect((await res.json()).error).toContain("401");
+  });
+
+  it("discovers models for an unsaved provider without persisting its key", async () => {
+    const seen: Array<{ url: string; authorization?: string }> = [];
+    const fetchFn: FetchLike = async (url, init) => {
+      seen.push({ url, authorization: (init?.headers as Record<string, string>).Authorization });
+      return new Response(JSON.stringify({ data: [{ id: "gpt-5.4" }, { id: "gpt-5-nano" }] }), { status: 200 });
+    };
+    const { app, secrets } = makeApp(fetchFn);
+    let secretWrites = 0;
+    const originalSet = secrets.set.bind(secrets);
+    secrets.set = (ref, secret) => {
+      secretWrites += 1;
+      originalSet(ref, secret);
+    };
+    const res = await app.request("/providers/models/discover", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "openai_compatible",
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-preview-only",
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(["gpt-5-nano", "gpt-5.4"]);
+    expect(seen).toEqual([
+      { url: "https://api.openai.com/v1/models", authorization: "Bearer sk-preview-only" },
+    ]);
+    expect(secretWrites).toBe(0);
+  });
+
+  it("discovers models for an existing provider with its Keychain key", async () => {
+    const seenAuth: string[] = [];
+    const fetchFn: FetchLike = async (_url, init) => {
+      seenAuth.push((init?.headers as Record<string, string>).Authorization);
+      return new Response(JSON.stringify({ data: [{ id: "deepseek-chat" }] }), { status: 200 });
+    };
+    const { app } = makeApp(fetchFn);
+    const provider = await (await createProvider(app)).json();
+    const res = await app.request("/providers/models/discover", {
+      method: "POST",
+      body: JSON.stringify({
+        providerId: provider.id,
+        type: provider.type,
+        baseUrl: provider.baseUrl,
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(["deepseek-chat"]);
+    expect(seenAuth).toEqual([`Bearer ${SECRET}`]);
   });
 });
 
