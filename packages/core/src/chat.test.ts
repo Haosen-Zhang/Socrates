@@ -7,6 +7,9 @@ import {
   historyToChatMessages,
   parseSseChunk,
   randomAgentIdentity,
+  randomUniqueAgentIdentity,
+  normalizeAgentNickname,
+  isAgentAvatarSource,
   type StoredMessage,
   type StreamEvent,
 } from "./chat";
@@ -63,5 +66,19 @@ describe("agent identity", () => {
     expect(AGENT_AVATARS).toContain(identity.avatar);
     expect(agentLabel({ ...identity, modelId: "gpt-5.4" })).toBe(`${identity.nickname} (gpt-5.4)`);
     expect(agentIdentityFromSeed("agent-1")).toEqual(agentIdentityFromSeed("agent-1"));
+  });
+
+  it("normalizes nicknames and chooses an unused random identity", () => {
+    expect(normalizeAgentNickname("  Ａlice\nSmith  ")).toBe("alice smith");
+    const first = randomAgentIdentity(() => 0);
+    const unique = randomUniqueAgentIdentity([first.nickname], () => 0);
+    expect(normalizeAgentNickname(unique.nickname)).not.toBe(normalizeAgentNickname(first.nickname));
+  });
+
+  it("accepts bundled and common uploaded avatars but rejects unsafe data URLs", () => {
+    expect(isAgentAvatarSource(AGENT_AVATARS[0])).toBe(true);
+    expect(isAgentAvatarSource("data:image/png;base64,iVBORw0KGgo=")).toBe(true);
+    expect(isAgentAvatarSource("data:image/svg+xml;base64,PHN2Zz4=")).toBe(false);
+    expect(isAgentAvatarSource("data:text/html;base64,PGgxPng8L2gxPg==")).toBe(false);
   });
 });

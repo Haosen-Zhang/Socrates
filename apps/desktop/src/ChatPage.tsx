@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { agentLabel, type Agent, type StoredMessage, type TaskSummary } from "@socrates/core";
@@ -7,6 +7,7 @@ import PixelIcon from "./PixelIcon";
 import { toggleRoomAgentSelection } from "./roomSelection";
 import { useStore, useT, type StreamingTurn } from "./store";
 import { pixelBurst, sfx } from "./fx";
+import { shouldSubmitComposerEnter } from "./composerIme";
 
 const DUTY_CLS: Record<string, string> = {
   propose: "bg-blue-100 text-blue-800",
@@ -273,11 +274,15 @@ function ComposerTextarea({
   onSubmit: () => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
+  const composingRef = useRef(false);
+  const lastCompositionEndAt = useRef(Number.NEGATIVE_INFINITY);
+  useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+    el.style.height = "0px";
+    const nextHeight = Math.min(el.scrollHeight, 160);
+    el.style.height = `${nextHeight}px`;
+    el.style.overflowY = el.scrollHeight > 160 ? "auto" : "hidden";
   }, [value]);
   return (
     <textarea
@@ -289,8 +294,29 @@ function ComposerTextarea({
       disabled={disabled}
       value={value}
       onChange={(e) => onChange(e.target.value)}
+      onCompositionStart={() => {
+        composingRef.current = true;
+      }}
+      onCompositionEnd={() => {
+        composingRef.current = false;
+        lastCompositionEndAt.current = Date.now();
+      }}
       onKeyDown={(e) => {
-        if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+        const native = e.nativeEvent as globalThis.KeyboardEvent & { keyCode?: number };
+        if (
+          shouldSubmitComposerEnter(
+            {
+              key: e.key,
+              shiftKey: e.shiftKey,
+              isComposing: native.isComposing,
+              keyCode: native.keyCode,
+            },
+            {
+              composing: composingRef.current,
+              lastCompositionEndAt: lastCompositionEndAt.current,
+            },
+          )
+        ) {
           e.preventDefault();
           onSubmit();
         }
@@ -377,10 +403,10 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
         e.preventDefault();
         void doSubmit();
       }}
-      className="space-y-2 border-t border-neutral-200 bg-white p-3"
+      className="composer-dock space-y-2"
     >
       {showConfig && (
-        <div className="anim-panel flex gap-4 rounded border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm">
+        <div className="pixel-composer-config anim-panel flex gap-4 px-3 py-2 text-sm">
           <div className="flex shrink-0 flex-col gap-1">
             <span className="text-neutral-500">{t("mode")}</span>
             {(
@@ -498,16 +524,16 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
           </div>
         </div>
       )}
-      <div className="pixel-composer flex items-end gap-2 px-3 py-2">
+      <div className={`pixel-composer flex items-end gap-2 px-2.5 py-2 ${showConfig ? "pixel-composer--configured" : ""}`}>
         <button
           type="button"
-          className={`mb-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-md text-sm ${
-            showConfig ? "bg-neutral-200 text-neutral-800" : "text-neutral-500 hover:bg-neutral-100"
-          }`}
+          className={`pixel-composer-tool shrink-0 ${showConfig ? "is-active" : ""}`}
           title={t("config_tooltip")}
+          aria-label={t("config_tooltip")}
+          aria-pressed={showConfig}
           onClick={() => setShowConfig((v) => !v)}
         >
-          ⚙
+          <PixelIcon name="gear" size={18} />
         </button>
         <span className="pixel-composer-chevron mb-1.5 shrink-0">›</span>
         <ComposerTextarea
@@ -526,10 +552,11 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
         <button
           className="pixel-send shrink-0"
           title={mode === "debate" ? t("start_debate") : t("start_discussion")}
+          aria-label={mode === "debate" ? t("start_debate") : t("start_discussion")}
           disabled={busy || !prompt.trim() || (mode === "round_robin" && speakingOrder.length === 0)}
           type="submit"
         >
-          ↑
+          <PixelIcon name="send" size={18} />
         </button>
       </div>
     </form>
@@ -552,7 +579,7 @@ function SimpleComposer() {
         e.preventDefault();
         void doSubmit();
       }}
-      className="border-t border-neutral-200 bg-white p-3"
+      className="composer-dock"
     >
       <div className="pixel-composer flex items-end gap-2 px-3 py-2">
         <span className="pixel-composer-chevron mb-1.5 shrink-0">›</span>
@@ -563,8 +590,14 @@ function SimpleComposer() {
           onChange={setDraft}
           onSubmit={() => void doSubmit()}
         />
-        <button className="pixel-send shrink-0" title={t("send")} disabled={!!streaming || !draft.trim()} type="submit">
-          ↑
+        <button
+          className="pixel-send shrink-0"
+          title={t("send")}
+          aria-label={t("send")}
+          disabled={!!streaming || !draft.trim()}
+          type="submit"
+        >
+          <PixelIcon name="send" size={18} />
         </button>
       </div>
     </form>

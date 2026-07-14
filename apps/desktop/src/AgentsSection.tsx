@@ -1,16 +1,20 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  AGENT_AVATAR_ACCEPT,
   AGENT_AVATARS,
   agentLabel,
-  randomAgentIdentity,
+  isAgentAvatarSource,
+  normalizeAgentNickname,
+  randomUniqueAgentIdentity,
   type Agent,
 } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
+import { validateAvatarUpload } from "./agentAvatarUpload";
 import { useStore, useT, type AgentForm } from "./store";
 import { pixelBurst, sfx } from "./fx";
 
-function newForm(): AgentForm {
-  const identity = randomAgentIdentity();
+function newForm(agents: Agent[]): AgentForm {
+  const identity = randomUniqueAgentIdentity(agents.map((agent) => agent.nickname));
   return {
     nickname: identity.nickname,
     avatar: identity.avatar,
@@ -25,11 +29,12 @@ function newForm(): AgentForm {
 export default function AgentsSection() {
   const { agents, providers, modelLists, loadModels, saveAgent, removeAgent } = useStore();
   const t = useT();
-  const [form, setForm] = useState<AgentForm>(newForm);
+  const [form, setForm] = useState<AgentForm>(() => newForm(agents));
   const [editingId, setEditingId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manualModel, setManualModel] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
 
   // 选中供应商后拉取其可用型号（缓存于 store）
   useEffect(() => {
@@ -44,7 +49,8 @@ export default function AgentsSection() {
   };
   const startCreate = () => {
     setEditingId(null);
-    setForm(newForm());
+    setForm(newForm(agents));
+    setError(null);
     setOpen(true);
   };
   const startEdit = (agent: Agent) => {
@@ -61,12 +67,45 @@ export default function AgentsSection() {
     setOpen(true);
   };
   const shuffleIdentity = () => {
-    const identity = randomAgentIdentity();
+    const identity = randomUniqueAgentIdentity(
+      agents.filter((agent) => agent.id !== editingId).map((agent) => agent.nickname),
+    );
     setForm((current) => ({ ...current, ...identity }));
+    setError(null);
+  };
+  const duplicateNickname = agents.some(
+    (agent) =>
+      agent.id !== editingId &&
+      normalizeAgentNickname(agent.nickname) === normalizeAgentNickname(form.nickname),
+  );
+  const selectAvatarFile = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const validation = validateAvatarUpload(file);
+    if (validation) {
+      setError(t(validation === "size" ? "avatar_too_large" : "avatar_invalid_format"));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => setError(t("avatar_read_failed"));
+    reader.onload = () => {
+      if (typeof reader.result !== "string" || !isAgentAvatarSource(reader.result)) {
+        setError(t("avatar_invalid_format"));
+        return;
+      }
+      setForm((current) => ({ ...current, avatar: reader.result as string }));
+      setError(null);
+    };
+    reader.readAsDataURL(file);
   };
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
+    if (duplicateNickname) {
+      setError(t("nickname_duplicate"));
+      return;
+    }
     const provider = providers.find((item) => item.id === form.providerId);
     const modelId = form.modelId.trim() || provider?.defaultModel || "";
     try {
@@ -165,8 +204,12 @@ export default function AgentsSection() {
                       <input
                         className={input}
                         required
+                        aria-invalid={duplicateNickname}
                         value={form.nickname}
-                        onChange={(event) => setForm({ ...form, nickname: event.target.value })}
+                        onChange={(event) => {
+                          setForm({ ...form, nickname: event.target.value });
+                          setError(null);
+                        }}
                       />
                     </label>
                     <button type="button" className="pixel-button px-3 py-2 text-sm" onClick={shuffleIdentity}>
@@ -184,7 +227,23 @@ export default function AgentsSection() {
                         <AgentAvatar src={avatar} label="" size={42} lively={false} />
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      className={`pixel-avatar-choice px-2 text-xs ${!AGENT_AVATARS.includes(form.avatar as (typeof AGENT_AVATARS)[number]) ? "is-selected" : ""}`}
+                      onClick={() => avatarInputRef.current?.click()}
+                      title={t("avatar_upload_hint")}
+                    >
+                      ↑ {t("avatar_upload")}
+                    </button>
+                    <input
+                      ref={avatarInputRef}
+                      className="sr-only"
+                      type="file"
+                      accept={AGENT_AVATAR_ACCEPT}
+                      onChange={selectAvatarFile}
+                    />
                   </div>
+                  {duplicateNickname && <p className="text-xs text-red-700">{t("nickname_duplicate")}</p>}
                 </div>
               </div>
 
@@ -261,7 +320,7 @@ export default function AgentsSection() {
               {error && <p className="text-sm text-red-700">{error}</p>}
               <div className="flex justify-end gap-3">
                 <button type="button" className="pixel-button px-4 py-2 text-sm" onClick={close}>{t("cancel")}</button>
-                <button type="submit" className="pixel-button pixel-button--primary px-5 py-2 text-sm">{editingId ? t("save") : t("create")}</button>
+                <button disabled={duplicateNickname} type="submit" className="pixel-button pixel-button--primary px-5 py-2 text-sm">{editingId ? t("save") : t("create")}</button>
               </div>
             </form>
           </div>
