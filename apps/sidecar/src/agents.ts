@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import type { Database } from "bun:sqlite";
 import {
-  AGENT_AVATARS,
   agentIdentityFromSeed,
+  isAgentAvatarSource,
+  normalizeAgentNickname,
   randomAgentIdentity,
   type Agent,
 } from "@socrates/core";
@@ -43,6 +44,15 @@ export function agentRoutes(db: Database) {
   const byId = (id: string) => db.query<AgentRow, [string]>("SELECT * FROM agents WHERE id = ?").get(id);
   const providerExists = (id: string) =>
     db.query<{ id: string }, [string]>("SELECT id FROM providers WHERE id = ?").get(id) !== null;
+  const nicknameTaken = (nickname: string, excludingId?: string) => {
+    const key = normalizeAgentNickname(nickname);
+    return db
+      .query<Pick<AgentRow, "id" | "display_name" | "nickname">, []>(
+        "SELECT id, display_name, nickname FROM agents",
+      )
+      .all()
+      .some((agent) => agent.id !== excludingId && normalizeAgentNickname(agent.nickname ?? agent.display_name) === key);
+  };
 
   app.get("/", (c) => {
     const rows = db.query<AgentRow, []>("SELECT * FROM agents ORDER BY created_at").all();
@@ -62,13 +72,12 @@ export function agentRoutes(db: Database) {
     if (!b.nickname?.trim()) return c.json({ error: "昵称不能为空" }, 400);
     if (!b.modelId?.trim()) return c.json({ error: "模型不能为空" }, 400);
     if (!providerExists(b.providerId)) return c.json({ error: "供应商不存在" }, 400);
-    if (b.avatar !== undefined && !AGENT_AVATARS.includes(b.avatar as (typeof AGENT_AVATARS)[number])) {
-      return c.json({ error: "头像不存在" }, 400);
-    }
+    const nickname = b.nickname.trim();
+    if (nicknameTaken(nickname)) return c.json({ error: "昵称已被使用" }, 409);
+    if (b.avatar !== undefined && !isAgentAvatarSource(b.avatar)) return c.json({ error: "头像格式不受支持或文件过大" }, 400);
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const identity = randomAgentIdentity();
-    const nickname = b.nickname.trim();
     db.run(
       `INSERT INTO agents (id, display_name, nickname, avatar, provider_id, model_id, role, system_prompt, temperature, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -104,10 +113,9 @@ export function agentRoutes(db: Database) {
     if (b.providerId !== undefined && !providerExists(b.providerId)) {
       return c.json({ error: "供应商不存在" }, 400);
     }
-    if (b.avatar !== undefined && !AGENT_AVATARS.includes(b.avatar as (typeof AGENT_AVATARS)[number])) {
-      return c.json({ error: "头像不存在" }, 400);
-    }
+    if (b.avatar !== undefined && !isAgentAvatarSource(b.avatar)) return c.json({ error: "头像格式不受支持或文件过大" }, 400);
     const nickname = b.nickname?.trim() || row.nickname || agentIdentityFromSeed(row.id).nickname;
+    if (nicknameTaken(nickname, row.id)) return c.json({ error: "昵称已被使用" }, 409);
     db.run(
       `UPDATE agents SET display_name = ?, nickname = ?, avatar = ?, provider_id = ?, model_id = ?, role = ?, system_prompt = ?, temperature = ?, updated_at = ?
        WHERE id = ?`,
