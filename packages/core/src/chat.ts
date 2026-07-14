@@ -29,6 +29,9 @@ const AGENT_NICKNAMES = [
 
 export type AgentIdentity = { nickname: string; avatar: (typeof AGENT_AVATARS)[number] };
 
+export const MAX_AGENT_AVATAR_BYTES = 2 * 1024 * 1024;
+export const AGENT_AVATAR_ACCEPT = "image/png,image/jpeg,image/webp,image/gif";
+
 function identityAt(index: number): AgentIdentity {
   const safe = Math.abs(index) % AGENT_NICKNAMES.length;
   return { nickname: AGENT_NICKNAMES[safe], avatar: AGENT_AVATARS[safe % AGENT_AVATARS.length] };
@@ -36,6 +39,40 @@ function identityAt(index: number): AgentIdentity {
 
 export function randomAgentIdentity(random: () => number = Math.random): AgentIdentity {
   return identityAt(Math.floor(random() * AGENT_NICKNAMES.length));
+}
+
+/** 昵称比较键：兼容全角字符、大小写和用户无意输入的重复空白。 */
+export function normalizeAgentNickname(nickname: string): string {
+  return nickname.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase();
+}
+
+/** 随机身份必须避开现有昵称；内置名字用尽后为随机基名追加最小可用序号。 */
+export function randomUniqueAgentIdentity(
+  existingNicknames: Iterable<string>,
+  random: () => number = Math.random,
+): AgentIdentity {
+  const used = new Set(Array.from(existingNicknames, normalizeAgentNickname));
+  const start = Math.floor(random() * AGENT_NICKNAMES.length);
+  for (let offset = 0; offset < AGENT_NICKNAMES.length; offset += 1) {
+    const candidate = identityAt(start + offset);
+    if (!used.has(normalizeAgentNickname(candidate.nickname))) return candidate;
+  }
+
+  const base = identityAt(start);
+  for (let suffix = 2; ; suffix += 1) {
+    const nickname = `${base.nickname} ${suffix}`;
+    if (!used.has(normalizeAgentNickname(nickname))) return { ...base, nickname };
+  }
+}
+
+/** 头像仅接受内置资源或有限大小的常见光栅图片 data URL；不接受可执行 SVG。 */
+export function isAgentAvatarSource(value: string): boolean {
+  if (AGENT_AVATARS.includes(value as (typeof AGENT_AVATARS)[number])) return true;
+  const match = /^data:image\/(?:png|jpe?g|webp|gif);base64,([A-Za-z0-9+/]+={0,2})$/i.exec(value);
+  if (!match || match[1].length === 0 || match[1].length % 4 !== 0) return false;
+  const padding = match[1].endsWith("==") ? 2 : match[1].endsWith("=") ? 1 : 0;
+  const decodedBytes = (match[1].length * 3) / 4 - padding;
+  return decodedBytes > 0 && decodedBytes <= MAX_AGENT_AVATAR_BYTES;
 }
 
 /** 老数据没有 persona 字段时，用 id 得到稳定且无需落库的身份。 */
