@@ -3,6 +3,8 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { agentLabel, type Agent, type StoredMessage, type TaskSummary } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
+import PixelIcon from "./PixelIcon";
+import { toggleRoomAgentSelection } from "./roomSelection";
 import { useStore, useT, type StreamingTurn } from "./store";
 import { pixelBurst, sfx } from "./fx";
 
@@ -569,55 +571,135 @@ function SimpleComposer() {
   );
 }
 
-function NewRoomForm({ onDone }: { onDone: () => void }) {
+function NewRoomDialog({ onClose }: { onClose: () => void }) {
   const { agents, createRoom } = useStore();
   const t = useT();
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const toggle = (id: string) =>
-    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
+  const toggle = (id: string) => {
+    setSelected((current) => toggleRoomAgentSelection(current, id));
+    setError(null);
+  };
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       await createRoom(name, selected);
-      onDone();
+      onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
   return (
-    <form onSubmit={submit} className="space-y-2 rounded border border-neutral-200 bg-white p-3">
-      <input
-        className="w-full rounded border border-neutral-300 px-2 py-1.5 text-sm"
-        placeholder={t("room_name")}
-        required
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-      />
-      <div className="max-h-32 space-y-1 overflow-y-auto">
-        {agents.length === 0 && <p className="text-xs text-neutral-500">{t("create_agent_first")}</p>}
-        {agents.map((a) => (
-          <label key={a.id} className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={selected.includes(a.id)} onChange={() => toggle(a.id)} />
-            {a.nickname}
-            <span className="text-xs text-neutral-400">{a.modelId}</span>
-          </label>
-        ))}
-      </div>
-      {error && <p className="text-xs text-red-700">{error}</p>}
-      <div className="flex gap-2">
-        <button className="rounded bg-neutral-900 px-2 py-1 text-xs text-white" type="submit">
-          {t("create")}
-        </button>
-        <button className="rounded border border-neutral-300 px-2 py-1 text-xs" type="button" onClick={onDone}>
-          {t("cancel")}
-        </button>
-      </div>
-    </form>
+    <div className="pixel-dialog-backdrop" role="presentation" onMouseDown={onClose}>
+      <form
+        onSubmit={submit}
+        className="pixel-dialog max-h-[calc(100vh-32px)] w-[min(720px,calc(100vw-48px))] overflow-y-auto p-5"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-room-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <div className="pixel-kicker">NEW PARTY</div>
+            <h2 id="new-room-title" className="text-xl font-bold">{t("new_room_title")}</h2>
+            <p className="mt-1 text-sm text-neutral-500">{t("new_room_subtitle")}</p>
+          </div>
+          <button
+            type="button"
+            className="pixel-button h-9 w-9 shrink-0"
+            aria-label={t("close")}
+            onClick={(event) => {
+              sfx.close();
+              pixelBurst(event.currentTarget);
+              onClose();
+            }}
+          >
+            ×
+          </button>
+        </header>
+
+        <label className="block text-sm font-bold">
+          {t("room_name")}
+          <input
+            autoFocus
+            className="pixel-input mt-1 w-full px-3 py-2.5 text-sm"
+            placeholder={t("room_name_placeholder")}
+            required
+            value={name}
+            onChange={(event) => {
+              setName(event.target.value);
+              setError(null);
+            }}
+          />
+        </label>
+
+        <div className="mb-2 mt-5 flex items-center justify-between">
+          <h3 className="text-sm font-bold">{t("choose_agents")}</h3>
+          <span className="pixel-chip">{t("selected_agents", { n: selected.length })}</span>
+        </div>
+        {agents.length === 0 ? (
+          <div className="pixel-empty p-6 text-center text-sm text-neutral-500">{t("create_agent_first")}</div>
+        ) : (
+          <div className="grid max-h-[42vh] grid-cols-2 gap-3 overflow-y-auto p-1 sm:grid-cols-3">
+            {agents.map((agent) => {
+              const isSelected = selected.includes(agent.id);
+              return (
+                <button
+                  key={agent.id}
+                  type="button"
+                  className={`pixel-room-agent-card flex min-w-0 items-center gap-3 p-3 text-left ${isSelected ? "is-selected" : ""}`}
+                  aria-pressed={isSelected}
+                  onClick={() => toggle(agent.id)}
+                >
+                  <AgentAvatar src={agent.avatar} label={agent.nickname} size={52} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-bold">{agent.nickname}</span>
+                    <span className="block truncate text-xs text-neutral-500">{agent.role || agent.modelId}</span>
+                  </span>
+                  <span className="pixel-room-agent-check" aria-hidden>{isSelected ? "✓" : "+"}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {error && <p className="mt-3 text-sm text-red-700">{error}</p>}
+        <footer className="mt-5 flex items-center justify-between gap-4 border-t border-neutral-200 pt-4">
+          <div className="flex min-w-0 items-center">
+            <div className="flex -space-x-2">
+              {selected.slice(0, 6).map((id) => {
+                const agent = agents.find((item) => item.id === id);
+                return agent ? <AgentAvatar key={id} src={agent.avatar} label={agent.nickname} size={30} lively={false} /> : null;
+              })}
+            </div>
+            {selected.length > 6 && <span className="ml-2 text-xs text-neutral-500">+{selected.length - 6}</span>}
+          </div>
+          <div className="flex shrink-0 gap-3">
+            <button className="pixel-button px-4 py-2 text-sm" type="button" onClick={onClose}>{t("cancel")}</button>
+            <button
+              className="pixel-button pixel-button--primary px-5 py-2 text-sm"
+              type="submit"
+              disabled={!name.trim() || selected.length === 0}
+            >
+              {t("create_room")}
+            </button>
+          </div>
+        </footer>
+      </form>
+    </div>
   );
 }
 
@@ -646,10 +728,10 @@ function RoomContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => vo
   }, [onClose]);
 
   if (!room) return null;
-  const item = "block w-full px-3 py-1.5 text-left text-sm hover:bg-neutral-100";
+  const item = "block w-full px-3 py-2 text-left text-sm hover:bg-neutral-100";
   return (
     <div
-      className="anim-panel fixed z-50 w-36 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-lg"
+      className="pixel-card anim-panel fixed z-50 w-40 overflow-hidden py-1"
       style={{ left: menu.x, top: menu.y }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -770,8 +852,8 @@ export default function ChatPage() {
   const roomRow = (r: (typeof rooms)[number]) => (
     <div
       key={r.id}
-      className={`group flex cursor-pointer items-center rounded px-2 py-1.5 text-sm ${
-        r.id === currentRoomId ? "bg-neutral-900 text-white" : "hover:bg-neutral-100"
+      className={`pixel-room-row group flex cursor-pointer items-center gap-2 px-2 py-2 text-sm ${
+        r.id === currentRoomId ? "is-active" : ""
       } ${r.archived ? "opacity-60" : ""}`}
       onClick={() => void selectRoom(r.id)}
       onContextMenu={(e) => {
@@ -779,13 +861,17 @@ export default function ChatPage() {
         setMenu({ roomId: r.id, x: e.clientX, y: e.clientY });
       }}
     >
-      <span className="min-w-0 flex-1 truncate">{r.name}</span>
+      <span className="flex -space-x-2">
+        {r.agentIds.slice(0, 2).map((id) => {
+          const agent = agents.find((item) => item.id === id);
+          return agent ? <AgentAvatar key={id} src={agent.avatar} label={agent.nickname} size={24} lively={false} /> : null;
+        })}
+      </span>
+      <span className="min-w-0 flex-1 truncate font-medium">{r.name}</span>
       {/* macOS WKWebView 不可靠派发 contextmenu，用常驻 ⋯ 按钮作主入口，右键作补充 */}
       <button
         title={t("room_menu")}
-        className={`ml-1 shrink-0 rounded px-1 text-sm opacity-0 group-hover:opacity-100 ${
-          r.id === currentRoomId ? "text-neutral-300 hover:bg-neutral-700" : "text-neutral-400 hover:bg-neutral-200"
-        } ${menu?.roomId === r.id ? "opacity-100" : ""}`}
+        className={`pixel-room-more ml-1 shrink-0 px-1 text-sm opacity-0 group-hover:opacity-100 ${menu?.roomId === r.id ? "opacity-100" : ""}`}
         onClick={(e) => {
           e.stopPropagation();
           const rect = e.currentTarget.getBoundingClientRect();
@@ -795,7 +881,7 @@ export default function ChatPage() {
         ⋯
       </button>
       <span
-        className={`ml-1 shrink-0 text-[10px] ${r.id === currentRoomId ? "text-neutral-400" : "text-neutral-300"}`}
+        className="ml-1 shrink-0 text-[10px] text-neutral-400"
       >
         {t("room_members", { n: r.agentIds.length })}
       </span>
@@ -834,27 +920,34 @@ export default function ChatPage() {
 
   return (
     <div className="flex h-[calc(100vh-53px)]">
-      <aside className="w-56 shrink-0 space-y-2 overflow-y-auto border-r border-neutral-200 bg-white p-3">
+      <aside className="pixel-room-sidebar flex w-64 shrink-0 flex-col p-3">
         <button
-          className="w-full rounded border border-neutral-300 px-2 py-1.5 text-sm hover:bg-neutral-100"
+          className="pixel-new-room-button flex w-full items-center justify-center gap-2 px-3 py-2.5 text-sm font-bold"
           onClick={() => setCreating(true)}
         >
+          <PixelIcon name="plus" size={16} />
           {t("new_room")}
         </button>
-        {creating && <NewRoomForm onDone={() => setCreating(false)} />}
-        {activeRooms.map(roomRow)}
-        {archivedRooms.length > 0 && (
-          <div className="pt-2">
-            <button
-              className="w-full px-2 text-left text-xs text-neutral-400 hover:text-neutral-600"
-              onClick={() => setShowArchived((v) => !v)}
-            >
-              {showArchived ? "▾" : "▸"} {t("archived_section", { n: archivedRooms.length })}
-            </button>
-            {showArchived && <div className="mt-1 space-y-1">{archivedRooms.map(roomRow)}</div>}
-          </div>
-        )}
+        <div className="pixel-room-list mt-3 flex-1 space-y-2 overflow-y-auto pr-1">
+          {activeRooms.map(roomRow)}
+        </div>
+        <div className="pixel-archive-dock mt-3 pt-3">
+          {showArchived && archivedRooms.length > 0 && (
+            <div className="pixel-archive-panel mb-2 max-h-48 space-y-2 overflow-y-auto p-2">
+              {archivedRooms.map(roomRow)}
+            </div>
+          )}
+          <button
+            className="pixel-archive-button flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
+            onClick={() => setShowArchived((v) => !v)}
+          >
+            <PixelIcon name="archive" size={15} />
+            <span className="min-w-0 flex-1">{t("archived_section", { n: archivedRooms.length })}</span>
+            <span>{showArchived ? "▾" : "▸"}</span>
+          </button>
+        </div>
       </aside>
+      {creating && <NewRoomDialog onClose={() => setCreating(false)} />}
       {menu && <RoomContextMenu menu={menu} onClose={() => setMenu(null)} />}
       {showMembers && currentRoom && (
         <RoomMembersDialog roomId={currentRoom.id} memberIds={currentRoom.agentIds} onClose={() => setShowMembers(false)} />
