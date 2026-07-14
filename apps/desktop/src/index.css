@@ -192,30 +192,107 @@ button, input, select, textarea { font: inherit; }
 .md-body hr { border: none; border-top: 1px solid #d5cdb6; margin: 8px 0; }
 
 /* Reasonix 风格聊天输入区 */
-.pixel-composer {
-  border: 2px solid var(--pixel-ink);
-  border-radius: 8px;
-  background: var(--pixel-paper);
-  box-shadow: 3px 3px 0 var(--pixel-shadow);
-  transition: box-shadow 120ms ease, border-color 120ms ease;
+.composer-dock {
+  border-top: 1px solid color-mix(in srgb, var(--pixel-ink) 18%, transparent);
+  background: color-mix(in srgb, var(--pixel-paper) 94%, transparent);
+  padding: 10px 14px 14px;
 }
-.pixel-composer:focus-within { border-color: var(--pixel-accent); box-shadow: 3px 3px 0 var(--pixel-accent); }
-.pixel-composer textarea { background: transparent; border: none; outline: none; resize: none; }
-.pixel-composer-chevron { color: var(--pixel-accent); font-weight: 800; }
+
+.pixel-composer-config {
+  border: 2px solid color-mix(in srgb, var(--pixel-ink) 72%, transparent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--pixel-paper) 92%, var(--pixel-accent) 8%);
+  box-shadow: 3px 3px 0 var(--pixel-shadow);
+}
+
+.pixel-composer {
+  min-height: 60px;
+  border: 3px solid var(--pixel-ink);
+  border-radius: 3px;
+  background: var(--pixel-paper);
+  box-shadow: 4px 4px 0 var(--pixel-shadow);
+  transition:
+    border-color 120ms cubic-bezier(0.2, 0.72, 0.2, 1),
+    box-shadow 180ms cubic-bezier(0.2, 0.72, 0.2, 1),
+    transform 180ms cubic-bezier(0.2, 0.72, 0.2, 1);
+}
+.pixel-composer:focus-within {
+  border-color: var(--pixel-accent);
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--pixel-accent) 78%, var(--pixel-shadow));
+  transform: translateY(-1px);
+}
+.pixel-composer--configured {
+  border-top-color: var(--pixel-accent);
+}
+.pixel-composer textarea {
+  min-height: 25px;
+  max-height: 160px;
+  border: none;
+  background: transparent;
+  outline: none;
+  resize: none;
+  line-height: 1.55;
+  scrollbar-width: thin;
+  transition: height 140ms cubic-bezier(0.2, 0.72, 0.2, 1);
+}
+.pixel-composer-chevron {
+  color: var(--pixel-accent);
+  font-weight: 900;
+  text-shadow: 1px 0 0 currentColor;
+}
+
+.pixel-composer-tool,
 .pixel-send {
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  color: white;
-  background: linear-gradient(135deg, #5b9dff, #9b7bff);
-  box-shadow: 0 2px 8px rgba(91, 157, 255, 0.4);
-  transition: transform 90ms ease, filter 90ms ease;
+  width: 42px;
+  height: 42px;
+  border: 2px solid var(--pixel-ink);
+  border-radius: 2px;
+  box-shadow: 3px 3px 0 var(--pixel-shadow);
+  transition:
+    color 120ms ease,
+    background 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    transform 120ms cubic-bezier(0.2, 0.72, 0.2, 1);
 }
-.pixel-send:hover:not(:disabled) { filter: brightness(1.08); }
-.pixel-send:active:not(:disabled) { transform: scale(0.92); }
-.pixel-send:disabled { opacity: 0.4; box-shadow: none; }
+
+.pixel-composer-tool {
+  color: var(--pixel-muted);
+  background: color-mix(in srgb, var(--pixel-paper) 88%, var(--pixel-ink) 12%);
+}
+.pixel-composer-tool:hover,
+.pixel-composer-tool:focus-visible,
+.pixel-composer-tool.is-active {
+  outline: none;
+  color: var(--pixel-accent);
+  border-color: var(--pixel-accent);
+  background: color-mix(in srgb, var(--pixel-paper) 82%, var(--pixel-accent) 18%);
+}
+
+.pixel-send {
+  color: white;
+  background: var(--pixel-accent);
+}
+.pixel-send:hover:not(:disabled),
+.pixel-send:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--pixel-accent) 88%, white);
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--pixel-shadow);
+}
+.pixel-send:active:not(:disabled),
+.pixel-composer-tool:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 var(--pixel-shadow);
+}
+.pixel-send:disabled {
+  color: color-mix(in srgb, white 65%, var(--pixel-muted));
+  background: color-mix(in srgb, var(--pixel-paper) 72%, var(--pixel-muted) 28%);
+  opacity: 0.7;
+  box-shadow: 2px 2px 0 var(--pixel-shadow);
+}
 
 /* 全局像素动效（#40）：steps 缓动，短促干脆；reduced-motion 全部关闭 */
 @keyframes pixel-pop-in {
@@ -243,4 +320,5 @@ button, input, select, textarea { font: inherit; }
 
 @media (prefers-reduced-motion: reduce) {
   .anim-msg, .anim-panel, .anim-view, .pixel-dialog, .pixel-dialog-backdrop { animation: none; }
+  .pixel-composer, .pixel-composer textarea, .pixel-composer-tool, .pixel-send { transition: none; }
 }

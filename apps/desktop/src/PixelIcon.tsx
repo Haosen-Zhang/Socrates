@@ -98,6 +98,18 @@ const ICONS: Record<string, string[]> = {
     "..........",
     "..........",
   ],
+  send: [
+    "....XX....",
+    "...XXXX...",
+    "..XX..XX..",
+    ".XX....XX.",
+    "....XX....",
+    "....XX....",
+    "....XX....",
+    "....XX....",
+    "..........",
+    "..........",
+  ],
 };
 
 export default function PixelIcon({ name, size = 16 }: { name: keyof typeof ICONS | string; size?: number }) {
