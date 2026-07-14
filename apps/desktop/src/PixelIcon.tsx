@@ -110,6 +110,30 @@ const ICONS: Record<string, string[]> = {
     "..........",
     "..........",
   ],
+  plus: [
+    "..........",
+    "....XX....",
+    "....XX....",
+    ".XXXXXXXX.",
+    ".XXXXXXXX.",
+    "....XX....",
+    "....XX....",
+    "..........",
+    "..........",
+    "..........",
+  ],
+  archive: [
+    ".XXXXXXXX.",
+    "XXXXXXXXXX",
+    "XX......XX",
+    "XX.XXXX.XX",
+    "XX.XXXX.XX",
+    "XX......XX",
+    "XX......XX",
+    "XX......XX",
+    "XXXXXXXXXX",
+    "..........",
+  ],
 };
 
 export default function PixelIcon({ name, size = 16 }: { name: keyof typeof ICONS | string; size?: number }) {
