@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Provider } from "@socrates/core";
 import { useStore, useT, type ProviderForm, type TestResult } from "./store";
-import { pixelBurst, sfx } from "./fx";
+import { sfx } from "./fx";
 
 const EMPTY: ProviderForm = {
   name: "",
@@ -89,14 +89,13 @@ function ProviderCard({
           </button>
           <button
             className="pixel-button pixel-button--danger px-2 py-1 text-xs"
-            onClick={(e) => {
+            onClick={() => {
               if (!confirming) {
                 setConfirming(true);
                 setTimeout(() => setConfirming(false), 3000);
                 return;
               }
               sfx.delete();
-              pixelBurst(e.currentTarget, "#b4233b");
               void removeProvider(provider.id);
             }}
           >
@@ -204,9 +203,8 @@ export default function ProvidersPage() {
               </div>
               <button
                 className="pixel-button h-8 w-8"
-                onClick={(e) => {
+                onClick={() => {
                   sfx.close();
-                  pixelBurst(e.currentTarget);
                   close();
                 }}
                 aria-label={t("close")}

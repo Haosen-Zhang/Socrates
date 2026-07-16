@@ -6,7 +6,7 @@ import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
 import { toggleRoomAgentSelection } from "./roomSelection";
 import { useStore, useT, type StreamingTurn } from "./store";
-import { pixelBurst, sfx } from "./fx";
+import { sfx } from "./fx";
 import { shouldSubmitComposerEnter } from "./composerIme";
 
 const DUTY_CLS: Record<string, string> = {
@@ -654,9 +654,8 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
             type="button"
             className="pixel-button h-9 w-9 shrink-0"
             aria-label={t("close")}
-            onClick={(event) => {
+            onClick={() => {
               sfx.close();
-              pixelBurst(event.currentTarget);
               onClose();
             }}
           >
@@ -771,9 +770,8 @@ function RoomContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => vo
     >
       <button
         className={item}
-        onClick={(e) => {
+        onClick={() => {
           sfx.delete();
-          pixelBurst(e.currentTarget);
           void archiveRoom(room.id, !room.archived);
           onClose();
         }}
@@ -782,13 +780,12 @@ function RoomContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => vo
       </button>
       <button
         className={`${item} ${confirming ? "font-medium text-red-700" : "text-red-600"}`}
-        onClick={(e) => {
+        onClick={() => {
           if (!confirming) {
             setConfirming(true);
             return;
           }
           sfx.delete();
-          pixelBurst(e.currentTarget, "#b4233b");
           void removeRoom(room.id);
           onClose();
         }}
@@ -822,9 +819,8 @@ function RoomMembersDialog({
           </div>
           <button
             className="pixel-button h-8 w-8"
-            onClick={(e) => {
+            onClick={() => {
               sfx.close();
-              pixelBurst(e.currentTarget);
               onClose();
             }}
             aria-label={t("close")}
@@ -958,7 +954,7 @@ export default function ChatPage() {
           className="pixel-new-room-button flex w-full items-center justify-center gap-2 px-3 py-2.5 text-sm font-bold"
           onClick={() => setCreating(true)}
         >
-          <PixelIcon name="plus" size={16} />
+          <PixelIcon name="plus" size={20} />
           {t("new_room")}
         </button>
         <div className="pixel-room-list mt-3 flex-1 space-y-2 overflow-y-auto pr-1">
@@ -974,7 +970,7 @@ export default function ChatPage() {
             className="pixel-archive-button flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
             onClick={() => setShowArchived((v) => !v)}
           >
-            <PixelIcon name="archive" size={15} />
+            <PixelIcon name="archive" size={20} />
             <span className="min-w-0 flex-1">{t("archived_section", { n: archivedRooms.length })}</span>
             <span>{showArchived ? "▾" : "▸"}</span>
           </button>

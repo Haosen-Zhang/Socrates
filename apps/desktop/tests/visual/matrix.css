@@ -1,0 +1,27 @@
+.visual-matrix {
+  min-height: 100vh;
+  padding: 32px;
+  color: #28233f;
+  background: #f1eddf;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+.visual-matrix header { margin-bottom: 28px; }
+.visual-matrix h1 { margin: 4px 0; font-size: 24px; }
+.visual-matrix h2 { margin: 0 0 10px; font-size: 18px; }
+.visual-matrix h3 { margin: 20px 0 10px; font-size: 14px; }
+.visual-matrix p { color: #6b6580; }
+.color-panel { margin: 20px 0; padding: 20px; border: 2px solid currentColor; }
+.color-panel--dark { color: #e8e4f5; background: #201c30; }
+.color-panel--dark .pixel-icon {
+  --pixel-icon-ink: #ded9ff;
+  --pixel-icon-light: #9b87ff;
+  --pixel-icon-highlight: #38d7f3;
+}
+.color-panel--light { color: #28233f; background: #fffdf4; }
+.matrix-row { display: flex; min-height: 58px; align-items: center; gap: 16px; border-top: 1px solid #c7bea5; }
+.matrix-row > strong { width: 44px; font-size: 12px; }
+.icon-strip { display: flex; transform-origin: left center; gap: 4px; }
+.icon-cell { display: grid; width: 48px; place-items: center; gap: 4px; }
+.icon-cell span { font-size: 8px; }
+.decorative-strip { display: flex; gap: 14px; }
+.interaction-target { margin-top: 24px; min-height: 40px; padding: 8px 16px; }

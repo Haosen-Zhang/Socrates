@@ -52,15 +52,27 @@ export const sfx = {
   },
 };
 
-/** 从某个元素中心迸发一圈像素方块，短暂后消失 */
-export function pixelBurst(el: Element | null, color = "#8a6ff0"): void {
-  if (!el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  const r = el.getBoundingClientRect();
-  const cx = r.left + r.width / 2;
-  const cy = r.top + r.height / 2;
+const MAX_ACTIVE_PARTICLES = 120;
+const activeParticles = new Set<HTMLElement>();
+
+function removeParticle(particle: HTMLElement): void {
+  activeParticles.delete(particle);
+  particle.remove();
+}
+
+/** 从真实 pointer 坐标迸发一圈像素方块，短暂后消失。 */
+export function pixelBurstAt(cx: number, cy: number, color = "var(--pixel-accent, #8a6ff0)"): void {
+  if (!Number.isFinite(cx) || !Number.isFinite(cy)) return;
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const n = 12;
   for (let i = 0; i < n; i++) {
+    while (activeParticles.size >= MAX_ACTIVE_PARTICLES) {
+      const oldest = activeParticles.values().next().value;
+      if (!oldest) break;
+      removeParticle(oldest);
+    }
     const p = document.createElement("div");
+    p.className = "pixel-particle";
     const size = 4 + Math.floor(Math.random() * 3);
     Object.assign(p.style, {
       position: "fixed",
@@ -69,14 +81,13 @@ export function pixelBurst(el: Element | null, color = "#8a6ff0"): void {
       width: `${size}px`,
       height: `${size}px`,
       background: color,
-      zIndex: "200",
-      pointerEvents: "none",
-      imageRendering: "pixelated",
+      zIndex: "var(--pixel-fx-z, 200)",
     });
     document.body.appendChild(p);
+    activeParticles.add(p);
     const angle = (Math.PI * 2 * i) / n + Math.random() * 0.4;
     const dist = 26 + Math.random() * 26;
-    p.animate(
+    const animation = p.animate(
       [
         { transform: "translate(-50%, -50%) scale(1)", opacity: 1 },
         {
@@ -85,6 +96,7 @@ export function pixelBurst(el: Element | null, color = "#8a6ff0"): void {
         },
       ],
       { duration: 360, easing: "steps(5, end)" },
-    ).finished.then(() => p.remove(), () => p.remove());
+    );
+    void animation.finished.then(() => removeParticle(p), () => removeParticle(p));
   }
 }

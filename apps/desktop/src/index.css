@@ -14,15 +14,26 @@ body { margin: 0; font-size: var(--app-font-size); }
 button, input, select, textarea { font: inherit; }
 
 .pixel-icon {
+  --pixel-icon-ink: #2d225e;
+  --pixel-icon-light: #7b6fc8;
+  --pixel-icon-highlight: #22c7e8;
   position: relative;
   display: inline-grid;
   flex: none;
   place-items: center;
   line-height: 0;
 }
-.pixel-icon__classic,
+:root[data-theme="dark"] .pixel-icon {
+  --pixel-icon-ink: #ded9ff;
+  --pixel-icon-light: #9b87ff;
+  --pixel-icon-highlight: #38d7f3;
+}
+.pixel-icon__micro,
+.pixel-icon__decorative-fallback,
 .pixel-icon__generated { grid-area: 1 / 1; }
-.pixel-icon__classic { display: block; }
+.pixel-icon__micro,
+.pixel-icon__decorative-fallback { display: block; }
+.pixel-icon__micro--pixel-1998 { display: none; }
 .pixel-icon__generated {
   display: none;
   width: 100%;
@@ -31,14 +42,23 @@ button, input, select, textarea { font: inherit; }
   background-repeat: no-repeat;
   background-size: 300% 300%;
   image-rendering: pixelated;
-  transform: scale(1.16);
 }
-:root[data-ui-theme="pixel-1998"] .pixel-icon--has-generated:not([data-icon-theme="socrates-classic"]) > .pixel-icon__classic,
-.pixel-icon--has-generated[data-icon-theme="pixel-1998"] > .pixel-icon__classic { display: none; }
+:root[data-ui-theme="pixel-1998"] .pixel-icon:not([data-icon-theme="socrates-classic"]) > .pixel-icon__micro--classic,
+.pixel-icon[data-icon-theme="pixel-1998"] > .pixel-icon__micro--classic { display: none; }
+:root[data-ui-theme="pixel-1998"] .pixel-icon:not([data-icon-theme="socrates-classic"]) > .pixel-icon__micro--pixel-1998,
+.pixel-icon[data-icon-theme="pixel-1998"] > .pixel-icon__micro--pixel-1998 { display: block; }
 :root[data-ui-theme="pixel-1998"] .pixel-icon--has-generated:not([data-icon-theme="socrates-classic"]) > .pixel-icon__generated,
 .pixel-icon--has-generated[data-icon-theme="pixel-1998"] > .pixel-icon__generated { display: block; }
-.pixel-icon--has-generated[data-icon-theme="socrates-classic"] > .pixel-icon__classic { display: block; }
+:root[data-ui-theme="pixel-1998"] .pixel-icon--has-generated:not([data-icon-theme="socrates-classic"]) > .pixel-icon__decorative-fallback,
+.pixel-icon--has-generated[data-icon-theme="pixel-1998"] > .pixel-icon__decorative-fallback { display: none; }
+.pixel-icon--has-generated[data-icon-theme="socrates-classic"] > .pixel-icon__decorative-fallback { display: block; }
 .pixel-icon--has-generated[data-icon-theme="socrates-classic"] > .pixel-icon__generated { display: none; }
+
+.pixel-particle {
+  pointer-events: none;
+  image-rendering: pixelated;
+  will-change: transform, opacity;
+}
 
 /* 字号跟随 config：非固定 px 的文本用 em，随根 --app-font-size 缩放 */
 .pixel-app { font-size: var(--app-font-size); }

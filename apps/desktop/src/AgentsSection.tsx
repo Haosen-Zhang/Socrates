@@ -11,7 +11,7 @@ import {
 import AgentAvatar from "./AgentAvatar";
 import { validateAvatarUpload } from "./agentAvatarUpload";
 import { useStore, useT, type AgentForm } from "./store";
-import { pixelBurst, sfx } from "./fx";
+import { sfx } from "./fx";
 
 function newForm(agents: Agent[]): AgentForm {
   const identity = randomUniqueAgentIdentity(agents.map((agent) => agent.nickname));
@@ -153,9 +153,8 @@ export default function AgentsSection() {
                 </button>
                 <button
                   className="pixel-button pixel-button--danger px-2 py-1 text-xs"
-                  onClick={(e) => {
+                  onClick={() => {
                     sfx.delete();
-                    pixelBurst(e.currentTarget, "#b4233b");
                     void removeAgent(agent.id);
                   }}
                 >
@@ -183,9 +182,8 @@ export default function AgentsSection() {
               </div>
               <button
                 className="pixel-button h-8 w-8"
-                onClick={(e) => {
+                onClick={() => {
                   sfx.close();
-                  pixelBurst(e.currentTarget);
                   close();
                 }}
                 aria-label={t("close")}

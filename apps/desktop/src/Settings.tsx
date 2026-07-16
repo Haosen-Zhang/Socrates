@@ -241,9 +241,9 @@ function AppearanceSection() {
                 onClick={() => void updateConfig({ appearance: { ...appearance, uiTheme: option.value } })}
               >
                 <span className="mb-3 flex items-center gap-3">
-                  <PixelIcon name="chat" size={28} theme={option.value} />
-                  <PixelIcon name="gear" size={28} theme={option.value} />
-                  <PixelIcon name="robot" size={28} theme={option.value} />
+                  <PixelIcon name="chat" size={40} theme={option.value} variant="decorative" />
+                  <PixelIcon name="gear" size={40} theme={option.value} variant="decorative" />
+                  <PixelIcon name="robot" size={40} theme={option.value} variant="decorative" />
                 </span>
                 <span className="block text-sm font-bold">{option.label}</span>
                 <span className="mt-1 block text-xs text-neutral-500">{option.desc}</span>
@@ -304,7 +304,7 @@ export default function Settings() {
             }`}
             onClick={() => setSection(n.id)}
           >
-            <PixelIcon name={n.icon} size={16} />
+            <PixelIcon name={n.icon} size={20} />
             {t(n.labelKey)}
           </button>
         ))}
