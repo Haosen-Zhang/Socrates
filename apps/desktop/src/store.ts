@@ -11,6 +11,7 @@ import {
   type StoredMessage,
   type TaskSummary,
   type TestOutcome,
+  type WorkspaceRecord,
 } from "@socrates/core";
 
 type Handshake = { port: number; token: string };
@@ -72,6 +73,11 @@ type Store = {
   /** config.toml（sidecar 持久化的非敏感配置）；连接后加载 */
   config: AppConfig | null;
   updateConfig: (patch: Partial<AppConfig>) => Promise<void>;
+
+  workspaces: WorkspaceRecord[];
+  activeWorkspace: WorkspaceRecord | null;
+  loadWorkspaces: () => Promise<void>;
+  selectWorkspacePath: (path: string) => Promise<void>;
 
   providers: Provider[];
   testResults: Record<string, TestResult | "running">;
@@ -222,6 +228,8 @@ export const useStore = create<Store>((set, get) => {
     },
 
     config: null,
+    workspaces: [],
+    activeWorkspace: null,
     updateConfig: async (patch) => {
       const res = await sidecarFetch(hs(), "/config", { method: "PUT", body: JSON.stringify(patch) });
       const config = (await res.json()) as AppConfig;
@@ -263,7 +271,7 @@ export const useStore = create<Store>((set, get) => {
               } catch {
                 // 配置加载失败不阻塞连接，沿用本地默认
               }
-              await Promise.all([get().loadProviders(), get().loadAgents(), get().loadRooms()]);
+              await Promise.all([get().loadProviders(), get().loadAgents(), get().loadRooms(), get().loadWorkspaces()]);
               const first = get().rooms[0];
               if (first) void get().selectRoom(first.id);
               return;
@@ -275,6 +283,18 @@ export const useStore = create<Store>((set, get) => {
         await new Promise((r) => setTimeout(r, HANDSHAKE_POLL_MS));
       }
       set({ status: "disconnected" });
+    },
+
+    loadWorkspaces: async () => {
+      const workspaces = await requireOk<WorkspaceRecord[]>(await sidecarFetch(hs(), "/workspaces"));
+      set((state) => ({ workspaces, activeWorkspace: state.activeWorkspace ?? workspaces[0] ?? null }));
+    },
+    selectWorkspacePath: async (path) => {
+      const activeWorkspace = await requireOk<WorkspaceRecord>(
+        await sidecarFetch(hs(), "/workspaces", { method: "POST", body: JSON.stringify({ path }) }),
+      );
+      set({ activeWorkspace });
+      await get().loadWorkspaces();
     },
 
     loadProviders: async () => {

@@ -66,7 +66,7 @@
 
 ### ARC-001 — 固化 Agent Runtime、Workspace 与 Event Journal ADR
 
-- **优先级 / 状态：** P1 / 未开始
+- **优先级 / 状态：** P1 / 进行中（ADR 0004–0007 与 threat model 已落地；旧架构文档交叉引用待补）
 - **目标：** 在代码改动前冻结 ownership、协议和安全边界。
 - **依赖：** P0 可并行；不依赖生产代码。
 - **修改文件：** `docs/02-system-architecture.md`、`03-engineering-design.md`、`04-orchestration-protocol.md`、`05-security-permissions.md`。
@@ -78,7 +78,7 @@
 
 ### ENG-001 — 建立低噪声 lint/format gate
 
-- **优先级 / 状态：** P1 / 未开始
+- **优先级 / 状态：** P1 / 进行中（Biome 低噪声 lint gate 已完成；独立 format/CI gate 待补）
 - **目标：** 补齐当前没有 lint script 的工程缺口，不制造全仓格式噪声。
 - **依赖：** 无。
 - **修改文件：** 根 `package.json`、`bun.lock`。
@@ -90,7 +90,7 @@
 
 ### DB-001 — 引入事务化、校验 checksum 的正式 migration runner
 
-- **优先级 / 状态：** P1 / 未开始
+- **优先级 / 状态：** P1 / 已完成（事务、checksum 漂移、失败回滚、VACUUM INTO 一致备份）
 - **目标：** 替换继续增长的 ad-hoc schema upgrade，并支持一致性 backup/失败恢复。
 - **依赖：** ARC-001。
 - **修改文件：** `apps/sidecar/src/db.ts`、`index.ts`。
@@ -102,7 +102,7 @@
 
 ### DB-002 — Event journal、projection transaction 与 replay SSE
 
-- **优先级 / 状态：** P1 / 未开始
+- **优先级 / 状态：** P1 / 进行中（journal/seq/去重/同事务/replay API 已完成；live SSE 与 desktop gap 补流待接）
 - **目标：** 让 UI 断线/重启后按 sequence 恢复，不再依赖 request-bound SSE。
 - **依赖：** DB-001。
 - **修改文件：** `apps/sidecar/src/index.ts`、`rooms.ts`、`apps/desktop/src/store.ts`、`packages/core/src/index.ts`。
@@ -114,7 +114,7 @@
 
 ### DB-003 — Session/mode、Agent snapshot 与 legacy Room 兼容 schema
 
-- **优先级 / 状态：** P1 / 未开始
+- **优先级 / 状态：** P1 / 进行中（三模式 SessionStore、快照与 interrupted migration 已完成；legacy Room adapter 待接）
 - **目标：** 同一产品支持 `chat/single_agent/multi_agent`，不破坏现有 Room/history。
 - **依赖：** DB-001、DB-002。
 - **修改文件：** `packages/core/src/chat.ts`、`apps/sidecar/src/rooms.ts`、`db.ts`、相关 tests。
@@ -126,7 +126,7 @@
 
 ### CAP-001 — 建立 ModelCapabilities、Provider 错误与 Usage 基础契约
 
-- **优先级 / 状态：** P1 / 未开始
+- **优先级 / 状态：** P1 / 进行中（capability/error/usage null 契约已完成；catalog TTL 与 Provider UI 待接）
 - **目标：** 在任务开始前知道 text/image/file/tool/reasoning/runtime 能力，并保留真实错误。
 - **依赖：** ARC-001。
 - **修改文件：** `packages/core/src/provider.ts`、`index.ts`、`apps/sidecar/src/gateway-aisdk.ts`、`providers.ts`、`ProvidersPage.tsx`。
@@ -138,7 +138,7 @@
 
 ### SEC-001 — 迁移 secret refs，并收紧 CSP/CORS/日志 redaction
 
-- **优先级 / 状态：** P1 / 未开始
+- **优先级 / 状态：** P1 / 进行中（loopback Origin/Host、CORS、CSP 已收紧；proxy secret ref/redaction 待完成）
 - **目标：** Provider/MCP/proxy credential 统一留在 Keychain，缩小 Renderer↔sidecar 攻击面。
 - **依赖：** DB-001、ARC-001。
 - **修改文件：** `apps/sidecar/src/secrets.ts`、`config-store.ts`、`net.ts`、`index.ts`、`apps/desktop/src-tauri/tauri.conf.json`、core config/tests。
@@ -150,7 +150,7 @@
 
 ### WS-001 — 原生 Workspace picker、Recent 与 Session binding
 
-- **优先级 / 状态：** P1 / 未开始
+- **优先级 / 状态：** P1 / 进行中（原生 picker、recent、canonical identity、Session binding 与 active lock 已完成；recent 切换 UI/bookmark seam 待补）
 - **目标：** 用户显式选择目录，sidecar 以 canonical identity 绑定 session。
 - **依赖：** DB-003、SEC-001。
 - **修改文件：** Tauri `Cargo.toml`/`Cargo.lock`、`src/lib.rs`、capabilities、desktop `package.json`/store/ChatPage。
@@ -162,7 +162,7 @@
 
 ### WS-002 — Canonical path policy、secret deny 与 write lease
 
-- **优先级 / 状态：** P1 / 未开始
+- **优先级 / 状态：** P1 / 进行中（traversal/symlink/hardlink/secret/TOCTOU 与 write lease 已完成；跨平台 case/unicode suite 待补）
 - **目标：** 防 traversal/symlink/TOCTOU/outside escape，并保证一个 canonical workspace 一个 writer。
 - **依赖：** WS-001、DB-002。
 - **修改文件：** Workspace core/manager、store migrations。
@@ -174,7 +174,7 @@
 
 ### TOOL-001 — Tool contract、Registry、输出上限与 idempotency
 
-- **优先级 / 状态：** P1 / 未开始
+- **优先级 / 状态：** P1 / 进行中（统一 schema/generation/stable key/输出上限与五个只读工具已完成；超大输出 storage ref 待补）
 - **目标：** 建统一、可过滤、可审计的 Tool 定义和 lifecycle，不立即开放 shell。
 - **依赖：** CAP-001、DB-002、WS-002。
 - **修改文件：** `packages/core/src/index.ts`、sidecar composition root。
@@ -186,7 +186,7 @@
 
 ### PERM-001 — 实现纯 PermissionManager 与策略优先级
 
-- **优先级 / 状态：** P1 / 未开始
+- **优先级 / 状态：** P1 / 已完成（纯函数优先级、mode ceiling、fresh-human 与冲突表测试）
 - **目标：** 统一 global hard deny > capability ceilings > scoped rule > approval/grant 的判定。
 - **依赖：** TOOL-001、ARC-001。
 - **修改文件：** core exports；设置 schema只加 domain types，不先做完整 UI。
@@ -198,7 +198,7 @@
 
 ### APR-001 — Durable ApprovalManager 与 exact-input 防重放
 
-- **优先级 / 状态：** P1 / 未开始
+- **优先级 / 状态：** P1 / 进行中（durable request/decision/grant、幂等 decision key、exact evidence 与 expiry recovery 已完成；审批 routes/cards 待接）
 - **目标：** 审批可重开/replay、decision 幂等且只绑定 exact request。
 - **依赖：** DB-002、PERM-001。
 - **修改文件：** sidecar index/routes、ToolExecutor、core exports。
@@ -210,7 +210,7 @@
 
 ### RUN-001 — AgentRuntime interface、Manager 与 normalized event mapping
 
-- **优先级 / 状态：** P1 / 未开始
+- **优先级 / 状态：** P1 / 进行中（Runtime interface/manager、journal-first mapping、opaque extension 与 interrupted recovery 已完成；后台订阅与 UI replay 待接）
 - **目标：** 把 rich Agent lifecycle 与一次性 text `ModelGateway` 分开。
 - **依赖：** DB-002、CAP-001、TOOL-001、APR-001。
 - **修改文件：** core exports、sidecar index、gateway 保持兼容。
@@ -222,7 +222,7 @@
 
 ### CODEX-001 — 固定 Codex app-server 协议与 child supervisor spike
 
-- **优先级 / 状态：** P1 / 未开始
+- **优先级 / 状态：** P1 / 进行中（0.144.5 最小协议投影、版本 gate、JSONL correlation、双向审批、timeout/malformed/crash/interrupt fake tests 已完成；真实 initialize 与进程树/发布 hash 待补）
 - **目标：** 证明固定版本 `codex app-server --stdio` 可安全初始化、双向审批、interrupt 和退出，不开放生产写入。
 - **依赖：** RUN-001、SEC-001。
 - **修改文件：** sidecar composition；release manifest 草案。

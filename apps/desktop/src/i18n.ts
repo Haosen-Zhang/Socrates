@@ -160,6 +160,8 @@ const zhCN: Dict = {
   invite_agents: "邀请更多 Agent",
   all_agents_joined: "所有 Agent 都已经在这个房间里。",
   add_to_room: "加入",
+  workspace_choose: "选择工作区",
+  workspace_none: "未选择工作区",
 
   // 时间线
   round_divider: "第 {n} 轮",
@@ -347,6 +349,8 @@ const zhTW: Dict = {
   invite_agents: "邀請更多 Agent",
   all_agents_joined: "所有 Agent 都已經在這個房間裡。",
   add_to_room: "加入",
+  workspace_choose: "選擇工作區",
+  workspace_none: "未選擇工作區",
 
   round_divider: "第 {n} 輪",
   duty_propose: "提案",
@@ -529,6 +533,8 @@ const en: Dict = {
   invite_agents: "Invite more agents",
   all_agents_joined: "Every agent is already in this room.",
   add_to_room: "Add",
+  workspace_choose: "Choose workspace",
+  workspace_none: "No workspace",
 
   round_divider: "Round {n}",
   duty_propose: "Proposal",

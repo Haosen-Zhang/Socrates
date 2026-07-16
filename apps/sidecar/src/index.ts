@@ -9,6 +9,12 @@ import { roomRoutes } from "./rooms";
 import { makeAiSdkGateway } from "./gateway-aisdk";
 import { ConfigStore, configRoutes } from "./config-store";
 import { makeProxiedFetch } from "./net";
+import { WorkspaceManager } from "./workspace/manager";
+import { workspaceRoutes } from "./routes/workspaces";
+import { SessionStore } from "./store/session-store";
+import { EventStore } from "./store/event-store";
+import { sessionRoutes } from "./routes/sessions";
+import { isAllowedLoopbackHost, isAllowedRendererOrigin } from "./security/loopback";
 
 // 父进程（Tauri）异常退出（如 SIGKILL/SIGTERM 未走优雅关闭）时自动退出，避免孤儿进程占着端口
 setInterval(() => {
@@ -18,8 +24,17 @@ setInterval(() => {
 const token = crypto.randomUUID();
 const app = new Hono();
 
-// token 才是鉴权边界，origin 放开（服务只绑 127.0.0.1）
-app.use("*", cors());
+app.use("*", async (c, next) => {
+  if (!isAllowedLoopbackHost(c.req.header("host")) || !isAllowedRendererOrigin(c.req.header("origin"))) {
+    return c.text("forbidden", 403);
+  }
+  await next();
+});
+app.use("*", cors({
+  origin: (origin) => isAllowedRendererOrigin(origin) ? origin : "",
+  allowHeaders: ["Authorization", "Content-Type"],
+  allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+}));
 app.use("*", async (c, next) => {
   if (c.req.header("authorization") !== `Bearer ${token}`) {
     return c.text("unauthorized", 401);
@@ -38,6 +53,8 @@ app.route("/config", configRoutes(config));
 app.route("/providers", providerRoutes(db, secrets, proxiedFetch));
 app.route("/agents", agentRoutes(db));
 app.route("/rooms", roomRoutes(db, secrets, makeAiSdkGateway(proxiedFetch)));
+app.route("/workspaces", workspaceRoutes(new WorkspaceManager(db)));
+app.route("/sessions", sessionRoutes(new SessionStore(db), new EventStore(db)));
 
 const server = Bun.serve({
   hostname: "127.0.0.1",

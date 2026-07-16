@@ -1,0 +1,36 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.4/schema.json",
+  "files": {
+    "includes": [
+      "packages/*/src/**",
+      "apps/sidecar/src/**",
+      "apps/desktop/src/**",
+      "!**/dist/**",
+      "!**/target/**"
+    ]
+  },
+  "formatter": { "enabled": false },
+  "assist": { "enabled": false },
+  "javascript": { "globals": ["Bun"] },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "none",
+      "correctness": {
+        "noUndeclaredVariables": "error",
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error",
+        "useHookAtTopLevel": "error"
+      },
+      "suspicious": {
+        "noDuplicateObjectKeys": "error",
+        "noDuplicateParameters": "error",
+        "noShadowRestrictedNames": "error"
+      },
+      "a11y": {
+        "noAccessKey": "error",
+        "noAriaUnsupportedElements": "error"
+      }
+    }
+  }
+}

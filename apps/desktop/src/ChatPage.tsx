@@ -8,6 +8,7 @@ import { toggleRoomAgentSelection } from "./roomSelection";
 import { useStore, useT, type StreamingTurn } from "./store";
 import { sfx } from "./fx";
 import { shouldSubmitComposerEnter } from "./composerIme";
+import WorkspaceChip from "./workspace/WorkspaceChip";
 
 const DUTY_CLS: Record<string, string> = {
   propose: "bg-blue-100 text-blue-800",
@@ -988,6 +989,7 @@ export default function ChatPage() {
             <div className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
               <span className="text-sm font-bold">{currentRoom?.name}</span>
               <div className="flex items-center gap-2">
+                <WorkspaceChip />
                 <button className="pixel-member-button flex items-center gap-1 px-2 py-1" onClick={() => setShowMembers(true)} title={t("room_members_title")}>
                   <span className="flex -space-x-2">
                     {roomAgents.slice(0, 4).map((agent) => <AgentAvatar key={agent.id} src={agent.avatar} label={agent.nickname} size={26} lively={false} />)}

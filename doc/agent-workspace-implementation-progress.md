@@ -7,7 +7,7 @@ Implement the approved Agent Workspace plan in reversible, tested milestones wit
 ## Baseline
 
 - Starting commit: `9f7955d5704918e9e8375b4b89c31a7d44a31a2f`
-- Implementation branch: `codex/agent-workspace-m1-ui`
+- Implementation branch: `codex/agent-workspace-m2-core` (stacked on the verified Milestone 1 commit)
 - Approved specifications:
   - `doc/agent-workspace-master-plan.md`
   - `doc/agent-workspace-tasklist.md`
@@ -17,7 +17,7 @@ Implement the approved Agent Workspace plan in reversible, tested milestones wit
 
 - [x] Milestone 0: Capture build/test/lint/typecheck/smoke baseline and add minimal regression seams.
 - [x] Milestone 1: Complete UI-001 through UI-004 (micro icons, hover entry, global particles, visual checks).
-- [ ] Milestone 2: Workspace and Agent Core foundation.
+- [ ] Milestone 2: Workspace and Agent Core foundation (safe foundation checkpoint complete; Codex production write/shell adapter remains).
 - [ ] Milestone 3: Chat, Single Agent, attachments, images, drag/drop, and `@path`.
 - [ ] Milestone 4: MCP settings, lifecycle, discovery, registry, permissions, and recovery.
 - [ ] Milestone 5: Multi-Agent discussion, plan approval, and designated execution.
@@ -47,4 +47,4 @@ Implement the approved Agent Workspace plan in reversible, tested milestones wit
 
 ## Status
 
-**Milestone 1 complete** — 92 tests pass, typecheck/build pass, Tauri dev booted, and 1x/2x light/dark/zoom visual matrices plus particle-coordinate/reduced-motion checks pass. Preparing the milestone commit before starting the Agent Core foundation.
+**Milestone 2 in progress** — durable migrations, Session/Event stores, canonical Workspace reads, Tool/Permission/Approval foundations, single-writer leases, RuntimeManager, native folder picker, loopback hardening and the pinned Codex protocol supervisor spike are implemented. The current full gate is 141 tests passing before the final hardening additions; a fresh full gate is required at checkpoint commit. Production write/shell remains disabled until the Codex adapter and approval UI close the remaining safety gates.

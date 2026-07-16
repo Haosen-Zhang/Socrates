@@ -148,6 +148,18 @@ const ICONS: Record<string, string[]> = {
     "XXXXXXXXXX",
     "..........",
   ],
+  folder: [
+    "..........",
+    ".XXXX.....",
+    ".XXXXXXXX.",
+    "XXXXXXXXXX",
+    "XX......XX",
+    "XX......XX",
+    "XX......XX",
+    "XXXXXXXXXX",
+    "..........",
+    "..........",
+  ],
 };
 
 const GENERATED_ICON_CELLS: Record<string, readonly [column: number, row: number]> = {
