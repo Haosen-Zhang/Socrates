@@ -138,7 +138,7 @@
 
 ### SEC-001 — 迁移 secret refs，并收紧 CSP/CORS/日志 redaction
 
-- **优先级 / 状态：** P1 / 进行中（loopback Origin/Host、CORS、CSP 已收紧；proxy secret ref/redaction 待完成）
+- **优先级 / 状态：** P1 / 已完成（2026-07-17；Provider/MCP/proxy credentials 均留 Keychain，递归诊断 redaction 已接入）
 - **目标：** Provider/MCP/proxy credential 统一留在 Keychain，缩小 Renderer↔sidecar 攻击面。
 - **依赖：** DB-001、ARC-001。
 - **修改文件：** `apps/sidecar/src/secrets.ts`、`config-store.ts`、`net.ts`、`index.ts`、`apps/desktop/src-tauri/tauri.conf.json`、core config/tests。
@@ -358,7 +358,7 @@
 
 ### MCP-001 — MCP config schema、Keychain refs 与设置 UI
 
-- **优先级 / 状态：** P3 / 未开始
+- **优先级 / 状态：** P3 / 已完成（2026-07-17）
 - **目标：** 用户配置global/workspace stdio或Streamable HTTP server，并看到真实连接状态。
 - **依赖：** SEC-001、WS-001、DB-001。
 - **修改文件：** core config/index、sidecar config/secrets/index、desktop Settings/i18n/store。
@@ -370,7 +370,7 @@
 
 ### MCP-002 — stdio 与 Streamable HTTP transport 生命周期
 
-- **优先级 / 状态：** P3 / 未开始
+- **优先级 / 状态：** P3 / 已完成（2026-07-17）
 - **目标：** Manager可连接、协商、停止、崩溃退避，不产生orphan child。
 - **依赖：** MCP-001、CODEX-001 的 supervisor、SEC-001。
 - **修改文件：** sidecar composition/health。
@@ -382,7 +382,7 @@
 
 ### MCP-003 — Discovery、命名空间与 ToolRegistry generation
 
-- **优先级 / 状态：** P3 / 未开始
+- **优先级 / 状态：** P3 / 已完成（2026-07-17）
 - **目标：** tools/resources/prompts被验证、快照并按generation安全暴露。
 - **依赖：** MCP-002、TOOL-001。
 - **修改文件：** ToolRegistry、MCP manager、settings status UI。
@@ -394,7 +394,7 @@
 
 ### MCP-004 — MCP per-tool 权限、审批与 Agent 暴露策略
 
-- **优先级 / 状态：** P3 / 未开始
+- **优先级 / 状态：** P3 / 已完成（2026-07-17）
 - **目标：** MCP工具遵循和builtin一致的mode/agent/room/policy/approval链。
 - **依赖：** MCP-003、PERM-001、APR-001、NATIVE-001。
 - **修改文件：** PermissionManager inputs、ToolExecutor、Agents/MCP settings、i18n。
@@ -406,7 +406,7 @@
 
 ### MCP-005 — MCP 恢复、诊断、redacted import/export 与 Runtime ownership
 
-- **优先级 / 状态：** P3 / 未开始
+- **优先级 / 状态：** P3 / 已完成（2026-07-17；Codex MCP sync 保持关闭）
 - **目标：** 让用户理解连接失败并确保Native/Codex不会双重托管同一server。
 - **依赖：** MCP-004、CODEX-002。
 - **修改文件：** settings/diagnostics、runtime manager、release docs。

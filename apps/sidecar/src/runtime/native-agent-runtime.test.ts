@@ -91,4 +91,46 @@ describe("NativeAgentRuntime", () => {
     };
     await expect(consume()).rejects.toThrow("native_runtime_image_not_supported");
   });
+
+  it("pauses an ask MCP tool until the exact runtime approval resumes it", async () => {
+    const db = openDb(":memory:");
+    let executions = 0;
+    const registry = new ToolRegistry([{
+      name: "mcp__demo__lookup",
+      description: "lookup",
+      inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"], additionalProperties: false },
+      risk: "medium",
+      idempotency: "read",
+      capability: "mcp",
+      generation: 1,
+      execute: async () => ({ value: ++executions }),
+    }]);
+    const stream: NativeStreamFactory = async function* (input) {
+      const request = { requestId: "approval-1", callId: "call-1", name: "mcp__demo__lookup", input: { query: "answer" } };
+      yield { type: "tool_call", callId: request.callId, name: request.name, input: request.input };
+      const decision = input.requestApproval(request);
+      yield { type: "approval_required", ...request };
+      if ((await decision).approved) {
+        const output = await input.tools[request.name]!.execute(request.input, request.callId, input.signal);
+        yield { type: "tool_result", callId: request.callId, name: request.name, output, isError: false };
+      }
+    };
+    const runtime = new NativeAgentRuntime({
+      sessionId: "session", taskId: "task", agentId: "agent", workspaceId: "workspace", workspaceIdentity: "hash",
+      registry,
+      executor: new ToolExecutor(db, registry, new ApprovalManager(db)),
+      stream,
+      permissionForTool: () => "ask",
+    });
+    await runtime.open();
+    const iterator = runtime.start({ prompt: "lookup" })[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toEqual({ type: "status", status: "running" });
+    expect((await iterator.next()).value).toMatchObject({ type: "tool_call", callId: "call-1" });
+    expect((await iterator.next()).value).toEqual({ type: "approval_required", requestId: "approval-1", callId: "call-1", risk: "medium", kind: "tool" });
+    expect(executions).toBe(0);
+    await runtime.answerApproval("approval-1", "allow_once");
+    expect((await iterator.next()).value).toMatchObject({ type: "extension", name: "tool_result" });
+    expect(executions).toBe(1);
+    expect((await iterator.next()).value).toEqual({ type: "status", status: "completed" });
+  });
 });

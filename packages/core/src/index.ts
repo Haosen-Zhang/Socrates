@@ -13,3 +13,4 @@ export * from "./approvals";
 export * from "./workspace";
 export * from "./runtime";
 export * from "./message-parts";
+export * from "./mcp";

@@ -88,7 +88,18 @@ export function normalizeConfig(raw: unknown): AppConfig {
 
 /** custom 模式下拼出代理 URL：url 覆盖优先，否则用 type/host/port(/账号密码)。host 为空则无代理。 */
 export function buildProxyUrl(p: ProxyConfig): string | undefined {
-  if (p.url.trim()) return p.url.trim();
+  if (p.url.trim()) {
+    const value = p.url.trim();
+    if (!p.username.trim()) return value;
+    try {
+      const parsed = new URL(value);
+      parsed.username = p.username.trim();
+      parsed.password = p.password;
+      return parsed.toString();
+    } catch {
+      return value;
+    }
+  }
   if (!p.host.trim()) return undefined;
   const auth = p.username.trim()
     ? `${encodeURIComponent(p.username.trim())}:${encodeURIComponent(p.password)}@`

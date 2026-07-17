@@ -125,4 +125,18 @@ describe("SingleAgentRunner", () => {
     expect((await runPromise).status).toBe("cancelled");
     expect(db.query("SELECT status FROM sessions WHERE id = ?").get(session.id)).toEqual({ status: "cancelled" });
   });
+
+  it("recovers a restart by interrupting orphaned runs and expiring their approvals", () => {
+    const { db, session, approvals, runner } = setup();
+    const now = new Date().toISOString();
+    db.query("INSERT INTO agent_runs (id, session_id, prompt, status, created_at) VALUES ('orphan', ?, 'work', 'awaiting_approval', ?)").run(session.id, now);
+    db.query("UPDATE sessions SET status = 'awaiting_approval' WHERE id = ?").run(session.id);
+    approvals.request({
+      taskId: "orphan", kind: "tool", subjectId: "orphan:call", inputHash: "hash",
+      workspaceIdentity: "workspace", attemptId: "orphan", policyVersion: 1, risk: "medium", freshHumanRequired: false,
+    });
+    expect(runner.recoverInterrupted()).toEqual({ runs: 1, approvals: 1 });
+    expect(db.query("SELECT status, error FROM agent_runs WHERE id = 'orphan'").get()).toEqual({ status: "interrupted", error: "sidecar_restarted" });
+    expect(approvals.recoverPending().pending).toEqual([]);
+  });
 });

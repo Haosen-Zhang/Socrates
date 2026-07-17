@@ -1,6 +1,7 @@
 import type { ModelCapabilities } from "./model-capabilities";
 import type { NormalizedUsage } from "./usage";
 import type { MessagePart } from "./message-parts";
+import type { ToolRisk } from "./tools";
 
 export type RuntimeStatus = "opening" | "ready" | "running" | "awaiting_approval" | "interrupted" | "completed" | "failed" | "closed";
 
@@ -26,7 +27,7 @@ export function isTerminalRuntimeStatus(status: RuntimeStatus): boolean {
 export type RuntimeEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; callId: string; name: string; input: unknown }
-  | { type: "approval_required"; requestId: string; callId: string }
+  | { type: "approval_required"; requestId: string; callId: string; risk?: ToolRisk; kind?: string }
   | { type: "usage"; usage: NormalizedUsage }
   | { type: "status"; status: RuntimeStatus; message?: string }
   | { type: "extension"; name: string; payload: unknown };

@@ -31,10 +31,15 @@ import { createReadOnlyBuiltins } from "./tools/read-only-builtins";
 import { ToolRegistry } from "./tools/registry";
 import { ToolExecutor } from "./tools/executor";
 import type { ProviderType } from "@socrates/core";
+import { McpStore } from "./mcp/store";
+import { McpManager } from "./mcp/manager";
+import { OfficialMcpClientAdapter } from "./mcp/adapter";
+import { mcpRoutes } from "./routes/mcp";
 
 // 父进程（Tauri）异常退出（如 SIGKILL/SIGTERM 未走优雅关闭）时自动退出，避免孤儿进程占着端口
+let stopManagedServices: () => Promise<void> = async () => {};
 setInterval(() => {
-  if (process.ppid === 1) process.exit(0);
+  if (process.ppid === 1) void stopManagedServices().finally(() => process.exit(0));
 }, 2000);
 
 const token = crypto.randomUUID();
@@ -60,14 +65,16 @@ app.use("*", async (c, next) => {
 
 const db = openDb(defaultDbPath());
 const secrets = new KeychainSecrets();
-const config = new ConfigStore();
+const config = new ConfigStore(undefined, secrets);
 // 所有出站请求（连接测试/列模型/模型调用）都按 config.toml 的代理设置走
-const proxiedFetch = makeProxiedFetch(() => config.get());
+const proxiedFetch = makeProxiedFetch(() => config.getResolved());
 const workspaces = new WorkspaceManager(db);
 const sessions = new SessionStore(db);
 const events = new EventStore(db);
 const approvals = new ApprovalManager(db);
 const attachments = new AttachmentResolver(db, defaultDataDir());
+const mcpStore = new McpStore(db, secrets);
+const mcp = new McpManager(db, mcpStore, new OfficialMcpClientAdapter(proxiedFetch));
 const runtimes = new RuntimeManager(db, events);
 runtimes.register("codex_app_server", (input) => {
   const workspace = input.workspaceId ? workspaces.get(input.workspaceId) : null;
@@ -106,7 +113,9 @@ runtimes.register("native_ai_sdk", (input) => {
   const apiKey = secrets.get(provider.api_key_ref);
   if (!apiKey) throw new Error("native_provider_key_missing");
   const policy = new WorkspacePathPolicy(workspace.canonicalPath);
-  const registry = new ToolRegistry(createReadOnlyBuiltins(policy));
+  const mcpDefinitions = mcp.definitionsFor(workspace.id, { effects: ["allow", "ask"] });
+  const mcpEffects = new Map(mcp.policyEntriesFor(workspace.id).map((entry) => [entry.namespacedName, entry.effect]));
+  const registry = new ToolRegistry([...createReadOnlyBuiltins(policy), ...mcpDefinitions]);
   const executor = new ToolExecutor(db, registry, approvals);
   const model = createAiSdkModel({
     providerType: provider.type,
@@ -125,6 +134,7 @@ runtimes.register("native_ai_sdk", (input) => {
     registry,
     executor,
     stream: createAiSdkNativeStream(model),
+    permissionForTool: (definition) => definition.capability === "mcp" ? mcpEffects.get(definition.name) ?? "ask" : "allow",
     resolveAttachment: (attachmentId) => {
       const attachment = attachments.read(attachmentId);
       return { mediaType: attachment.record.mediaType, filename: attachment.record.filename, bytes: attachment.bytes };
@@ -136,9 +146,14 @@ runtimes.register("native_ai_sdk", (input) => {
       if (snapshotHash && currentHash !== snapshotHash) throw new Error("workspace_ref_changed");
       return { text: content.text };
     },
+    onClose: () => {
+      mcp.releaseOwners(input.agentSessionId, `${input.sessionId}:${input.agentId}`);
+    },
   });
 });
 const agentRuns = new SingleAgentRunner(db, runtimes, approvals, events, attachments);
+runtimes.recoverInterrupted();
+agentRuns.recoverInterrupted();
 
 app.get("/health", (c) => c.json({ ok: true }));
 app.route("/config", configRoutes(config));
@@ -149,6 +164,7 @@ app.route("/workspaces", workspaceRoutes(workspaces));
 app.route("/sessions", sessionRoutes(sessions, events));
 app.route("/agent", agentRunRoutes(agentRuns, approvals));
 app.route("/content", contentRoutes(db, workspaces, attachments));
+app.route("/mcp", mcpRoutes(mcpStore, mcp));
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -158,5 +174,16 @@ const server = Bun.serve({
   fetch: app.fetch,
 });
 if (server.port === undefined) throw new Error("TCP server has no port");
+
+stopManagedServices = async () => {
+  await mcp.stopAll();
+  server.stop(true);
+};
+for (const configured of mcpStore.listAll().filter((item) => item.enabled)) {
+  void mcp.connect(configured.id).catch(() => {});
+}
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => void stopManagedServices().finally(() => process.exit(0)));
+}
 
 console.log(serializeHandshake({ protocol: HANDSHAKE_PROTOCOL, port: server.port, token }));

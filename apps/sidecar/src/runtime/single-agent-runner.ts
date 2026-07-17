@@ -31,6 +31,28 @@ export class SingleAgentRunner {
     private readonly attachments: AttachmentResolver,
   ) {}
 
+  recoverInterrupted(): { runs: number; approvals: number } {
+    let runs = 0;
+    let approvals = 0;
+    this.db.transaction(() => {
+      approvals = this.db.query(`
+        UPDATE approval_requests SET status = 'expired'
+        WHERE status = 'pending' AND task_id IN (
+          SELECT id FROM agent_runs WHERE status IN ('preparing', 'running', 'awaiting_approval')
+        )
+      `).run().changes;
+      this.db.query(`
+        UPDATE sessions SET status = 'interrupted', updated_at = ?
+        WHERE id IN (SELECT session_id FROM agent_runs WHERE status IN ('preparing', 'running', 'awaiting_approval'))
+      `).run(new Date().toISOString());
+      runs = this.db.query(`
+        UPDATE agent_runs SET status = 'interrupted', error = 'sidecar_restarted', completed_at = ?
+        WHERE status IN ('preparing', 'running', 'awaiting_approval')
+      `).run(new Date().toISOString()).changes;
+    })();
+    return { runs, approvals };
+  }
+
   async run(
     input: { sessionId: string; runtimeKind: string; prompt: string; attachmentIds?: string[]; workspaceRefIds?: string[]; signal?: AbortSignal; runtimeOptions?: Record<string, unknown> },
     emit: (event: RuntimeEvent) => void | Promise<void> = () => {},
@@ -122,14 +144,14 @@ export class SingleAgentRunner {
             if (!workspace) throw new Error("workspace_not_found");
             const approval = this.approvals.request({
               taskId: runId,
-              kind: call.name === "file_change" ? "file_change" : "command_execution",
+              kind: event.kind ?? (call.name === "file_change" ? "file_change" : "command_execution"),
               subjectId: `${runId}:${event.requestId}`,
               inputHash: hashToolInput(call.input),
               workspaceIdentity: workspace.identity_hash,
               attemptId: runId,
               policyVersion: 1,
-              risk: call.name === "file_change" ? "high" : "medium",
-              freshHumanRequired: call.name === "file_change",
+              risk: event.risk ?? (call.name === "file_change" ? "high" : "medium"),
+              freshHumanRequired: call.name === "file_change" || event.risk === "high" || event.risk === "destructive",
             });
             this.db.query("UPDATE agent_runs SET status = 'awaiting_approval' WHERE id = ?").run(runId);
             this.events.append({

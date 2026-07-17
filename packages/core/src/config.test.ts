@@ -8,6 +8,13 @@ describe("buildProxyUrl / isHostBypassed", () => {
     expect(buildProxyUrl({ ...base, host: "x", url: "http://p:1" })).toBe("http://p:1");
     expect(buildProxyUrl({ ...base, host: "" })).toBeUndefined();
   });
+
+  it("reinjects Keychain credentials into a redacted proxy URL only at runtime", () => {
+    expect(buildProxyUrl({
+      ...DEFAULT_CONFIG.proxy,
+      mode: "custom", url: "http://127.0.0.1:6789/", username: "proxy user", password: "p@ss",
+    })).toBe("http://proxy%20user:p%40ss@127.0.0.1:6789/");
+  });
   it("matches exact hosts and dot-suffix domains", () => {
     expect(isHostBypassed("localhost,127.0.0.1,.local", "localhost")).toBeTrue();
     expect(isHostBypassed("localhost,.local", "printer.local")).toBeTrue();

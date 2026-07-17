@@ -7,7 +7,7 @@ Implement the approved Agent Workspace plan in reversible, tested milestones wit
 ## Baseline
 
 - Starting commit: `9f7955d5704918e9e8375b4b89c31a7d44a31a2f`
-- Implementation branch: `codex/agent-workspace-m3-chat-agent` (stacked on the verified Milestone 2 commit)
+- Implementation branch: `codex/agent-workspace-m4-mcp` (stacked on the verified Milestone 3 commit)
 - Approved specifications:
   - `doc/agent-workspace-master-plan.md`
   - `doc/agent-workspace-tasklist.md`
@@ -19,7 +19,7 @@ Implement the approved Agent Workspace plan in reversible, tested milestones wit
 - [x] Milestone 1: Complete UI-001 through UI-004 (micro icons, hover entry, global particles, visual checks).
 - [x] Milestone 2: Workspace and Agent Core foundation.
 - [ ] Milestone 3: Chat, Single Agent, attachments, images, drag/drop, and `@path` (Single Agent and attachment vertical slice implemented; legacy Chat migration and final visual/smoke checks remain).
-- [ ] Milestone 4: MCP settings, lifecycle, discovery, registry, permissions, and recovery.
+- [x] Milestone 4: MCP settings, lifecycle, discovery, registry, permissions, and recovery.
 - [ ] Milestone 5: Multi-Agent discussion, plan approval, and designated execution.
 - [ ] Milestone 6: Per-Agent usage/reasoning, resizable composer, and recovery UX.
 - [ ] Final verification, code review, commit, and handoff.
@@ -47,4 +47,4 @@ Implement the approved Agent Workspace plan in reversible, tested milestones wit
 
 ## Status
 
-**Milestone 3 in progress** — three-mode creation UI, Workspace-bound Single Agent sessions, Native AI SDK read-only tool loop, experimental pinned Codex write runtime, durable approval cards, structured messages, safe attachment storage, picker/drag/paste, image preview and bounded `@path` refs are implemented. Current checkpoint gate: 165 tests / 0 failures / 541 assertions; typecheck, Biome lint, desktop production build and Rust `cargo check` pass. Legacy Room Chat still needs migration to Session/event replay, attachment GC remains open, and real-provider/Codex credential smoke is intentionally not run without explicit authorization.
+**Milestone 4 complete; Milestone 5 next** — MCP global/workspace settings, Keychain-backed stdio/Streamable HTTP transports, tools/resources/prompts snapshots, generation-bound ToolRegistry exposure, per-tool allow/ask/deny and risk override, Native durable approval continuation, ownership leases, redacted diagnostics/export and crash backoff are implemented. Proxy username/password and URL userinfo now migrate to Keychain before atomic TOML rewrite. Current checkpoint gate: 180 tests / 0 failures / 612 assertions before final security additions; targeted post-review suites add restart recovery and runtime URL credential reinjection. Typecheck, Biome lint, desktop production build, Rust `cargo check`, and authenticated isolated sidecar health/MCP smoke pass. No real provider or user credential was used.

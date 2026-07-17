@@ -66,3 +66,14 @@
 - Added bounded `@path` search and opaque refs with send-time Workspace/hash validation. Native text/ref context is tagged as untrusted; unsupported images fail explicitly instead of being dropped.
 - Added authenticated image Blob previews with URL revocation, `nosniff`, sandbox CSP and attachment disposition for non-images. Draft text/attachments remain after failed or cancelled runs.
 - Current known gaps: legacy Room Chat is not yet migrated to Session replay/structured attachments; attachment retention GC and explicit upload retry/progress remain; Native image support waits for reliable per-model capability data; real credentials were not used.
+
+## Milestone 4 implementation checkpoint
+
+- Added official `@modelcontextprotocol/sdk` 1.29.0 behind a local adapter, with stdio and Streamable HTTP negotiation, bounded pagination, same-origin/manual-redirect HTTP enforcement and deterministic real-SDK fixture coverage.
+- Added global/workspace MCP server settings and state, Keychain-only env/header values, redacted export/diagnostics, enable/disable/test lifecycle, graceful teardown and 1/2/5/10/30 second jittered crash recovery. Authentication errors stop automatic retry.
+- Discovery snapshots tools, resources, resource templates and prompts per server generation. Tool schemas have byte/depth/node limits; invalid tools degrade the server without entering ToolRegistry. Catalog entries remain metadata-only and untrusted.
+- Native Agent sees only current-generation allow/ask MCP tools. Denied tools are absent; ask tools use AI SDK approval requests projected into the existing durable ApprovalManager, and execute only after the exact decision. Restarted in-flight runs are interrupted and orphan approvals expired instead of replaying side effects.
+- MCP tool outputs and diagnostics recursively redact credential-shaped fields and exact configured secret values before journaling or UI display. Server annotations may raise risk; local overrides can only raise effective risk.
+- Added durable per-task/server runtime ownership leases; Native owns Socrates MCP connections while Codex MCP sync stays off, preventing dual hosting and duplicate side effects.
+- Migrated legacy proxy username/password and URL userinfo into Keychain before atomic TOML replacement. Renderer reads redacted blanks; sidecar reinjects credentials only when constructing the runtime proxy URL. Migration/write failure preserves the old TOML and rolls Keychain changes back.
+- Verification: full gate before final review was 180 tests / 0 failures / 612 assertions; post-review targeted security/recovery tests pass. Typecheck, Biome lint, desktop build, Rust `cargo check`, and isolated authenticated `/health` plus `/mcp/servers` smoke pass. No real credential was used.

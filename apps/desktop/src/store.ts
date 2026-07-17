@@ -18,6 +18,8 @@ import {
   type ApprovalDecision,
   type AttachmentRecord,
   type WorkspaceRef,
+  type McpServerInput,
+  type McpServerRecord,
 } from "@socrates/core";
 import { relativeWorkspacePath } from "./workspace/workspacePath";
 
@@ -62,6 +64,10 @@ export type PendingApproval = {
   status: string;
 };
 export type WorkspacePathResult = { relativePath: string; kind: "file" | "directory" };
+export type McpToolView = {
+  name: string; namespacedName: string; description: string; generation: number; risk: string;
+  enabled: boolean; effect: "allow" | "ask" | "deny"; riskOverride: string | null;
+};
 
 export type DebateRoleForm = {
   proposerId: string;
@@ -119,6 +125,16 @@ type Store = {
   draftWorkspaceRefs: WorkspaceRef[];
   addWorkspaceRef: (relativePath: string) => Promise<void>;
   removeDraftWorkspaceRef: (id: string) => void;
+
+  mcpServers: McpServerRecord[];
+  mcpTools: Record<string, McpToolView[]>;
+  loadMcpServers: () => Promise<void>;
+  saveMcpServer: (server: McpServerInput, secrets: Record<string, string>, editingId?: string) => Promise<void>;
+  setMcpEnabled: (id: string, enabled: boolean) => Promise<void>;
+  testMcpServer: (id: string) => Promise<void>;
+  removeMcpServer: (id: string) => Promise<void>;
+  loadMcpTools: (id: string) => Promise<void>;
+  setMcpToolPolicy: (serverId: string, toolName: string, effect: "allow" | "ask" | "deny") => Promise<void>;
 
   providers: Provider[];
   testResults: Record<string, TestResult | "running">;
@@ -282,6 +298,8 @@ export const useStore = create<Store>((set, get) => {
     draftAttachments: [],
     workspacePathResults: [],
     draftWorkspaceRefs: [],
+    mcpServers: [],
+    mcpTools: {},
     updateConfig: async (patch) => {
       const res = await sidecarFetch(hs(), "/config", { method: "PUT", body: JSON.stringify(patch) });
       const config = (await res.json()) as AppConfig;
@@ -323,7 +341,7 @@ export const useStore = create<Store>((set, get) => {
               } catch {
                 // 配置加载失败不阻塞连接，沿用本地默认
               }
-              await Promise.all([get().loadProviders(), get().loadAgents(), get().loadRooms(), get().loadWorkspaces(), get().loadSessions()]);
+              await Promise.all([get().loadProviders(), get().loadAgents(), get().loadRooms(), get().loadWorkspaces(), get().loadSessions(), get().loadMcpServers()]);
               const first = get().rooms[0];
               if (first) void get().selectRoom(first.id);
               return;
@@ -347,6 +365,7 @@ export const useStore = create<Store>((set, get) => {
       );
       set({ activeWorkspace });
       await get().loadWorkspaces();
+      await get().loadMcpServers();
     },
     loadSessions: async () => {
       set({ sessions: await requireOk<ConversationSession[]>(await sidecarFetch(hs(), "/sessions")) });
@@ -495,6 +514,45 @@ export const useStore = create<Store>((set, get) => {
       }));
     },
     removeDraftWorkspaceRef: (id) => set((state) => ({ draftWorkspaceRefs: state.draftWorkspaceRefs.filter((item) => item.id !== id) })),
+    loadMcpServers: async () => {
+      const workspaceId = get().activeWorkspace?.id;
+      const query = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : "";
+      set({ mcpServers: await requireOk<McpServerRecord[]>(await sidecarFetch(hs(), `/mcp/servers${query}`)) });
+    },
+    saveMcpServer: async (server, secrets, editingId) => {
+      await requireOk(await sidecarFetch(hs(), editingId ? `/mcp/servers/${editingId}` : "/mcp/servers", {
+        method: editingId ? "PUT" : "POST",
+        body: JSON.stringify({ server, secrets }),
+      }));
+      await get().loadMcpServers();
+    },
+    setMcpEnabled: async (id, enabled) => {
+      await requireOk(await sidecarFetch(hs(), `/mcp/servers/${id}/enabled`, { method: "PUT", body: JSON.stringify({ enabled }) }));
+      await Promise.all([get().loadMcpServers(), get().loadMcpTools(id)]);
+    },
+    testMcpServer: async (id) => {
+      await requireOk(await sidecarFetch(hs(), `/mcp/servers/${id}/test`, { method: "POST" }));
+      await Promise.all([get().loadMcpServers(), get().loadMcpTools(id)]);
+    },
+    removeMcpServer: async (id) => {
+      await requireOk(await sidecarFetch(hs(), `/mcp/servers/${id}`, { method: "DELETE" }));
+      set((state) => {
+        const mcpTools = { ...state.mcpTools };
+        delete mcpTools[id];
+        return { mcpTools };
+      });
+      await get().loadMcpServers();
+    },
+    loadMcpTools: async (id) => {
+      const tools = await requireOk<McpToolView[]>(await sidecarFetch(hs(), `/mcp/servers/${id}/tools`));
+      set((state) => ({ mcpTools: { ...state.mcpTools, [id]: tools } }));
+    },
+    setMcpToolPolicy: async (serverId, toolName, effect) => {
+      await requireOk(await sidecarFetch(hs(), `/mcp/servers/${serverId}/tools/${encodeURIComponent(toolName)}/policy`, {
+        method: "PUT", body: JSON.stringify({ effect }),
+      }));
+      await get().loadMcpTools(serverId);
+    },
 
     loadProviders: async () => {
       set({ providers: await (await sidecarFetch(hs(), "/providers")).json() });
