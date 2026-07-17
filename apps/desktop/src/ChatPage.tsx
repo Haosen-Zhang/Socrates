@@ -12,6 +12,7 @@ import WorkspaceChip from "./workspace/WorkspaceChip";
 import AttachmentTray, { AttachmentImage } from "./attachments/AttachmentTray";
 import { canReviewPlan, dropAgentBefore, moveAgentId } from "./multiAgentUi";
 import ResizableComposer from "./composer/ResizableComposer";
+import { roomTitleOrFallback } from "./workspace/projectSelection";
 
 const DUTY_CLS: Record<string, string> = {
   propose: "bg-blue-100 text-blue-800",
@@ -49,6 +50,23 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 const DATE_LOCALE_OF: Record<string, string> = { "zh-CN": "zh-CN", "zh-TW": "zh-TW", en: "en-US" };
+
+/** Let modal close transitions finish before their parent unmounts the dialog. */
+function useAnimatedDialogClose(onClose: () => void) {
+  const [closing, setClosing] = useState(false);
+  const timeoutRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+  }, []);
+  return {
+    closing,
+    close: () => {
+      if (closing) return;
+      setClosing(true);
+      timeoutRef.current = window.setTimeout(onClose, 150);
+    },
+  };
+}
 
 /** 悬停消息时的操作条：时间 · 复制 · 回溯（二次点击确认） */
 function MsgActions({ m, align }: { m: StoredMessage; align: "left" | "right" }) {
@@ -823,6 +841,7 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<ConversationMode>("chat");
+  const dialog = useAnimatedDialogClose(onClose);
 
   const toggle = (id: string) => {
     setSelected((current) => toggleRoomAgentSelection(current, id));
@@ -831,26 +850,27 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") dialog.close();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
+  }, [dialog]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      if (mode === "single_agent") await createAgentSession(name, selected[0]!);
-      else if (mode === "multi_agent") await createMultiAgentSession(name, selected);
-      else await createRoom(name, selected.slice(0, 1));
-      onClose();
+      const title = roomTitleOrFallback(name, t("room_untitled"));
+      if (mode === "single_agent") await createAgentSession(title, selected[0]!);
+      else if (mode === "multi_agent") await createMultiAgentSession(title, selected);
+      else await createRoom(title, selected.slice(0, 1));
+      dialog.close();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
   return (
-    <div className="pixel-dialog-backdrop" role="presentation" onMouseDown={onClose}>
+    <div className={`pixel-dialog-backdrop ${dialog.closing ? "is-closing" : ""}`} role="presentation" onMouseDown={dialog.close}>
       <form
         onSubmit={submit}
         className="pixel-dialog max-h-[calc(100vh-32px)] w-[min(720px,calc(100vw-48px))] overflow-y-auto p-5"
@@ -871,7 +891,7 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
             aria-label={t("close")}
             onClick={() => {
               sfx.close();
-              onClose();
+              dialog.close();
             }}
           >
             ×
@@ -884,7 +904,6 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
             autoFocus
             className="pixel-input mt-1 w-full px-3 py-2.5 text-sm"
             placeholder={t("room_name_placeholder")}
-            required
             value={name}
             onChange={(event) => {
               setName(event.target.value);
@@ -959,11 +978,11 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
             {selected.length > 6 && <span className="ml-2 text-xs text-neutral-500">+{selected.length - 6}</span>}
           </div>
           <div className="flex shrink-0 gap-3">
-            <button className="pixel-button px-4 py-2 text-sm" type="button" onClick={onClose}>{t("cancel")}</button>
+            <button className="pixel-button px-4 py-2 text-sm" type="button" onClick={dialog.close}>{t("cancel")}</button>
             <button
               className="pixel-button pixel-button--primary px-5 py-2 text-sm"
               type="submit"
-              disabled={!name.trim() || (mode === "multi_agent" ? selected.length < 2 : selected.length !== 1) || (mode !== "chat" && !activeWorkspace)}
+              disabled={(mode === "multi_agent" ? selected.length < 2 : selected.length !== 1) || (mode !== "chat" && !activeWorkspace)}
             >
               {t("create_room")}
             </button>
@@ -1046,10 +1065,11 @@ function RoomMembersDialog({
 }) {
   const { agents, addRoomAgent } = useStore();
   const t = useT();
+  const dialog = useAnimatedDialogClose(onClose);
   const members = memberIds.map((id) => agents.find((agent) => agent.id === id)).filter((agent): agent is Agent => !!agent);
   const available = agents.filter((agent) => !memberIds.includes(agent.id));
   return (
-    <div className="pixel-dialog-backdrop" role="presentation" onMouseDown={onClose}>
+    <div className={`pixel-dialog-backdrop ${dialog.closing ? "is-closing" : ""}`} role="presentation" onMouseDown={dialog.close}>
       <section className="pixel-dialog w-[min(560px,calc(100vw-48px))] p-5" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
         <div className="mb-4 flex items-start justify-between">
           <div>
@@ -1060,7 +1080,7 @@ function RoomMembersDialog({
             className="pixel-button h-8 w-8"
             onClick={() => {
               sfx.close();
-              onClose();
+              dialog.close();
             }}
             aria-label={t("close")}
           >
@@ -1188,7 +1208,7 @@ export default function ChatPage() {
     streaming?.round !== undefined && streaming.round !== lastRound && streaming.phase !== "summary";
 
   return (
-    <div className="flex h-[calc(100vh-53px)]">
+    <div className="flex h-[calc(100dvh-var(--app-header-height))]">
       <aside className="pixel-room-sidebar flex w-64 shrink-0 flex-col p-3">
         <button
           className="pixel-new-room-button flex w-full items-center justify-center gap-2 px-3 py-2.5 text-sm font-bold"
@@ -1246,7 +1266,6 @@ export default function ChatPage() {
             <div className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
               <span className="text-sm font-bold">{currentRoom?.name}</span>
               <div className="flex items-center gap-2">
-                <WorkspaceChip />
                 {roomAgents.slice(0, 3).map((agent) => { const usage = usageSummaries.find((item) => item.agentId === agent.id); return <span key={agent.id} className="pixel-chip text-[10px]" title={`${t("usage_current")}: ${usage?.current.totalTokens ?? t("usage_unavailable")} · ${t("usage_total")}: ${usage?.cumulative.totalTokens ?? t("usage_unavailable")}`}>{agent.nickname}: {usage?.cumulative.totalTokens ?? "—"}</span>; })}
                 <button className="pixel-member-button flex items-center gap-1 px-2 py-1" onClick={() => setShowMembers(true)} title={t("room_members_title")}>
                   <span className="flex -space-x-2">

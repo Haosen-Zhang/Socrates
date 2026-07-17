@@ -24,6 +24,7 @@ import {
   type NormalizedUsage,
 } from "@socrates/core";
 import { relativeWorkspacePath } from "./workspace/workspacePath";
+import { resolveActiveWorkspace } from "./workspace/projectSelection";
 
 type Handshake = { port: number; token: string };
 export type ConnStatus = "connecting" | "connected" | "disconnected";
@@ -119,6 +120,7 @@ type Store = {
   activeWorkspace: WorkspaceRecord | null;
   loadWorkspaces: () => Promise<void>;
   selectWorkspacePath: (path: string) => Promise<void>;
+  setActiveWorkspace: (workspaceId: string | null) => Promise<void>;
 
   sessions: ConversationSession[];
   currentSessionId: string | null;
@@ -217,7 +219,26 @@ type Store = {
 
 const HANDSHAKE_POLL_MS = 250;
 const HANDSHAKE_MAX_POLLS = 40;
+const ACTIVE_WORKSPACE_STORAGE_KEY = "socrates.active-workspace-id";
 let connectStarted = false; // React StrictMode 下 effect 会跑两次
+
+function storedActiveWorkspaceId(): string | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage.getItem(ACTIVE_WORKSPACE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function persistActiveWorkspaceId(workspaceId: string | null): void {
+  try {
+    if (typeof window === "undefined") return;
+    if (workspaceId) window.localStorage.setItem(ACTIVE_WORKSPACE_STORAGE_KEY, workspaceId);
+    else window.localStorage.removeItem(ACTIVE_WORKSPACE_STORAGE_KEY);
+  } catch {
+    // Private browsing or a locked WebView must not make project selection fail.
+  }
+}
 
 async function sidecarFetch(hs: Handshake, path: string, init?: RequestInit): Promise<Response> {
   const res = await fetch(`http://127.0.0.1:${hs.port}${path}`, {
@@ -397,14 +418,26 @@ export const useStore = create<Store>((set, get) => {
 
     loadWorkspaces: async () => {
       const workspaces = await requireOk<WorkspaceRecord[]>(await sidecarFetch(hs(), "/workspaces"));
-      set((state) => ({ workspaces, activeWorkspace: state.activeWorkspace ?? workspaces[0] ?? null }));
+      set((state) => ({
+        workspaces,
+        activeWorkspace: resolveActiveWorkspace(workspaces, state.activeWorkspace, storedActiveWorkspaceId()),
+      }));
     },
     selectWorkspacePath: async (path) => {
       const activeWorkspace = await requireOk<WorkspaceRecord>(
         await sidecarFetch(hs(), "/workspaces", { method: "POST", body: JSON.stringify({ path }) }),
       );
       set({ activeWorkspace });
+      persistActiveWorkspaceId(activeWorkspace.id);
       await get().loadWorkspaces();
+      await get().loadMcpServers();
+    },
+    setActiveWorkspace: async (workspaceId) => {
+      if (get().activeTaskId || get().agentRunning) throw new Error("workspace_change_while_running");
+      const workspace = workspaceId ? get().workspaces.find((item) => item.id === workspaceId) ?? null : null;
+      if (workspaceId && !workspace) throw new Error("workspace_not_found");
+      set({ activeWorkspace: workspace });
+      persistActiveWorkspaceId(workspace?.id ?? null);
       await get().loadMcpServers();
     },
     loadSessions: async () => {
