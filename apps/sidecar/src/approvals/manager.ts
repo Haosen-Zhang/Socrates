@@ -99,6 +99,10 @@ export class ApprovalManager {
     return { expired: result.changes, pending };
   }
 
+  expireForTask(taskId: string): number {
+    return this.db.query("UPDATE approval_requests SET status = 'expired' WHERE task_id = ? AND status = 'pending'").run(taskId).changes;
+  }
+
   getRequestForSubject(subjectId: string): DurableApprovalRequest | null {
     const row = this.db.query<RequestRow, [string]>("SELECT * FROM approval_requests WHERE subject_id = ? ORDER BY created_at DESC LIMIT 1").get(subjectId);
     return row ? toRequest(row) : null;

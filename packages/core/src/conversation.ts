@@ -6,7 +6,7 @@ export type AgentRunPhase =
   | "discussing"
   | "synthesizing"
   | "awaiting_plan_approval"
-  | "revising"
+  | "revising_plan"
   | "executing"
   | "awaiting_tool_approval"
   | "paused"

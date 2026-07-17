@@ -420,7 +420,7 @@
 
 ### MULTI-001 — 实现唯一合法的 TaskStateMachine 与 attempt/checkpoint
 
-- **优先级 / 状态：** P4 / 未开始
+- **优先级 / 状态：** P4 / 已完成（12 状态 reducer、attempt、resumeFrom、terminal/非法转换与 DB 单入口已实现并回归）
 - **目标：** 用纯 reducer 实现 12 个精确状态及所有合法转换，取代分散的 status 字符串和内存 resolver。
 - **依赖：** DB-002、DB-003、ARC-001。
 - **修改文件：** `packages/core/src/orchestration.ts`、core exports、sidecar task route/store。
@@ -432,7 +432,7 @@
 
 ### MULTI-002 — AgentSession、顺序、轮数、effort 与 participant snapshot
 
-- **优先级 / 状态：** P4 / 未开始
+- **优先级 / 状态：** P4 / 已完成（participant snapshot、20 Agent 顺序、轮数、总结/执行 Agent 已进入任务冻结配置；effort capability UI 归 UX-002）
 - **目标：** 每个参与者拥有独立history/runtime mapping和不可变profile snapshot，保持现有拖拽顺序语义。
 - **依赖：** MULTI-001、CAP-001、RUN-001。
 - **修改文件：** core chat/orchestration、sidecar agents/rooms、desktop room member/order UI。
@@ -444,7 +444,7 @@
 
 ### MULTI-003 — 只读讨论阶段与确定性 turn idempotency
 
-- **优先级 / 状态：** P4 / 未开始
+- **优先级 / 状态：** P4 / 已完成（串行只读讨论、stable turn、durable usage、completed-turn replay 与 outcome-unknown 防盲重放）
 - **目标：** 将现有 Round Robin/Debate 迁入 `discussing`，保证不产生写副作用且重启不重复turn。
 - **依赖：** MULTI-001、MULTI-002、NATIVE-001、WS-002。
 - **修改文件：** `packages/core/src/orchestration.ts`、sidecar `rooms.ts`、gateway。
@@ -456,7 +456,7 @@
 
 ### MULTI-004 — Structured PlanSynthesizer、版本与 evidence hash
 
-- **优先级 / 状态：** P4 / 未开始
+- **优先级 / 状态：** P4 / 已完成（JSON schema repair、canonical hash、版本/parent、cutoff 与 evidence stale 检查）
 - **目标：** 讨论完成后生成可审、可编辑、带范围/风险/验证的结构化计划，而不是一段不可绑定的Markdown。
 - **依赖：** MULTI-003、ATT-003、DB-002。
 - **修改文件：** core exports、gateway/ContextAssembler、task store。
@@ -468,7 +468,7 @@
 
 ### MULTI-005 — Plan approve/edit/replan/reject UI 与 durable decision
 
-- **优先级 / 状态：** P4 / 未开始
+- **优先级 / 状态：** P4 / 已完成（exact version/hash/client key 决策、编辑批准、replan/reject 与刷新恢复 UI）
 - **目标：** 用户审核exact plan后才能进入执行，并可编辑、要求重做或拒绝。
 - **依赖：** MULTI-004、TL-001、MULTI-001。
 - **修改文件：** timeline PlanCard、ChatPage/store/i18n、sidecar routes/state service。
@@ -480,7 +480,7 @@
 
 ### MULTI-006 — Designated ExecutionRunner、approved-plan handoff 与 write lease
 
-- **优先级 / 状态：** P4 / 未开始
+- **优先级 / 状态：** P4 / 已完成（指定执行 Agent、单 writer lease/续租、plan scope、独立工具审批、取消与终态释放）
 - **目标：** 只让一个合格Agent在一个write lease内执行批准计划，具体tool继续过permission/approval。
 - **依赖：** MULTI-005、CODEX-002、APR-001、WS-002。
 - **修改文件：** runtime manager/state service、desktop execution-agent selector。
@@ -492,7 +492,7 @@
 
 ### MULTI-007 — Replan、fallback、compaction 与 restart recovery
 
-- **优先级 / 状态：** P4 / 未开始
+- **优先级 / 状态：** P4 / 进行中（restart reconcile、pause/resume、新 attempt、unknown 人工确认重试和 replan 已完成；显式 fallback UI、可追溯 context compaction 仍待实现）
 - **目标：** 任务在失败、上下文超限、Agent不可用或应用重启后可解释恢复，不伪造连续性。
 - **依赖：** MULTI-006、DB-002、CAP-001。
 - **修改文件：** coordinator/state/store/runtime supervisor、timeline recovery UI。

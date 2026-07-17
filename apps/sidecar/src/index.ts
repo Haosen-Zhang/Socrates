@@ -35,6 +35,12 @@ import { McpStore } from "./mcp/store";
 import { McpManager } from "./mcp/manager";
 import { OfficialMcpClientAdapter } from "./mcp/adapter";
 import { mcpRoutes } from "./routes/mcp";
+import { MultiTaskStore } from "./multi-agent/task-store";
+import { MultiAgentCoordinator } from "./multi-agent/coordinator";
+import { ExecutionRunner } from "./runtime/execution-runner";
+import { WorkspaceLeaseManager } from "./workspace/leases";
+import { multiAgentRoutes } from "./routes/multi-agent";
+import type { OrchestrationAgent } from "@socrates/core";
 
 // 父进程（Tauri）异常退出（如 SIGKILL/SIGTERM 未走优雅关闭）时自动退出，避免孤儿进程占着端口
 let stopManagedServices: () => Promise<void> = async () => {};
@@ -68,6 +74,7 @@ const secrets = new KeychainSecrets();
 const config = new ConfigStore(undefined, secrets);
 // 所有出站请求（连接测试/列模型/模型调用）都按 config.toml 的代理设置走
 const proxiedFetch = makeProxiedFetch(() => config.getResolved());
+const gateway = makeAiSdkGateway(proxiedFetch);
 const workspaces = new WorkspaceManager(db);
 const sessions = new SessionStore(db);
 const events = new EventStore(db);
@@ -154,17 +161,35 @@ runtimes.register("native_ai_sdk", (input) => {
 const agentRuns = new SingleAgentRunner(db, runtimes, approvals, events, attachments);
 runtimes.recoverInterrupted();
 agentRuns.recoverInterrupted();
+const multiTasks = new MultiTaskStore(db);
+const resolveMultiAgent = (agentId: string, snapshot: Record<string, unknown>): OrchestrationAgent => {
+  const providerId = String(snapshot.providerId ?? "");
+  const provider = db.query<{ type: ProviderType; base_url: string; api_key_ref: string; enabled: number }, [string]>("SELECT type, base_url, api_key_ref, enabled FROM providers WHERE id = ?").get(providerId);
+  if (!provider || provider.enabled !== 1) throw new Error("multi_provider_unavailable");
+  const apiKey = secrets.get(provider.api_key_ref);
+  if (!apiKey) throw new Error("multi_provider_key_missing");
+  return {
+    id: agentId, nickname: String(snapshot.nickname ?? agentId), avatar: typeof snapshot.avatar === "string" ? snapshot.avatar : undefined,
+    modelId: String(snapshot.modelId ?? ""), role: String(snapshot.role ?? ""), systemPrompt: String(snapshot.systemPrompt ?? ""),
+    temperature: typeof snapshot.temperature === "number" ? snapshot.temperature : undefined,
+    providerType: provider.type, baseUrl: provider.base_url, apiKey,
+  };
+};
+const multiCoordinator = new MultiAgentCoordinator(db, multiTasks, events, gateway, resolveMultiAgent);
+const executionRunner = new ExecutionRunner(db, multiTasks, runtimes, new WorkspaceLeaseManager(db, crypto.randomUUID()), approvals, events);
+multiTasks.recoverInterrupted();
 
 app.get("/health", (c) => c.json({ ok: true }));
 app.route("/config", configRoutes(config));
 app.route("/providers", providerRoutes(db, secrets, proxiedFetch));
 app.route("/agents", agentRoutes(db));
-app.route("/rooms", roomRoutes(db, secrets, makeAiSdkGateway(proxiedFetch)));
+app.route("/rooms", roomRoutes(db, secrets, gateway));
 app.route("/workspaces", workspaceRoutes(workspaces));
 app.route("/sessions", sessionRoutes(sessions, events));
 app.route("/agent", agentRunRoutes(agentRuns, approvals));
 app.route("/content", contentRoutes(db, workspaces, attachments));
 app.route("/mcp", mcpRoutes(mcpStore, mcp));
+app.route("/multi", multiAgentRoutes(multiTasks, multiCoordinator, executionRunner, approvals));
 
 const server = Bun.serve({
   hostname: "127.0.0.1",

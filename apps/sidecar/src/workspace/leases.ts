@@ -38,6 +38,13 @@ export class WorkspaceLeaseManager {
     return this.db.query("DELETE FROM workspace_leases WHERE id = ? AND owner_instance_id = ?").run(id, this.ownerInstanceId).changes === 1;
   }
 
+  renew(id: string, expiresAt: string): WorkspaceLease {
+    const changed = this.db.query("UPDATE workspace_leases SET expires_at = ? WHERE id = ? AND owner_instance_id = ?")
+      .run(expiresAt, id, this.ownerInstanceId).changes;
+    if (changed !== 1) throw new Error("workspace_lease_lost");
+    return this.get(id)!;
+  }
+
   get(id: string): WorkspaceLease | null {
     const row = this.db.query<LeaseRow, [string]>("SELECT * FROM workspace_leases WHERE id = ?").get(id);
     return row ? toLease(row) : null;

@@ -14,3 +14,6 @@ export * from "./workspace";
 export * from "./runtime";
 export * from "./message-parts";
 export * from "./mcp";
+export * from "./task-state";
+export * from "./plan";
+export * from "./plan-scope";

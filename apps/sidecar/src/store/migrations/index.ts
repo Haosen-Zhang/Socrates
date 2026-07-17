@@ -3,5 +3,6 @@ import { agentWorkspaceMigration } from "./002_agent_workspace";
 import { runtimeFoundationMigration } from "./003_runtime_foundation";
 import { p2ConversationMigration } from "./004_p2_conversations";
 import { mcpMigration } from "./005_mcp";
+import { multiAgentMigration } from "./006_multi_agent";
 
-export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration] as const;
+export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration] as const;

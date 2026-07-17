@@ -68,6 +68,17 @@ export type McpToolView = {
   name: string; namespacedName: string; description: string; generation: number; risk: string;
   enabled: boolean; effect: "allow" | "ask" | "deny"; riskOverride: string | null;
 };
+export type MultiPlan = {
+  version: number; contentHash: string; status: string;
+  content: { objective: string; summary: string; steps: Array<{ id: string; title: string; description: string; files: string[]; commands: string[]; risks: string[]; verification: string[] }>; evidence: Array<{ refId: string; snapshotHash: string }> };
+};
+export type MultiTaskView = {
+  id: string; sessionId: string; prompt: string; state: string; resumeFrom: string | null; terminalReason: string | null; outcomeUnknown: boolean;
+  config: { speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string };
+  plan: MultiPlan | null;
+  turns: Array<{ id: string; phase: string; round: number; agentId: string; snapshot: Record<string, unknown>; status: string; content: string | null; usage: { inputTokens?: number; outputTokens?: number } | null; error: string | null }>;
+  pendingApprovals: PendingApproval[];
+};
 
 export type DebateRoleForm = {
   proposerId: string;
@@ -112,10 +123,24 @@ type Store = {
   activeAgentRunId: string | null;
   loadSessions: () => Promise<void>;
   createAgentSession: (title: string, agentId: string) => Promise<void>;
+  createMultiAgentSession: (title: string, agentIds: string[]) => Promise<void>;
   selectAgentSession: (id: string) => Promise<void>;
   sendAgentPrompt: (prompt: string, sandbox: "read-only" | "workspace-write") => Promise<boolean>;
   decideAgentApproval: (requestId: string, decision: ApprovalDecision) => Promise<void>;
   cancelAgentRun: () => Promise<void>;
+  multiTasks: MultiTaskView[];
+  currentMultiTask: MultiTaskView | null;
+  multiRunning: boolean;
+  multiError: string | null;
+  loadMultiTasks: () => Promise<void>;
+  loadMultiTask: (id: string) => Promise<void>;
+  sendMultiTask: (input: { prompt: string; speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string }) => Promise<void>;
+  decideMultiPlan: (input: { decision: "approve_exact_plan" | "request_replan" | "reject" | "edit_and_approve"; reason?: string; content?: MultiPlan["content"] }) => Promise<void>;
+  decideMultiApproval: (requestId: string, decision: ApprovalDecision) => Promise<void>;
+  cancelMultiTask: () => Promise<void>;
+  pauseMultiTask: () => Promise<void>;
+  resumeMultiTask: () => Promise<void>;
+  retryMultiTask: () => Promise<void>;
   draftAttachments: AttachmentRecord[];
   workspacePathResults: WorkspacePathResult[];
   importWorkspaceAttachment: (absolutePath: string) => Promise<void>;
@@ -298,6 +323,10 @@ export const useStore = create<Store>((set, get) => {
     draftAttachments: [],
     workspacePathResults: [],
     draftWorkspaceRefs: [],
+    multiTasks: [],
+    currentMultiTask: null,
+    multiRunning: false,
+    multiError: null,
     mcpServers: [],
     mcpTools: {},
     updateConfig: async (patch) => {
@@ -386,9 +415,24 @@ export const useStore = create<Store>((set, get) => {
       await get().loadSessions();
       await get().selectAgentSession(session.id);
     },
+    createMultiAgentSession: async (title, agentIds) => {
+      const workspace = get().activeWorkspace;
+      const agents = agentIds.map((id) => get().agents.find((item) => item.id === id));
+      if (!workspace || agents.some((agent) => !agent)) throw new Error("agents_and_workspace_required");
+      const session = await requireOk<ConversationSession>(await sidecarFetch(hs(), "/sessions", {
+        method: "POST",
+        body: JSON.stringify({
+          title, mode: "multi_agent", workspaceId: workspace.id,
+          agents: agents.map((agent) => ({ agentId: agent!.id, snapshot: agent, executionEligible: true })),
+        }),
+      }));
+      await get().loadSessions();
+      await get().selectAgentSession(session.id);
+    },
     selectAgentSession: async (id) => {
       const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${id}/messages`));
-      set({ currentSessionId: id, currentRoomId: null, messages: [], sessionMessages, agentEvents: [], pendingApprovals: [], agentError: null });
+      set({ currentSessionId: id, currentRoomId: null, messages: [], sessionMessages, agentEvents: [], pendingApprovals: [], agentError: null, multiTasks: [], currentMultiTask: null, multiError: null });
+      if (get().sessions.find((session) => session.id === id)?.mode === "multi_agent") await get().loadMultiTasks();
     },
     sendAgentPrompt: async (prompt, sandbox) => {
       const sessionId = get().currentSessionId;
@@ -460,6 +504,90 @@ export const useStore = create<Store>((set, get) => {
       const runId = get().activeAgentRunId;
       if (!runId) return;
       await requireOk(await sidecarFetch(hs(), `/agent/runs/${runId}/cancel`, { method: "POST" }));
+    },
+    loadMultiTasks: async () => {
+      const sessionId = get().currentSessionId;
+      if (!sessionId) return;
+      const summaries = await requireOk<Array<Omit<MultiTaskView, "plan" | "turns" | "pendingApprovals">>>(await sidecarFetch(hs(), `/multi/sessions/${sessionId}/tasks`));
+      set({ multiTasks: summaries as MultiTaskView[] });
+      if (summaries[0]) await get().loadMultiTask(summaries[0].id);
+    },
+    loadMultiTask: async (id) => {
+      const currentMultiTask = await requireOk<MultiTaskView>(await sidecarFetch(hs(), `/multi/tasks/${id}`));
+      const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${currentMultiTask.sessionId}/messages`));
+      set({ currentMultiTask, sessionMessages, pendingApprovals: currentMultiTask.pendingApprovals, multiRunning: !["awaiting_plan_approval", "failed", "cancelled", "completed", "paused"].includes(currentMultiTask.state) });
+    },
+    sendMultiTask: async (input) => {
+      const sessionId = get().currentSessionId;
+      if (!sessionId || get().multiRunning) return;
+      set({ multiRunning: true, multiError: null, currentMultiTask: null });
+      try {
+        const response = await sidecarFetch(hs(), `/multi/sessions/${sessionId}/tasks`, { method: "POST", body: JSON.stringify({ prompt: input.prompt, config: input }) });
+        if (!response.ok || !response.body) await requireOk(response);
+        const reader = response.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let taskId: string | null = null;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split("\n\n");
+          buffer = blocks.pop() ?? "";
+          for (const block of blocks) {
+            const data = block.split("\n").find((line) => line.startsWith("data:"))?.slice(5).trim();
+            if (!data) continue;
+            const event = JSON.parse(data) as { type: string; taskId: string; message?: string };
+            taskId = event.taskId;
+            if (event.type === "task_failed") set({ multiError: event.message ?? "multi_task_failed" });
+          }
+        }
+        await get().loadMultiTasks();
+        if (taskId) await get().loadMultiTask(taskId);
+      } catch (error) { set({ multiError: error instanceof Error ? error.message : String(error) }); }
+      finally { set({ multiRunning: false }); }
+    },
+    decideMultiPlan: async (input) => {
+      const task = get().currentMultiTask;
+      if (!task?.plan) throw new Error("plan_not_ready");
+      await requireOk(await sidecarFetch(hs(), `/multi/tasks/${task.id}/plan-decisions`, {
+        method: "POST", body: JSON.stringify({ version: task.plan.version, hash: task.plan.contentHash, clientDecisionKey: crypto.randomUUID(), ...input }),
+      }));
+      await get().loadMultiTask(task.id);
+    },
+    decideMultiApproval: async (requestId, decision) => {
+      await requireOk(await sidecarFetch(hs(), `/multi/approvals/${requestId}/decision`, { method: "POST", body: JSON.stringify({ decision, clientDecisionKey: crypto.randomUUID() }) }));
+      const id = get().currentMultiTask?.id;
+      if (id) await get().loadMultiTask(id);
+    },
+    cancelMultiTask: async () => {
+      const id = get().currentMultiTask?.id;
+      if (!id) return;
+      await requireOk(await sidecarFetch(hs(), `/multi/tasks/${id}/cancel`, { method: "POST" }));
+      await get().loadMultiTask(id);
+    },
+    pauseMultiTask: async () => {
+      const id = get().currentMultiTask?.id;
+      if (!id) return;
+      await requireOk(await sidecarFetch(hs(), `/multi/tasks/${id}/pause`, { method: "POST" }));
+      await get().loadMultiTask(id);
+    },
+    resumeMultiTask: async () => {
+      const id = get().currentMultiTask?.id;
+      if (!id) return;
+      set({ multiRunning: true, multiError: null });
+      try {
+        await requireOk(await sidecarFetch(hs(), `/multi/tasks/${id}/resume`, { method: "POST" }));
+      } catch (error) { set({ multiError: error instanceof Error ? error.message : String(error) }); }
+      finally { set({ multiRunning: false }); await get().loadMultiTask(id); }
+    },
+    retryMultiTask: async () => {
+      const id = get().currentMultiTask?.id;
+      if (!id) return;
+      set({ multiError: null });
+      try { await requireOk(await sidecarFetch(hs(), `/multi/tasks/${id}/retry`, { method: "POST", body: JSON.stringify({ confirmOutcomeUnknown: true }) })); }
+      catch (error) { set({ multiError: error instanceof Error ? error.message : String(error) }); }
+      await get().loadMultiTask(id);
     },
     importWorkspaceAttachment: async (absolutePath) => {
       const state = get();
