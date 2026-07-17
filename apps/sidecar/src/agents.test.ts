@@ -63,4 +63,19 @@ describe("agent identity validation", () => {
     const svg = await createAgent(app, providerId, "Unsafe", "data:image/svg+xml;base64,PHN2Zz4=");
     expect(svg.status).toBe(400);
   });
+
+  it("stores only explicitly declared reasoning efforts and rejects unsupported defaults", async () => {
+    const valid = await app.request("/agents", {
+      method: "POST",
+      body: JSON.stringify({ nickname: "Reasoner", avatar: AGENT_AVATARS[0], providerId, modelId: "reasoning-model", reasoningEfforts: ["low", "high"], reasoningEffort: "high" }),
+    });
+    expect(valid.status).toBe(201);
+    expect(await valid.json()).toMatchObject({ reasoningEffort: "high", modelCapabilities: { reasoningEfforts: ["low", "high"] } });
+    const unsupported = await app.request("/agents", {
+      method: "POST",
+      body: JSON.stringify({ nickname: "Invalid", avatar: AGENT_AVATARS[1], providerId, modelId: "reasoning-model", reasoningEfforts: ["low"], reasoningEffort: "high" }),
+    });
+    expect(unsupported.status).toBe(400);
+    expect(await unsupported.json()).toEqual({ error: "reasoning_effort_unsupported" });
+  });
 });

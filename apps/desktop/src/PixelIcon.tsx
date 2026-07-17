@@ -148,6 +148,18 @@ const ICONS: Record<string, string[]> = {
     "XXXXXXXXXX",
     "..........",
   ],
+  folder: [
+    "..........",
+    ".XXXX.....",
+    ".XXXXXXXX.",
+    "XXXXXXXXXX",
+    "XX......XX",
+    "XX......XX",
+    "XX......XX",
+    "XXXXXXXXXX",
+    "..........",
+    "..........",
+  ],
 };
 
 const GENERATED_ICON_CELLS: Record<string, readonly [column: number, row: number]> = {
@@ -166,11 +178,13 @@ export default function PixelIcon({
   name,
   size = 16,
   theme,
+  variant = "micro",
 }: {
   name: keyof typeof ICONS | string;
   size?: number;
   /** 仅用于设置里的主题预览；正常使用留空并跟随全局 config。 */
   theme?: UiTheme;
+  variant?: "micro" | "decorative";
 }) {
   const grid = ICONS[name];
   const generatedCell = GENERATED_ICON_CELLS[name];
@@ -183,32 +197,47 @@ export default function PixelIcon({
       if (row[x] === "X" || row[x] === "#") rects.push([x, y]);
     }
   });
+  const svg = (className: string, pixel1998 = false) =>
+    grid ? (
+      <svg className={className} width={size} height={size} viewBox={`0 0 ${cols} ${rows}`} shapeRendering="crispEdges">
+        {rects.map(([x, y]) => (
+          <rect
+            key={`${x}-${y}`}
+            x={x}
+            y={y}
+            width={1}
+            height={1}
+            fill={
+              pixel1998
+                ? (x + y) % 7 === 0
+                  ? "var(--pixel-icon-highlight)"
+                  : y < rows / 2
+                    ? "var(--pixel-icon-light)"
+                    : "var(--pixel-icon-ink)"
+                : "currentColor"
+            }
+          />
+        ))}
+      </svg>
+    ) : null;
+
   return (
     <span
-      className={`pixel-icon ${generatedCell ? "pixel-icon--has-generated" : ""}`}
+      className={`pixel-icon ${variant === "decorative" && generatedCell ? "pixel-icon--has-generated" : ""}`}
       data-icon-theme={theme}
+      data-icon-variant={variant}
       style={{ width: size, height: size }}
       aria-hidden
     >
-      {generatedCell && (
+      {variant === "decorative" && generatedCell && (
         <span
           className="pixel-icon__generated"
           style={{ backgroundPosition: `${generatedCell[0] * 50}% ${generatedCell[1] * 50}%` }}
         />
       )}
-      {grid && (
-        <svg
-          className="pixel-icon__classic"
-          width={size}
-          height={size}
-          viewBox={`0 0 ${cols} ${rows}`}
-          style={{ shapeRendering: "crispEdges" }}
-        >
-          {rects.map(([x, y]) => (
-            <rect key={`${x}-${y}`} x={x} y={y} width={1} height={1} fill="currentColor" />
-          ))}
-        </svg>
-      )}
+      {variant === "micro" && svg("pixel-icon__micro pixel-icon__micro--classic")}
+      {variant === "micro" && svg("pixel-icon__micro pixel-icon__micro--pixel-1998", true)}
+      {variant === "decorative" && svg("pixel-icon__decorative-fallback")}
     </span>
   );
 }

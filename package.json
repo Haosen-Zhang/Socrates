@@ -5,9 +5,11 @@
   "scripts": {
     "dev": "bun run --cwd apps/desktop tauri dev",
     "test": "bun test",
-    "typecheck": "tsc -p ."
+    "typecheck": "tsc -p .",
+    "lint": "biome lint"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.4",
     "@types/bun": "^1",
     "typescript": "~5.8.3"
   }

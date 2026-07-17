@@ -11,7 +11,19 @@ import {
   type StoredMessage,
   type TaskSummary,
   type TestOutcome,
+  type WorkspaceRecord,
+  type ConversationSession,
+  type SessionMessage,
+  type RuntimeEvent,
+  type ApprovalDecision,
+  type AttachmentRecord,
+  type WorkspaceRef,
+  type McpServerInput,
+  type McpServerRecord,
+  type ReasoningEffort,
+  type NormalizedUsage,
 } from "@socrates/core";
+import { relativeWorkspacePath } from "./workspace/workspacePath";
 
 type Handshake = { port: number; token: string };
 export type ConnStatus = "connecting" | "connected" | "disconnected";
@@ -32,6 +44,9 @@ export type AgentForm = {
   role: string;
   systemPrompt: string;
   temperature: string; // 表单态，空串=未设置
+  reasoningCapabilityKnown: boolean;
+  reasoningEfforts: ReasoningEffort[];
+  reasoningEffort: ReasoningEffort | "";
 };
 
 export type TestResult = { outcome: TestOutcome; status?: number; detail?: string };
@@ -43,6 +58,33 @@ export type StreamingTurn = {
   round?: number;
   phase?: "discussion" | "summary";
   duty?: string;
+};
+
+export type PendingApproval = {
+  id: string;
+  kind: string;
+  subjectId: string;
+  risk: string;
+  freshHumanRequired: boolean;
+  status: string;
+};
+export type UsageSummaryView = { agentId: string | null; current: NormalizedUsage; cumulative: NormalizedUsage; records: number };
+export type WorkspacePathResult = { relativePath: string; kind: "file" | "directory" };
+export type McpToolView = {
+  name: string; namespacedName: string; description: string; generation: number; risk: string;
+  enabled: boolean; effect: "allow" | "ask" | "deny"; riskOverride: string | null;
+};
+export type MultiPlan = {
+  version: number; contentHash: string; status: string;
+  content: { objective: string; summary: string; steps: Array<{ id: string; title: string; description: string; files: string[]; commands: string[]; risks: string[]; verification: string[] }>; evidence: Array<{ refId: string; snapshotHash: string }> };
+};
+export type MultiTaskView = {
+  id: string; sessionId: string; prompt: string; state: string; resumeFrom: string | null; terminalReason: string | null; outcomeUnknown: boolean; requiresExecutionReview: boolean;
+  config: { speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string; effortByAgent?: Record<string, ReasoningEffort>; fallbackOrderByAgent?: Record<string, string[]> };
+  plan: MultiPlan | null;
+  turns: Array<{ id: string; phase: string; round: number; agentId: string; snapshot: Record<string, unknown>; status: string; content: string | null; usage: { inputTokens?: number; outputTokens?: number } | null; error: string | null }>;
+  pendingApprovals: PendingApproval[];
+  usageSummaries: Array<{ agentId: string | null; current: NormalizedUsage; cumulative: NormalizedUsage; records: number }>;
 };
 
 export type DebateRoleForm = {
@@ -72,6 +114,61 @@ type Store = {
   /** config.toml（sidecar 持久化的非敏感配置）；连接后加载 */
   config: AppConfig | null;
   updateConfig: (patch: Partial<AppConfig>) => Promise<void>;
+
+  workspaces: WorkspaceRecord[];
+  activeWorkspace: WorkspaceRecord | null;
+  loadWorkspaces: () => Promise<void>;
+  selectWorkspacePath: (path: string) => Promise<void>;
+
+  sessions: ConversationSession[];
+  currentSessionId: string | null;
+  sessionMessages: SessionMessage[];
+  agentEvents: RuntimeEvent[];
+  pendingApprovals: PendingApproval[];
+  agentRunning: boolean;
+  agentError: string | null;
+  activeAgentRunId: string | null;
+  loadSessions: () => Promise<void>;
+  createAgentSession: (title: string, agentId: string) => Promise<void>;
+  createMultiAgentSession: (title: string, agentIds: string[]) => Promise<void>;
+  selectAgentSession: (id: string) => Promise<void>;
+  sendAgentPrompt: (prompt: string, sandbox: "read-only" | "workspace-write") => Promise<boolean>;
+  decideAgentApproval: (requestId: string, decision: ApprovalDecision) => Promise<void>;
+  cancelAgentRun: () => Promise<void>;
+  usageSummaries: UsageSummaryView[];
+  loadCurrentUsage: () => Promise<void>;
+  multiTasks: MultiTaskView[];
+  currentMultiTask: MultiTaskView | null;
+  multiRunning: boolean;
+  multiError: string | null;
+  loadMultiTasks: () => Promise<void>;
+  loadMultiTask: (id: string) => Promise<void>;
+  sendMultiTask: (input: { prompt: string; speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string; effortByAgent?: Record<string, ReasoningEffort>; fallbackOrderByAgent?: Record<string, string[]> }) => Promise<void>;
+  decideMultiPlan: (input: { decision: "approve_exact_plan" | "request_replan" | "reject" | "edit_and_approve"; reason?: string; content?: MultiPlan["content"] }) => Promise<void>;
+  decideMultiApproval: (requestId: string, decision: ApprovalDecision) => Promise<void>;
+  cancelMultiTask: () => Promise<void>;
+  pauseMultiTask: () => Promise<void>;
+  resumeMultiTask: () => Promise<void>;
+  retryMultiTask: () => Promise<void>;
+  draftAttachments: AttachmentRecord[];
+  workspacePathResults: WorkspacePathResult[];
+  importWorkspaceAttachment: (absolutePath: string) => Promise<void>;
+  importClipboardAttachment: (file: File) => Promise<void>;
+  removeDraftAttachment: (id: string) => void;
+  searchWorkspacePaths: (query: string) => Promise<void>;
+  draftWorkspaceRefs: WorkspaceRef[];
+  addWorkspaceRef: (relativePath: string) => Promise<void>;
+  removeDraftWorkspaceRef: (id: string) => void;
+
+  mcpServers: McpServerRecord[];
+  mcpTools: Record<string, McpToolView[]>;
+  loadMcpServers: () => Promise<void>;
+  saveMcpServer: (server: McpServerInput, secrets: Record<string, string>, editingId?: string) => Promise<void>;
+  setMcpEnabled: (id: string, enabled: boolean) => Promise<void>;
+  testMcpServer: (id: string) => Promise<void>;
+  removeMcpServer: (id: string) => Promise<void>;
+  loadMcpTools: (id: string) => Promise<void>;
+  setMcpToolPolicy: (serverId: string, toolName: string, effect: "allow" | "ask" | "deny") => Promise<void>;
 
   providers: Provider[];
   testResults: Record<string, TestResult | "running">;
@@ -206,6 +303,7 @@ export const useStore = create<Store>((set, get) => {
     } finally {
       set({ streaming: null, activeTaskId: null, failedTurn: null });
       void get().loadTasks();
+      void get().loadCurrentUsage();
     }
   };
 
@@ -222,6 +320,26 @@ export const useStore = create<Store>((set, get) => {
     },
 
     config: null,
+    workspaces: [],
+    activeWorkspace: null,
+    sessions: [],
+    currentSessionId: null,
+    sessionMessages: [],
+    agentEvents: [],
+    pendingApprovals: [],
+    usageSummaries: [],
+    agentRunning: false,
+    agentError: null,
+    activeAgentRunId: null,
+    draftAttachments: [],
+    workspacePathResults: [],
+    draftWorkspaceRefs: [],
+    multiTasks: [],
+    currentMultiTask: null,
+    multiRunning: false,
+    multiError: null,
+    mcpServers: [],
+    mcpTools: {},
     updateConfig: async (patch) => {
       const res = await sidecarFetch(hs(), "/config", { method: "PUT", body: JSON.stringify(patch) });
       const config = (await res.json()) as AppConfig;
@@ -263,7 +381,7 @@ export const useStore = create<Store>((set, get) => {
               } catch {
                 // 配置加载失败不阻塞连接，沿用本地默认
               }
-              await Promise.all([get().loadProviders(), get().loadAgents(), get().loadRooms()]);
+              await Promise.all([get().loadProviders(), get().loadAgents(), get().loadRooms(), get().loadWorkspaces(), get().loadSessions(), get().loadMcpServers()]);
               const first = get().rooms[0];
               if (first) void get().selectRoom(first.id);
               return;
@@ -275,6 +393,312 @@ export const useStore = create<Store>((set, get) => {
         await new Promise((r) => setTimeout(r, HANDSHAKE_POLL_MS));
       }
       set({ status: "disconnected" });
+    },
+
+    loadWorkspaces: async () => {
+      const workspaces = await requireOk<WorkspaceRecord[]>(await sidecarFetch(hs(), "/workspaces"));
+      set((state) => ({ workspaces, activeWorkspace: state.activeWorkspace ?? workspaces[0] ?? null }));
+    },
+    selectWorkspacePath: async (path) => {
+      const activeWorkspace = await requireOk<WorkspaceRecord>(
+        await sidecarFetch(hs(), "/workspaces", { method: "POST", body: JSON.stringify({ path }) }),
+      );
+      set({ activeWorkspace });
+      await get().loadWorkspaces();
+      await get().loadMcpServers();
+    },
+    loadSessions: async () => {
+      set({ sessions: await requireOk<ConversationSession[]>(await sidecarFetch(hs(), "/sessions")) });
+    },
+    createAgentSession: async (title, agentId) => {
+      const agent = get().agents.find((item) => item.id === agentId);
+      const workspace = get().activeWorkspace;
+      if (!agent || !workspace) throw new Error("agent_and_workspace_required");
+      const session = await requireOk<ConversationSession>(await sidecarFetch(hs(), "/sessions", {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          mode: "single_agent",
+          workspaceId: workspace.id,
+          agents: [{ agentId, snapshot: agent, executionEligible: true }],
+        }),
+      }));
+      await get().loadSessions();
+      await get().selectAgentSession(session.id);
+    },
+    createMultiAgentSession: async (title, agentIds) => {
+      const workspace = get().activeWorkspace;
+      const agents = agentIds.map((id) => get().agents.find((item) => item.id === id));
+      if (!workspace || agents.some((agent) => !agent)) throw new Error("agents_and_workspace_required");
+      const session = await requireOk<ConversationSession>(await sidecarFetch(hs(), "/sessions", {
+        method: "POST",
+        body: JSON.stringify({
+          title, mode: "multi_agent", workspaceId: workspace.id,
+          agents: agents.map((agent) => ({ agentId: agent!.id, snapshot: agent, executionEligible: true })),
+        }),
+      }));
+      await get().loadSessions();
+      await get().selectAgentSession(session.id);
+    },
+    selectAgentSession: async (id) => {
+      const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${id}/messages`));
+      set({ currentSessionId: id, currentRoomId: null, messages: [], sessionMessages, agentEvents: [], pendingApprovals: [], agentError: null, multiTasks: [], currentMultiTask: null, multiError: null, usageSummaries: [] });
+      await get().loadCurrentUsage();
+      if (get().sessions.find((session) => session.id === id)?.mode === "multi_agent") await get().loadMultiTasks();
+    },
+    sendAgentPrompt: async (prompt, sandbox) => {
+      const sessionId = get().currentSessionId;
+      if (!sessionId || get().agentRunning) return false;
+      set({ agentRunning: true, activeAgentRunId: null, agentEvents: [], pendingApprovals: [], agentError: null });
+      let runError: string | null = null;
+      try {
+        const response = await sidecarFetch(hs(), `/agent/sessions/${sessionId}/runs`, {
+          method: "POST",
+          body: JSON.stringify({
+            prompt,
+            attachmentIds: get().draftAttachments.map((attachment) => attachment.id),
+            workspaceRefIds: get().draftWorkspaceRefs.map((reference) => reference.id),
+            runtimeKind: sandbox === "read-only" ? "native_ai_sdk" : "codex_app_server",
+            runtimeOptions: { sandbox },
+          }),
+        });
+        if (!response.ok || !response.body) await requireOk(response);
+        const reader = response.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split("\n\n");
+          buffer = blocks.pop() ?? "";
+          for (const block of blocks) {
+            const data = block.split("\n").find((line) => line.startsWith("data:"))?.slice(5).trim();
+            if (!data) continue;
+            const event = JSON.parse(data) as RuntimeEvent | { status: string; error?: string };
+            if ("type" in event) {
+              set((state) => ({ agentEvents: [...state.agentEvents, event] }));
+              if (event.type === "extension" && event.name === "run_started" && event.payload && typeof event.payload === "object" && "runId" in event.payload) {
+                set({ activeAgentRunId: String((event.payload as { runId: unknown }).runId) });
+              }
+              if (event.type === "approval_required") {
+                const pendingApprovals = await requireOk<PendingApproval[]>(await sidecarFetch(hs(), "/agent/approvals"));
+                set({ pendingApprovals });
+              }
+            } else if (event.status === "failed") {
+              runError = event.error ?? "agent_run_failed";
+              set({ agentError: runError });
+            } else if (event.status === "cancelled") {
+              runError = tr(get().lang, "task_cancelled_notice");
+              set({ agentError: runError });
+            }
+          }
+        }
+        if (!runError) set({ draftAttachments: [], draftWorkspaceRefs: [], workspacePathResults: [] });
+      } catch (error) {
+        runError = error instanceof Error ? error.message : String(error);
+        set({ agentError: runError });
+      } finally {
+        const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${sessionId}/messages`));
+        set({ agentRunning: false, activeAgentRunId: null, sessionMessages });
+        await get().loadCurrentUsage();
+        await get().loadSessions();
+      }
+      return runError === null;
+    },
+    decideAgentApproval: async (requestId, decision) => {
+      await requireOk(await sidecarFetch(hs(), `/agent/approvals/${requestId}/decision`, {
+        method: "POST",
+        body: JSON.stringify({ decision, clientDecisionKey: crypto.randomUUID() }),
+      }));
+      set((state) => ({ pendingApprovals: state.pendingApprovals.filter((approval) => approval.id !== requestId) }));
+    },
+    cancelAgentRun: async () => {
+      const runId = get().activeAgentRunId;
+      if (!runId) return;
+      await requireOk(await sidecarFetch(hs(), `/agent/runs/${runId}/cancel`, { method: "POST" }));
+    },
+    loadCurrentUsage: async () => {
+      const state = get();
+      const path = state.currentSessionId ? `/sessions/${state.currentSessionId}/usage` : state.currentRoomId ? `/rooms/${state.currentRoomId}/usage` : null;
+      if (!path) { set({ usageSummaries: [] }); return; }
+      set({ usageSummaries: await requireOk<UsageSummaryView[]>(await sidecarFetch(hs(), path)) });
+    },
+    loadMultiTasks: async () => {
+      const sessionId = get().currentSessionId;
+      if (!sessionId) return;
+      const summaries = await requireOk<Array<Omit<MultiTaskView, "plan" | "turns" | "pendingApprovals">>>(await sidecarFetch(hs(), `/multi/sessions/${sessionId}/tasks`));
+      set({ multiTasks: summaries as MultiTaskView[] });
+      if (summaries[0]) await get().loadMultiTask(summaries[0].id);
+    },
+    loadMultiTask: async (id) => {
+      const currentMultiTask = await requireOk<MultiTaskView>(await sidecarFetch(hs(), `/multi/tasks/${id}`));
+      const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${currentMultiTask.sessionId}/messages`));
+      set({ currentMultiTask, sessionMessages, pendingApprovals: currentMultiTask.pendingApprovals, multiRunning: !["awaiting_plan_approval", "failed", "cancelled", "completed", "paused"].includes(currentMultiTask.state) });
+    },
+    sendMultiTask: async (input) => {
+      const sessionId = get().currentSessionId;
+      if (!sessionId || get().multiRunning) return;
+      set({ multiRunning: true, multiError: null, currentMultiTask: null });
+      try {
+        const response = await sidecarFetch(hs(), `/multi/sessions/${sessionId}/tasks`, { method: "POST", body: JSON.stringify({ prompt: input.prompt, config: input }) });
+        if (!response.ok || !response.body) await requireOk(response);
+        const reader = response.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let taskId: string | null = null;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split("\n\n");
+          buffer = blocks.pop() ?? "";
+          for (const block of blocks) {
+            const data = block.split("\n").find((line) => line.startsWith("data:"))?.slice(5).trim();
+            if (!data) continue;
+            const event = JSON.parse(data) as { type: string; taskId: string; message?: string };
+            taskId = event.taskId;
+            if (event.type === "task_failed") set({ multiError: event.message ?? "multi_task_failed" });
+          }
+        }
+        await get().loadMultiTasks();
+        if (taskId) await get().loadMultiTask(taskId);
+      } catch (error) { set({ multiError: error instanceof Error ? error.message : String(error) }); }
+      finally { set({ multiRunning: false }); }
+    },
+    decideMultiPlan: async (input) => {
+      const task = get().currentMultiTask;
+      if (!task?.plan) throw new Error("plan_not_ready");
+      await requireOk(await sidecarFetch(hs(), `/multi/tasks/${task.id}/plan-decisions`, {
+        method: "POST", body: JSON.stringify({ version: task.plan.version, hash: task.plan.contentHash, clientDecisionKey: crypto.randomUUID(), ...input }),
+      }));
+      await get().loadMultiTask(task.id);
+    },
+    decideMultiApproval: async (requestId, decision) => {
+      await requireOk(await sidecarFetch(hs(), `/multi/approvals/${requestId}/decision`, { method: "POST", body: JSON.stringify({ decision, clientDecisionKey: crypto.randomUUID() }) }));
+      const id = get().currentMultiTask?.id;
+      if (id) await get().loadMultiTask(id);
+    },
+    cancelMultiTask: async () => {
+      const id = get().currentMultiTask?.id;
+      if (!id) return;
+      await requireOk(await sidecarFetch(hs(), `/multi/tasks/${id}/cancel`, { method: "POST" }));
+      await get().loadMultiTask(id);
+    },
+    pauseMultiTask: async () => {
+      const id = get().currentMultiTask?.id;
+      if (!id) return;
+      await requireOk(await sidecarFetch(hs(), `/multi/tasks/${id}/pause`, { method: "POST" }));
+      await get().loadMultiTask(id);
+    },
+    resumeMultiTask: async () => {
+      const id = get().currentMultiTask?.id;
+      if (!id) return;
+      set({ multiRunning: true, multiError: null });
+      try {
+        await requireOk(await sidecarFetch(hs(), `/multi/tasks/${id}/resume`, { method: "POST" }));
+      } catch (error) { set({ multiError: error instanceof Error ? error.message : String(error) }); }
+      finally { set({ multiRunning: false }); await get().loadMultiTask(id); }
+    },
+    retryMultiTask: async () => {
+      const id = get().currentMultiTask?.id;
+      if (!id) return;
+      set({ multiError: null });
+      try { await requireOk(await sidecarFetch(hs(), `/multi/tasks/${id}/retry`, { method: "POST", body: JSON.stringify({ confirmOutcomeUnknown: true }) })); }
+      catch (error) { set({ multiError: error instanceof Error ? error.message : String(error) }); }
+      await get().loadMultiTask(id);
+    },
+    importWorkspaceAttachment: async (absolutePath) => {
+      const state = get();
+      if (state.draftAttachments.length >= 10) throw new Error("attachment_count_exceeded");
+      const boundId = state.sessions.find((session) => session.id === state.currentSessionId)?.workspaceId;
+      const workspace = (boundId ? state.workspaces.find((item) => item.id === boundId) : null) ?? state.activeWorkspace;
+      if (!workspace) throw new Error("workspace_required");
+      const relativePath = relativeWorkspacePath(workspace.canonicalPath, absolutePath);
+      const attachment = await requireOk<AttachmentRecord>(await sidecarFetch(hs(), "/content/attachments/import", {
+        method: "POST",
+        body: JSON.stringify({ workspaceId: workspace.id, relativePath }),
+      }));
+      if (state.draftAttachments.reduce((total, item) => total + item.byteSize, 0) + attachment.byteSize > 50 * 1024 * 1024) throw new Error("attachment_batch_too_large");
+      set((state) => ({ draftAttachments: state.draftAttachments.some((item) => item.id === attachment.id) ? state.draftAttachments : [...state.draftAttachments, attachment] }));
+    },
+    importClipboardAttachment: async (file) => {
+      const state = get();
+      if (state.draftAttachments.length >= 10) throw new Error("attachment_count_exceeded");
+      if (state.draftAttachments.reduce((total, item) => total + item.byteSize, 0) + file.size > 50 * 1024 * 1024) throw new Error("attachment_batch_too_large");
+      const boundId = state.sessions.find((session) => session.id === state.currentSessionId)?.workspaceId;
+      const workspace = (boundId ? state.workspaces.find((item) => item.id === boundId) : null) ?? state.activeWorkspace;
+      if (!workspace) throw new Error("workspace_required");
+      const filename = file.name || `clipboard-${Date.now()}.${file.type === "image/png" ? "png" : "bin"}`;
+      const attachment = await requireOk<AttachmentRecord>(await sidecarFetch(
+        hs(),
+        `/content/attachments/upload?workspaceId=${encodeURIComponent(workspace.id)}&filename=${encodeURIComponent(filename)}`,
+        { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file },
+      ));
+      set((current) => ({ draftAttachments: current.draftAttachments.some((item) => item.id === attachment.id) ? current.draftAttachments : [...current.draftAttachments, attachment] }));
+    },
+    removeDraftAttachment: (id) => set((state) => ({ draftAttachments: state.draftAttachments.filter((item) => item.id !== id) })),
+    searchWorkspacePaths: async (query) => {
+      const state = get();
+      const boundId = state.sessions.find((session) => session.id === state.currentSessionId)?.workspaceId;
+      const workspace = (boundId ? state.workspaces.find((item) => item.id === boundId) : null) ?? state.activeWorkspace;
+      if (!workspace) return set({ workspacePathResults: [] });
+      const response = await sidecarFetch(hs(), `/content/workspaces/${workspace.id}/files?q=${encodeURIComponent(query)}`);
+      set({ workspacePathResults: await requireOk<WorkspacePathResult[]>(response) });
+    },
+    addWorkspaceRef: async (relativePath) => {
+      const state = get();
+      const boundId = state.sessions.find((session) => session.id === state.currentSessionId)?.workspaceId;
+      const workspace = (boundId ? state.workspaces.find((item) => item.id === boundId) : null) ?? state.activeWorkspace;
+      if (!workspace) throw new Error("workspace_required");
+      const reference = await requireOk<WorkspaceRef>(await sidecarFetch(hs(), `/content/workspaces/${workspace.id}/refs`, {
+        method: "POST",
+        body: JSON.stringify({ relativePath }),
+      }));
+      set((state) => ({
+        draftWorkspaceRefs: state.draftWorkspaceRefs.some((item) => item.id === reference.id) ? state.draftWorkspaceRefs : [...state.draftWorkspaceRefs, reference],
+        workspacePathResults: [],
+      }));
+    },
+    removeDraftWorkspaceRef: (id) => set((state) => ({ draftWorkspaceRefs: state.draftWorkspaceRefs.filter((item) => item.id !== id) })),
+    loadMcpServers: async () => {
+      const workspaceId = get().activeWorkspace?.id;
+      const query = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : "";
+      set({ mcpServers: await requireOk<McpServerRecord[]>(await sidecarFetch(hs(), `/mcp/servers${query}`)) });
+    },
+    saveMcpServer: async (server, secrets, editingId) => {
+      await requireOk(await sidecarFetch(hs(), editingId ? `/mcp/servers/${editingId}` : "/mcp/servers", {
+        method: editingId ? "PUT" : "POST",
+        body: JSON.stringify({ server, secrets }),
+      }));
+      await get().loadMcpServers();
+    },
+    setMcpEnabled: async (id, enabled) => {
+      await requireOk(await sidecarFetch(hs(), `/mcp/servers/${id}/enabled`, { method: "PUT", body: JSON.stringify({ enabled }) }));
+      await Promise.all([get().loadMcpServers(), get().loadMcpTools(id)]);
+    },
+    testMcpServer: async (id) => {
+      await requireOk(await sidecarFetch(hs(), `/mcp/servers/${id}/test`, { method: "POST" }));
+      await Promise.all([get().loadMcpServers(), get().loadMcpTools(id)]);
+    },
+    removeMcpServer: async (id) => {
+      await requireOk(await sidecarFetch(hs(), `/mcp/servers/${id}`, { method: "DELETE" }));
+      set((state) => {
+        const mcpTools = { ...state.mcpTools };
+        delete mcpTools[id];
+        return { mcpTools };
+      });
+      await get().loadMcpServers();
+    },
+    loadMcpTools: async (id) => {
+      const tools = await requireOk<McpToolView[]>(await sidecarFetch(hs(), `/mcp/servers/${id}/tools`));
+      set((state) => ({ mcpTools: { ...state.mcpTools, [id]: tools } }));
+    },
+    setMcpToolPolicy: async (serverId, toolName, effect) => {
+      await requireOk(await sidecarFetch(hs(), `/mcp/servers/${serverId}/tools/${encodeURIComponent(toolName)}/policy`, {
+        method: "PUT", body: JSON.stringify({ effect }),
+      }));
+      await get().loadMcpTools(serverId);
     },
 
     loadProviders: async () => {
@@ -333,6 +757,8 @@ export const useStore = create<Store>((set, get) => {
         role: form.role,
         systemPrompt: form.systemPrompt,
         temperature: form.temperature === "" ? undefined : Number(form.temperature),
+        reasoningEfforts: form.reasoningCapabilityKnown ? form.reasoningEfforts : undefined,
+        reasoningEffort: form.reasoningEffort || undefined,
       };
       const res = editingId
         ? await sidecarFetch(hs(), `/agents/${editingId}`, { method: "PUT", body: JSON.stringify(payload) })
@@ -378,10 +804,11 @@ export const useStore = create<Store>((set, get) => {
       if (archived && get().currentRoomId === id) set({ currentRoomId: null, messages: [], tasks: [] });
     },
     selectRoom: async (id) => {
-      set({ currentRoomId: id, messages: [], tasks: [], chatError: null });
+      set({ currentRoomId: id, currentSessionId: null, messages: [], sessionMessages: [], tasks: [], chatError: null, usageSummaries: [] });
       const messages = await requireOk<StoredMessage[]>(await sidecarFetch(hs(), `/rooms/${id}/messages`));
       // 加载期间用户可能已切换房间
       if (get().currentRoomId === id) set({ messages });
+      await get().loadCurrentUsage();
       void get().loadTasks();
     },
 

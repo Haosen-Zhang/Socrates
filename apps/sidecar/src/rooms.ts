@@ -11,10 +11,12 @@ import {
   type StoredMessage,
   type StreamEvent,
   type TaskConfig,
+  type TokenUsage,
   type TurnFailureDecision,
 } from "@socrates/core";
 import { toAgent, type AgentRow } from "./agents";
 import type { SecretStore } from "./secrets";
+import { normalizeTokenUsage, type UsageCollector } from "./services/usage-collector";
 
 type RoomRow = { id: string; name: string; archived: number; created_at: string; updated_at: string };
 type MessageRow = {
@@ -88,7 +90,7 @@ function sseResponse(handler: (emit: (e: StreamEvent) => void) => Promise<void>)
   });
 }
 
-export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGateway) {
+export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGateway, usageCollector?: UsageCollector) {
   const app = new Hono();
   /** 运行中任务的取消把手与「失败后等用户处置」的挂起决定 */
   const taskControllers = new Map<string, AbortController>();
@@ -148,6 +150,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
       role: agent.role,
       systemPrompt: agent.systemPrompt,
       temperature: agent.temperature,
+      reasoningEffort: agent.reasoningEffort,
       providerType: provider.type,
       baseUrl: provider.base_url,
       apiKey,
@@ -224,6 +227,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
   app.delete("/:id", (c) => {
     const room = roomById(c.req.param("id"));
     if (!room) return c.json({ error: "房间不存在" }, 404);
+    db.run("DELETE FROM usage_records WHERE room_id = ?", [room.id]);
     db.run("DELETE FROM turns WHERE task_id IN (SELECT id FROM tasks WHERE room_id = ?)", [room.id]);
     db.run("DELETE FROM tasks WHERE room_id = ?", [room.id]);
     db.run("DELETE FROM messages WHERE room_id = ?", [room.id]);
@@ -308,6 +312,11 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
     if (!room) return c.json({ error: "房间不存在" }, 404);
     return c.json(roomMessages(room.id).map(toMessage));
   });
+  app.get("/:id/usage", (c) => {
+    const room = roomById(c.req.param("id"));
+    if (!room) return c.json({ error: "房间不存在" }, 404);
+    return c.json(usageCollector?.roomSummaries(room.id) ?? []);
+  });
 
   // 单 Agent 快捷对话：取房间第一个 Agent 回复
   app.post("/:id/messages", async (c) => {
@@ -333,6 +342,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
         model: agent.modelId,
       });
       let text = "";
+      let tokenUsage: TokenUsage | undefined;
       let failed = false;
       try {
         for await (const ev of gateway({
@@ -342,6 +352,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
           modelId: agent.modelId,
           system: agent.systemPrompt || undefined,
           temperature: agent.temperature,
+          reasoningEffort: agent.reasoningEffort,
           messages: historyToChatMessages(history),
         })) {
           if (ev.type === "delta") {
@@ -350,6 +361,8 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
           } else if (ev.type === "error") {
             failed = true;
             emit({ type: "error", message: ev.message });
+          } else if (ev.type === "done") {
+            tokenUsage = ev.usage;
           }
         }
       } catch (err) {
@@ -367,6 +380,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
           content: text,
         });
         emit({ type: "message_completed", message: saved });
+        usageCollector?.record({ stableKey: `room-message:${saved.id}`, roomId: room.id, agentId: agent.id, usage: normalizeTokenUsage(tokenUsage, agent.reasoningEffort ?? null) });
       }
     });
   });
@@ -440,12 +454,13 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
       status: "completed" | "failed",
       usage?: { inputTokens?: number; outputTokens?: number },
       error?: string,
-    ) =>
-      db.run(
+    ) => {
+      const turnId = crypto.randomUUID();
+      const result = db.run(
         `INSERT INTO turns (id, task_id, turn_index, round, phase, duty, agent_id, agent_name, model, status, input_tokens, output_tokens, error, started_at, completed_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          crypto.randomUUID(),
+          turnId,
           taskId,
           meta.turnIndex,
           meta.round,
@@ -462,6 +477,9 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
           new Date().toISOString(),
         ],
       );
+      if (status === "completed") usageCollector?.record({ stableKey: `legacy-turn:${taskId}:${meta.turnIndex}`, roomId: room.id, taskId, turnId, agentId: meta.agentId, usage: normalizeTokenUsage(usage, agents[meta.agentId]?.reasoningEffort ?? null) });
+      return result;
+    };
 
     const controller = new AbortController();
     taskControllers.set(taskId, controller);

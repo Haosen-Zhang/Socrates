@@ -73,6 +73,7 @@ fn spawn_sidecar(app: tauri::AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(SidecarState::default())
         .invoke_handler(tauri::generate_handler![sidecar_handshake])
         .setup(|app| {

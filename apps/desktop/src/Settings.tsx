@@ -5,15 +5,17 @@ import { LANGS } from "./i18n";
 import PixelIcon from "./PixelIcon";
 import ProvidersPage from "./ProvidersPage";
 import AgentsSection from "./AgentsSection";
+import McpSettings from "./settings/McpSettings";
 
 const DEFAULT_PROXY = DEFAULT_CONFIG.proxy;
 
-type SectionId = "general" | "providers" | "bots" | "skills" | "memory" | "network" | "appearance";
+type SectionId = "general" | "providers" | "bots" | "mcp" | "skills" | "memory" | "network" | "appearance";
 
 const NAV: Array<{ id: SectionId; icon: string; labelKey: string }> = [
   { id: "general", icon: "general", labelKey: "nav_general" },
   { id: "providers", icon: "plug", labelKey: "nav_providers" },
   { id: "bots", icon: "robot", labelKey: "nav_bots" },
+  { id: "mcp", icon: "plug", labelKey: "nav_mcp" },
   { id: "skills", icon: "spark", labelKey: "nav_skills" },
   { id: "memory", icon: "brain", labelKey: "nav_memory" },
   { id: "network", icon: "globe", labelKey: "nav_network" },
@@ -241,9 +243,9 @@ function AppearanceSection() {
                 onClick={() => void updateConfig({ appearance: { ...appearance, uiTheme: option.value } })}
               >
                 <span className="mb-3 flex items-center gap-3">
-                  <PixelIcon name="chat" size={28} theme={option.value} />
-                  <PixelIcon name="gear" size={28} theme={option.value} />
-                  <PixelIcon name="robot" size={28} theme={option.value} />
+                  <PixelIcon name="chat" size={40} theme={option.value} variant="decorative" />
+                  <PixelIcon name="gear" size={40} theme={option.value} variant="decorative" />
+                  <PixelIcon name="robot" size={40} theme={option.value} variant="decorative" />
                 </span>
                 <span className="block text-sm font-bold">{option.label}</span>
                 <span className="mt-1 block text-xs text-neutral-500">{option.desc}</span>
@@ -304,7 +306,7 @@ export default function Settings() {
             }`}
             onClick={() => setSection(n.id)}
           >
-            <PixelIcon name={n.icon} size={16} />
+            <PixelIcon name={n.icon} size={20} />
             {t(n.labelKey)}
           </button>
         ))}
@@ -314,6 +316,7 @@ export default function Settings() {
           {section === "general" && <GeneralSection />}
           {section === "providers" && <ProvidersPage />}
           {section === "bots" && <AgentsSection />}
+          {section === "mcp" && <McpSettings />}
           {section === "skills" && <Placeholder titleKey="nav_skills" />}
           {section === "memory" && <Placeholder titleKey="nav_memory" />}
           {section === "network" && <NetworkSection />}

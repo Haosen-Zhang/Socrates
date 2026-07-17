@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import { useStore, useT } from "./store";
 import { setSfxEnabled, sfx } from "./fx";
+import GlobalFxLayer from "./fx/GlobalFxLayer";
+import { shouldPlayHoverFor } from "./fx/interactiveEntry";
 import PixelIcon from "./PixelIcon";
 import ChatPage from "./ChatPage";
 import Settings from "./Settings";
@@ -37,9 +39,9 @@ function App() {
 
   // 全局按钮音效：委托到 document，不逐个组件接线；enabled 由 fx 内部把关
   useEffect(() => {
-    const isBtn = (t: EventTarget | null) => (t as HTMLElement | null)?.closest?.("button");
-    const onOver = (e: MouseEvent) => {
-      if (isBtn(e.target)) sfx.hover();
+    const isBtn = (target: EventTarget | null) => (target as HTMLElement | null)?.closest?.("button");
+    const onOver = (event: PointerEvent) => {
+      if (event.pointerType !== "touch" && shouldPlayHoverFor(event.target, event.relatedTarget)) sfx.hover();
     };
     const onDown = (e: PointerEvent) => {
       if (isBtn(e.target)) sfx.click();
@@ -54,18 +56,19 @@ function App() {
 
   const tab = (v: "chat" | "settings", label: string, icon: string) => (
     <button
-      className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm ${
+      className={`flex min-h-9 items-center gap-1.5 rounded px-3 py-1 text-sm ${
         view === v ? "bg-neutral-900 text-white" : "text-neutral-600 hover:bg-neutral-100"
       }`}
       onClick={() => setView(v)}
     >
-      <PixelIcon name={icon} size={15} />
+      <PixelIcon name={icon} size={20} />
       {label}
     </button>
   );
 
   return (
     <main className="pixel-app min-h-screen text-neutral-900">
+      <GlobalFxLayer />
       <header className="pixel-header flex items-center justify-between bg-white px-4 py-2.5">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold">Socrates</h1>

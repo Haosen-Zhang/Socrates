@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { describeGatewayError } from "./gateway-aisdk";
+import { describeGatewayError, reasoningProviderOptions } from "./gateway-aisdk";
 
 describe("describeGatewayError", () => {
   it("classifies auth / rate-limit / provider / network errors", () => {
@@ -11,5 +11,13 @@ describe("describeGatewayError", () => {
     const abort = new Error("aborted");
     abort.name = "AbortError";
     expect(describeGatewayError(abort)).toBe("请求已中止");
+  });
+});
+
+describe("reasoning provider options", () => {
+  it("maps an explicitly supported effort only for the compatible adapter", () => {
+    expect(reasoningProviderOptions("openai_compatible", "high")).toEqual({ "openai-compatible": { reasoningEffort: "high" } });
+    expect(reasoningProviderOptions("anthropic", "high")).toBeUndefined();
+    expect(reasoningProviderOptions("openai_compatible")).toBeUndefined();
   });
 });

@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test:visual": "bun test src/PixelIcon.test.tsx src/fx/interactiveEntry.test.ts src/fx/globalFx.test.ts && vite build",
+    "visual:dev": "vite --host 127.0.0.1",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -13,6 +15,7 @@
     "@socrates/core": "workspace:*",
     "@tailwindcss/vite": "^4.3.2",
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
