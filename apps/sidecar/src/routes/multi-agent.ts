@@ -18,6 +18,8 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
       plan: store.getPlan(id),
       turns: store.listTurns(id),
       outcomeUnknown: store.hasOutcomeUnknown(id),
+      requiresExecutionReview: task.terminalReason === "execution_interrupted_requires_review" || (task.state === "paused" && (task.resumeFrom === "executing" || task.resumeFrom === "awaiting_tool_approval")),
+      usageSummaries: store.usageSummaries(id),
       pendingApprovals: approvals.recoverPending().pending.filter((item) => item.taskId === id),
     };
   };
@@ -93,7 +95,7 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
     if (!task) return c.json({ error: "multi_task_not_found" }, 404);
     if (task.state !== "paused" || !task.resumeFrom) return c.json({ error: "multi_task_not_paused" }, 409);
     try {
-      if (task.resumeFrom === "executing" || task.resumeFrom === "awaiting_tool_approval") void execution.resume(task.id).catch(() => {});
+      if (task.resumeFrom === "executing" || task.resumeFrom === "awaiting_tool_approval") return c.json({ error: "execution_resume_requires_manual_review" }, 409);
       else await coordinator.resumeInBackground(task.id);
       return c.json({ accepted: true }, 202);
     } catch (error) { return c.json({ error: error instanceof Error ? error.message : "multi_resume_failed" }, 409); }
@@ -102,11 +104,12 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
     const task = store.get(c.req.param("id"));
     if (!task) return c.json({ error: "multi_task_not_found" }, 404);
     const body = await c.req.json().catch(() => null) as { confirmOutcomeUnknown?: unknown } | null;
-    if (task.state !== "paused" || !store.hasOutcomeUnknown(task.id)) return c.json({ error: "multi_task_retry_not_required" }, 409);
+    const executionReview = task.resumeFrom === "executing" || task.resumeFrom === "awaiting_tool_approval";
+    if (task.state !== "paused" || (!store.hasOutcomeUnknown(task.id) && !executionReview)) return c.json({ error: "multi_task_retry_not_required" }, 409);
     if (body?.confirmOutcomeUnknown !== true) return c.json({ error: "outcome_unknown_confirmation_required" }, 400);
     try {
-      if (task.resumeFrom === "executing" || task.resumeFrom === "awaiting_tool_approval") return c.json({ error: "execution_outcome_unknown_requires_manual_inspection" }, 409);
-      await coordinator.retryAfterReview(task.id);
+      if (executionReview) void execution.resumeAfterReview(task.id).catch(() => {});
+      else await coordinator.retryAfterReview(task.id);
       return c.json({ accepted: true }, 202);
     } catch (error) { return c.json({ error: error instanceof Error ? error.message : "multi_retry_failed" }, 409); }
   });

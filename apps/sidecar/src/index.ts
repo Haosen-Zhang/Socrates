@@ -41,6 +41,7 @@ import { ExecutionRunner } from "./runtime/execution-runner";
 import { WorkspaceLeaseManager } from "./workspace/leases";
 import { multiAgentRoutes } from "./routes/multi-agent";
 import type { OrchestrationAgent } from "@socrates/core";
+import { UsageCollector } from "./services/usage-collector";
 
 // 父进程（Tauri）异常退出（如 SIGKILL/SIGTERM 未走优雅关闭）时自动退出，避免孤儿进程占着端口
 let stopManagedServices: () => Promise<void> = async () => {};
@@ -162,6 +163,7 @@ const agentRuns = new SingleAgentRunner(db, runtimes, approvals, events, attachm
 runtimes.recoverInterrupted();
 agentRuns.recoverInterrupted();
 const multiTasks = new MultiTaskStore(db);
+const usage = new UsageCollector(db);
 const resolveMultiAgent = (agentId: string, snapshot: Record<string, unknown>): OrchestrationAgent => {
   const providerId = String(snapshot.providerId ?? "");
   const provider = db.query<{ type: ProviderType; base_url: string; api_key_ref: string; enabled: number }, [string]>("SELECT type, base_url, api_key_ref, enabled FROM providers WHERE id = ?").get(providerId);
@@ -172,6 +174,7 @@ const resolveMultiAgent = (agentId: string, snapshot: Record<string, unknown>): 
     id: agentId, nickname: String(snapshot.nickname ?? agentId), avatar: typeof snapshot.avatar === "string" ? snapshot.avatar : undefined,
     modelId: String(snapshot.modelId ?? ""), role: String(snapshot.role ?? ""), systemPrompt: String(snapshot.systemPrompt ?? ""),
     temperature: typeof snapshot.temperature === "number" ? snapshot.temperature : undefined,
+    reasoningEffort: typeof snapshot.reasoningEffort === "string" ? snapshot.reasoningEffort as OrchestrationAgent["reasoningEffort"] : undefined,
     providerType: provider.type, baseUrl: provider.base_url, apiKey,
   };
 };
@@ -183,9 +186,9 @@ app.get("/health", (c) => c.json({ ok: true }));
 app.route("/config", configRoutes(config));
 app.route("/providers", providerRoutes(db, secrets, proxiedFetch));
 app.route("/agents", agentRoutes(db));
-app.route("/rooms", roomRoutes(db, secrets, gateway));
+app.route("/rooms", roomRoutes(db, secrets, gateway, usage));
 app.route("/workspaces", workspaceRoutes(workspaces));
-app.route("/sessions", sessionRoutes(sessions, events));
+app.route("/sessions", sessionRoutes(sessions, events, usage));
 app.route("/agent", agentRunRoutes(agentRuns, approvals));
 app.route("/content", contentRoutes(db, workspaces, attachments));
 app.route("/mcp", mcpRoutes(mcpStore, mcp));

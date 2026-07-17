@@ -29,6 +29,7 @@ describe("MultiAgentCoordinator", () => {
     expect(store.getPlan(task.id)?.content.objective).toBe("build");
     expect(calls()).toBe(4);
     expect(events.filter((type) => type === "turn_completed")).toHaveLength(2);
+    expect(store.usageSummaries(task.id).find((item) => item.agentId === "a")?.current.totalTokens).toBe(3);
   });
 
   it("does not call a provider twice for a completed stable turn", async () => {
@@ -73,5 +74,30 @@ describe("MultiAgentCoordinator", () => {
     await coordinator.resume(task.id);
     expect(store.get(task.id)).toMatchObject({ state: "awaiting_plan_approval", attemptNo: 2 });
     expect(calls).toBe(4);
+  });
+
+  it("uses only the explicit fallback order and reports the real fallback identity", async () => {
+    const db = openDb(":memory:");
+    const now = new Date().toISOString();
+    db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w', '/tmp', '/tmp', 'hash', 'tmp', ?, ?)").run(now, now);
+    db.query("INSERT INTO sessions (id, title, mode, workspace_id, status, created_at, updated_at) VALUES ('s', 'multi', 'multi_agent', 'w', 'idle', ?, ?)").run(now, now);
+    for (const [position, id] of ["a", "b"].entries()) db.query("INSERT INTO session_agents (session_id, agent_id, snapshot_json, position, execution_eligible) VALUES ('s', ?, ?, ?, 1)").run(id, JSON.stringify({ nickname: id.toUpperCase(), modelId: `model-${id}` }), position);
+    const valid = JSON.stringify({ objective: "build", summary: "safe", steps: [{ id: "1", title: "verify", description: "test", files: [], commands: ["bun test"], risks: [], verification: ["bun test"] }], evidence: [] });
+    let calls = 0;
+    const gateway: ModelGateway = async function* () {
+      calls += 1;
+      if (calls === 1) { yield { type: "error", message: "provider_unavailable_before_accept" }; return; }
+      yield { type: "delta", text: calls === 4 ? valid : `answer-${calls}` };
+      yield { type: "done" };
+    };
+    const resolve = (id: string, snapshot: Record<string, unknown>): OrchestrationAgent => ({ id, nickname: String(snapshot.nickname), modelId: String(snapshot.modelId), role: "", systemPrompt: "", providerType: "openai_compatible", baseUrl: "http://unused", apiKey: "fixture" });
+    const store = new MultiTaskStore(db);
+    const coordinator = new MultiAgentCoordinator(db, store, new EventStore(db), gateway, resolve);
+    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a", fallbackOrderByAgent: { a: ["b"] } } });
+    const events: Array<Record<string, unknown>> = [];
+    await coordinator.run(task.id, (event) => { events.push(event as unknown as Record<string, unknown>); });
+    expect(store.get(task.id)?.state).toBe("awaiting_plan_approval");
+    expect(events.find((event) => event.type === "agent_fallback_selected")).toMatchObject({ originalAgentId: "a", fallbackAgentId: "b", nickname: "B", model: "model-b" });
+    expect(store.listTurns(task.id).filter((turn) => turn.status === "completed").map((turn) => turn.agentId)).toEqual(["b", "b", "b"]);
   });
 });

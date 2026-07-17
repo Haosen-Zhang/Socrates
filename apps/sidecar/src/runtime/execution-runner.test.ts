@@ -78,7 +78,7 @@ describe("ExecutionRunner", () => {
     await ready;
     await runner.pause(task.id);
     await expect(running).rejects.toThrow("denied");
-    expect(tasks.get(task.id)).toMatchObject({ state: "paused", resumeFrom: "awaiting_tool_approval" });
+    expect(tasks.get(task.id)).toMatchObject({ state: "paused", resumeFrom: "awaiting_tool_approval", terminalReason: "execution_interrupted_requires_review" });
     expect(approvals.recoverPending().pending).toHaveLength(0);
     expect(db.query("SELECT COUNT(*) AS count FROM workspace_leases").get()).toEqual({ count: 0 });
   });

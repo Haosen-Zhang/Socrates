@@ -1,5 +1,6 @@
 import type { ChatMessage, ModelGateway, TokenUsage } from "./chat";
 import type { ProviderType } from "./provider";
+import type { ReasoningEffort } from "./model-capabilities";
 
 export type TaskMode = "round_robin" | "debate";
 
@@ -32,6 +33,7 @@ export type OrchestrationAgent = {
   role: string;
   systemPrompt: string;
   temperature?: number;
+  reasoningEffort?: ReasoningEffort;
   providerType: ProviderType;
   baseUrl: string;
   apiKey: string;

@@ -492,7 +492,7 @@
 
 ### MULTI-007 — Replan、fallback、compaction 与 restart recovery
 
-- **优先级 / 状态：** P4 / 进行中（restart reconcile、pause/resume、新 attempt、unknown 人工确认重试和 replan 已完成；显式 fallback UI、可追溯 context compaction 仍待实现）
+- **优先级 / 状态：** P4 / 进行中（restart reconcile、pause/resume、新 attempt、unknown 人工确认重试、replan、显式 fallback 与 range/hash compaction 已完成；跨 sidecar task ownership lease 与分类 rate-limit backoff 仍待）
 - **目标：** 任务在失败、上下文超限、Agent不可用或应用重启后可解释恢复，不伪造连续性。
 - **依赖：** MULTI-006、DB-002、CAP-001。
 - **修改文件：** coordinator/state/store/runtime supervisor、timeline recovery UI。
@@ -506,7 +506,7 @@
 
 ### UX-001 — Per-Agent/current/cumulative Usage 与成本展示
 
-- **优先级 / 状态：** P5 / 未开始
+- **优先级 / 状态：** P5 / 进行中（Chat/Single/Multi 的 current/cumulative token、cache/reasoning 与 unavailable 已统一持久化展示；可信 pricing snapshot 未接入，费用保持 unavailable）
 - **目标：** Chat/Single/Multi统一显示输入、输出、cache、reasoning、估算成本和来源。
 - **依赖：** CAP-001、DB-002、MULTI-002。
 - **修改文件：** Provider adapters、gateway/runtime mappers、timeline/settings/i18n。
@@ -518,7 +518,7 @@
 
 ### UX-002 — Reasoning effort capability 与安全展示
 
-- **优先级 / 状态：** P5 / 未开始
+- **优先级 / 状态：** P5 / 已完成（能力未知时隐藏；用户显式 capability override 后按 Agent/task 选择；OpenAI-compatible 通过已安装 AI SDK providerOptions 映射，其他 adapter fail closed；不保存 raw reasoning）
 - **目标：** 只为支持的模型显示effort，按Agent配置并记录实际值；默认不保存原始reasoning。
 - **依赖：** CAP-001、UX-001、MULTI-002。
 - **修改文件：** Agent/Profile UI、Provider adapters、task setup/timeline/i18n。
@@ -530,7 +530,7 @@
 
 ### UX-003 — RAF、键盘可用的可调整 Composer
 
-- **优先级 / 状态：** P5 / 未开始
+- **优先级 / 状态：** P5 / 已完成（104px～min(360px,40vh)、pointer capture、RAF、8/24px 键盘、双击复位、localStorage、窗口 clamp 与 IME 回归）
 - **目标：** 用户可在104px到`min(360px,40vh)`间拖动，不触发整窗口抖动。
 - **依赖：** CHAT-001、ATT-002、UI-004。
 - **修改文件：** ChatPage/index.css/i18n。
@@ -542,7 +542,7 @@
 
 ### UX-004 — Recovery Center、暂停/恢复与任务诊断
 
-- **优先级 / 状态：** P5 / 未开始
+- **优先级 / 状态：** P5 / 进行中（Multi pause/resume/retry/cancel、outcome_unknown 与执行中断人工复核已完成；统一 Recovery Center/诊断导出仍待）
 - **目标：** 用户能看到 interrupted/pending/unknown任务并安全选择resume/retry/cancel/inspect。
 - **依赖：** MULTI-007、DB-002、TL-001。
 - **修改文件：** ChatPage历史任务、settings/health、store/i18n。
@@ -554,7 +554,7 @@
 
 ### PERF-001 — Output bounding、context compaction 与长会话性能
 
-- **优先级 / 状态：** P5 / 未开始
+- **优先级 / 状态：** P5 / 进行中（Multi context 已有有界 extractive checkpoint、covered range/hash/event 且保留原 history；工具 10MB 外置、10k timeline windowing 与 quota/GC 仍待）
 - **目标：** 大工具输出、长timeline和多Agent历史不会拖垮DB、WebView或context window。
 - **依赖：** TL-001、MULTI-007、ATT-001。
 - **修改文件：** ToolExecutor/EventStore/ContextAssembler/Timeline。

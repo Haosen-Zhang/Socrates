@@ -6,6 +6,7 @@ import { MemorySecrets } from "./secrets";
 import { providerRoutes } from "./providers";
 import { agentRoutes } from "./agents";
 import { roomRoutes } from "./rooms";
+import { UsageCollector } from "./services/usage-collector";
 
 function makeApp(gateway: ModelGateway) {
   const db = openDb(":memory:");
@@ -13,14 +14,14 @@ function makeApp(gateway: ModelGateway) {
   const app = new Hono();
   app.route("/providers", providerRoutes(db, secrets));
   app.route("/agents", agentRoutes(db));
-  app.route("/rooms", roomRoutes(db, secrets, gateway));
+  app.route("/rooms", roomRoutes(db, secrets, gateway, new UsageCollector(db)));
   return app;
 }
 
 const okGateway: ModelGateway = async function* () {
   yield { type: "delta", text: "你" };
   yield { type: "delta", text: "好" };
-  yield { type: "done" };
+  yield { type: "done", usage: { inputTokens: 2, outputTokens: 3 } };
 };
 
 async function setupRoom(app: Hono) {
@@ -133,6 +134,7 @@ describe("message flow", () => {
     expect(history).toHaveLength(2);
     expect(history[0].role).toBe("user");
     expect(history[1].content).toBe("你好");
+    expect(await (await app.request(`/rooms/${room.id}/usage`)).json()).toMatchObject([{ agentId: agent.id, current: { totalTokens: 5 }, cumulative: { totalTokens: 5 } }]);
   });
 
   it("passes system prompt and history to the gateway", async () => {

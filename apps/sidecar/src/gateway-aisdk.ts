@@ -4,6 +4,12 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import type { ModelGateway } from "@socrates/core";
 import type { FetchLike } from "./net";
 
+export function reasoningProviderOptions(providerType: "openai_compatible" | "anthropic", effort?: string) {
+  return providerType === "openai_compatible" && effort
+    ? { "openai-compatible": { reasoningEffort: effort } }
+    : undefined;
+}
+
 export function createAiSdkModel(input: {
   providerType: "openai_compatible" | "anthropic";
   baseUrl: string;
@@ -52,6 +58,7 @@ export function makeAiSdkGateway(fetchImpl: FetchLike): ModelGateway {
       system: req.system,
       messages: req.messages,
       temperature: req.temperature,
+      providerOptions: reasoningProviderOptions(req.providerType, req.reasoningEffort),
       abortSignal: req.signal,
     });
     let usage: { inputTokens?: number; outputTokens?: number } | undefined;

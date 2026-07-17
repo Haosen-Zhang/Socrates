@@ -65,7 +65,7 @@ describe("NativeAgentRuntime", () => {
     expect(receivedPrompt).toContain("<untrusted_workspace_file");
     expect(receivedPrompt).not.toContain(root);
     expect(events.some((event) => event.type === "text_delta" && event.text.includes("forty two"))).toBe(true);
-    expect(db.query("SELECT name, status FROM tool_calls ORDER BY created_at, name").all()).toEqual([
+    expect(db.query("SELECT name, status FROM tool_calls ORDER BY rowid").all()).toEqual([
       { name: "search_files", status: "succeeded" },
       { name: "read_file", status: "succeeded" },
     ]);

@@ -2,10 +2,11 @@ import { Hono } from "hono";
 import type { ConversationMode } from "@socrates/core";
 import type { SessionStore } from "../store/session-store";
 import type { EventStore } from "../store/event-store";
+import type { UsageCollector } from "../services/usage-collector";
 
 const MODES = new Set<ConversationMode>(["chat", "single_agent", "multi_agent"]);
 
-export function sessionRoutes(sessions: SessionStore, events: EventStore): Hono {
+export function sessionRoutes(sessions: SessionStore, events: EventStore, usage?: UsageCollector): Hono {
   const app = new Hono();
   app.get("/", (c) => c.json(sessions.list()));
   app.post("/", async (c) => {
@@ -32,6 +33,11 @@ export function sessionRoutes(sessions: SessionStore, events: EventStore): Hono 
     const session = sessions.get(c.req.param("id"));
     if (!session) return c.json({ error: "session_not_found" }, 404);
     return c.json(sessions.listMessages(session.id));
+  });
+  app.get("/:id/usage", (c) => {
+    const session = sessions.get(c.req.param("id"));
+    if (!session) return c.json({ error: "session_not_found" }, 404);
+    return c.json(usage?.sessionSummaries(session.id) ?? []);
   });
   app.put("/:id/workspace", async (c) => {
     const body = await c.req.json().catch(() => null) as { workspaceId?: unknown } | null;

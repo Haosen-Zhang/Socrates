@@ -5,6 +5,7 @@ import { hashToolInput } from "../tools/executor";
 import type { RuntimeManager } from "./runtime-manager";
 import type { EventStore } from "../store/event-store";
 import type { AttachmentResolver } from "../attachments/resolver";
+import { UsageCollector } from "../services/usage-collector";
 
 type SessionRow = { id: string; mode: string; workspace_id: string | null; status: string };
 type WorkspaceRow = { identity_hash: string };
@@ -22,6 +23,7 @@ export interface AgentRunResult {
 
 export class SingleAgentRunner {
   private readonly active = new Map<string, ActiveRun>();
+  private readonly usage: UsageCollector;
 
   constructor(
     private readonly db: Database,
@@ -29,7 +31,7 @@ export class SingleAgentRunner {
     private readonly approvals: ApprovalManager,
     private readonly events: EventStore,
     private readonly attachments: AttachmentResolver,
-  ) {}
+  ) { this.usage = new UsageCollector(db); }
 
   recoverInterrupted(): { runs: number; approvals: number } {
     let runs = 0;
@@ -116,6 +118,7 @@ export class SingleAgentRunner {
 
     let runtimeSessionId = "";
     let assistantText = "";
+    let usageIndex = 0;
     try {
       await emit(startedEvent);
       const handle = await this.runtimes.open({
@@ -165,6 +168,8 @@ export class SingleAgentRunner {
             return;
           } else if (event.type === "text_delta") {
             assistantText += event.text;
+          } else if (event.type === "usage") {
+            this.usage.record({ stableKey: `single:${runId}:${usageIndex++}`, sessionId: session.id, taskId: runId, agentId: agent.agent_id, usage: event.usage });
           }
           await emit(event);
         },

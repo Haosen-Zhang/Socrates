@@ -7,6 +7,7 @@ import {
   normalizeAgentNickname,
   randomUniqueAgentIdentity,
   type Agent,
+  type ReasoningEffort,
 } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import { validateAvatarUpload } from "./agentAvatarUpload";
@@ -23,6 +24,9 @@ function newForm(agents: Agent[]): AgentForm {
     role: "",
     systemPrompt: "",
     temperature: "",
+    reasoningCapabilityKnown: false,
+    reasoningEfforts: [],
+    reasoningEffort: "",
   };
 }
 
@@ -63,6 +67,9 @@ export default function AgentsSection() {
       role: agent.role,
       systemPrompt: agent.systemPrompt,
       temperature: agent.temperature?.toString() ?? "",
+      reasoningCapabilityKnown: agent.modelCapabilities?.reasoningEfforts !== "unknown" && Array.isArray(agent.modelCapabilities?.reasoningEfforts),
+      reasoningEfforts: Array.isArray(agent.modelCapabilities?.reasoningEfforts) ? agent.modelCapabilities.reasoningEfforts : [],
+      reasoningEffort: agent.reasoningEffort ?? "",
     });
     setOpen(true);
   };
@@ -117,6 +124,7 @@ export default function AgentsSection() {
   };
 
   const input = "pixel-input w-full px-3 py-2 text-sm";
+  const effortOptions: ReasoningEffort[] = ["auto", "minimal", "low", "medium", "high", "xhigh", "max"];
 
   return (
     <section className="space-y-4">
@@ -306,6 +314,16 @@ export default function AgentsSection() {
                   {t("temperature_optional")}
                   <input className={input} type="number" step="0.1" min="0" max="2" value={form.temperature} onChange={(e) => setForm({ ...form, temperature: e.target.value })} />
                 </label>
+                <div className="col-span-2 pixel-card space-y-3 p-3">
+                  <label className="flex items-center gap-2 text-sm font-bold">
+                    <input type="checkbox" checked={form.reasoningCapabilityKnown} onChange={(event) => setForm({ ...form, reasoningCapabilityKnown: event.target.checked, reasoningEfforts: event.target.checked ? form.reasoningEfforts : [], reasoningEffort: "" })} />
+                    {t("reasoning_capability_override")}
+                  </label>
+                  {!form.reasoningCapabilityKnown ? <p className="text-xs text-neutral-500">{t("reasoning_unavailable")}</p> : <>
+                    <div className="flex flex-wrap gap-2">{effortOptions.map((effort) => <label key={effort} className="pixel-chip flex items-center gap-1 text-xs"><input type="checkbox" checked={form.reasoningEfforts.includes(effort)} onChange={(event) => setForm((current) => ({ ...current, reasoningEfforts: event.target.checked ? [...current.reasoningEfforts, effort] : current.reasoningEfforts.filter((item) => item !== effort), reasoningEffort: !event.target.checked && current.reasoningEffort === effort ? "" : current.reasoningEffort }))} />{effort}</label>)}</div>
+                    <label className="block text-sm">{t("reasoning_effort")}<select className={input} value={form.reasoningEffort} onChange={(event) => setForm({ ...form, reasoningEffort: event.target.value as ReasoningEffort | "" })}><option value="">{t("reasoning_effort_none")}</option>{form.reasoningEfforts.map((effort) => <option key={effort} value={effort}>{effort}</option>)}</select></label>
+                  </>}
+                </div>
                 <label className="col-span-2 text-sm">
                   {t("role")}
                   <input className={input} placeholder={t("role_placeholder")} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} />

@@ -1,4 +1,5 @@
 import type { ProviderType } from "./provider";
+import type { ModelCapabilities, ReasoningEffort } from "./model-capabilities";
 
 export type ChatRole = "system" | "user" | "assistant";
 export type ChatMessage = { role: ChatRole; content: string };
@@ -96,6 +97,8 @@ export type Agent = {
   role: string;
   systemPrompt: string;
   temperature?: number;
+  modelCapabilities?: ModelCapabilities;
+  reasoningEffort?: ReasoningEffort;
   createdAt: string;
   updatedAt: string;
 };
@@ -184,12 +187,16 @@ export type GatewayRequest = {
   modelId: string;
   system?: string;
   temperature?: number;
+  reasoningEffort?: ReasoningEffort;
   messages: ChatMessage[];
   /** 任务取消时中止底层请求，不再消耗 token */
   signal?: AbortSignal;
 };
 
-export type TokenUsage = { inputTokens?: number; outputTokens?: number };
+export type TokenUsage = {
+  inputTokens?: number; outputTokens?: number; totalTokens?: number;
+  cachedInputTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number;
+};
 
 export type GatewayEvent =
   | { type: "delta"; text: string }

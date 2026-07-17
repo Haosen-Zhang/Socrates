@@ -19,6 +19,7 @@ describe("TaskStateMachine", () => {
   it("pauses with an exact resume target and rejects terminal resurrection", () => {
     expect(reduceTaskState(at("paused", "discussing"), { type: "resume" }).state).toBe("discussing");
     expect(reduceTaskState(at("executing"), { type: "pause" })).toEqual({ state: "paused", resumeFrom: "executing", terminalReason: null });
+    expect(reduceTaskState(at("executing"), { type: "pause", reason: "review" }).terminalReason).toBe("review");
     expect(() => reduceTaskState(at("cancelled"), { type: "submit" })).toThrow(InvalidTaskTransitionError);
     expect(() => reduceTaskState(at("awaiting_plan_approval"), { type: "complete" })).toThrow("invalid_task_transition");
   });

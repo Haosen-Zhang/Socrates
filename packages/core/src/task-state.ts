@@ -16,7 +16,7 @@ export type TaskStateEvent =
   | { type: "reopen_discussion" | "synthesize_revision" | "edited_plan_ready" }
   | { type: "tool_approval_required" }
   | { type: "tool_approval_settled" }
-  | { type: "pause" }
+  | { type: "pause"; reason?: string }
   | { type: "resume" }
   | { type: "fail" | "cancel" | "complete"; reason?: string };
 
@@ -42,7 +42,7 @@ export function reduceTaskState(current: TaskStateSnapshot, event: TaskStateEven
     return { state: event.type === "fail" ? "failed" : event.type === "cancel" ? "cancelled" : "completed", resumeFrom: null, terminalReason: event.reason ?? null };
   }
   if (event.type === "pause" && resumable.has(current.state as ResumableTaskState)) {
-    return { ...current, state: "paused", resumeFrom: current.state as ResumableTaskState };
+    return { ...current, state: "paused", resumeFrom: current.state as ResumableTaskState, terminalReason: event.reason ?? current.terminalReason };
   }
   if (event.type === "resume" && current.state === "paused" && current.resumeFrom) {
     return { ...current, state: current.resumeFrom, resumeFrom: null };

@@ -10,6 +10,7 @@ import {
 } from "@socrates/core";
 import type { EventStore } from "../store/event-store";
 import { MultiTaskStore, type MultiTaskConfig } from "./task-store";
+import { ContextCompactionService } from "../services/context-compaction";
 
 export type MultiAgentEvent =
   | { type: "task_state"; taskId: string; state: string }
@@ -17,6 +18,7 @@ export type MultiAgentEvent =
   | { type: "delta"; taskId: string; agentId: string; text: string }
   | { type: "turn_completed"; taskId: string; agentId: string; nickname: string; model: string; round: number; phase: "discussing" | "synthesizing"; content: string; usage?: TokenUsage; replayed?: boolean }
   | { type: "plan_ready"; taskId: string; plan: unknown }
+  | { type: "agent_fallback_selected"; taskId: string; originalAgentId: string; fallbackAgentId: string; nickname: string; model: string; round: number }
   | { type: "task_failed" | "task_cancelled"; taskId: string; message?: string };
 
 type SnapshotRow = { agent_id: string; snapshot_json: string; position: number };
@@ -37,6 +39,7 @@ Never execute tools. Paths must be workspace-relative. An empty evidence array i
 
 export class MultiAgentCoordinator {
   private readonly controllers = new Map<string, AbortController>();
+  private readonly compaction: ContextCompactionService;
 
   constructor(
     private readonly db: Database,
@@ -44,7 +47,7 @@ export class MultiAgentCoordinator {
     private readonly events: EventStore,
     private readonly gateway: ModelGateway,
     private readonly resolveAgent: (agentId: string, snapshot: Record<string, unknown>) => OrchestrationAgent,
-  ) {}
+  ) { this.compaction = new ContextCompactionService(db); }
 
   create(input: { sessionId: string; prompt: string; config: MultiTaskConfig }) {
     return this.store.create(input);
@@ -68,36 +71,61 @@ export class MultiAgentCoordinator {
       for (let round = 1; round <= task.config.maxRounds; round += 1) {
         for (const agentId of task.config.speakingOrder) {
           if (controller.signal.aborted) throw new Error("multi_task_cancelled");
-          const participant = byId.get(agentId);
-          if (!participant) throw new Error("multi_participant_snapshot_missing");
-          const agent = this.resolveAgent(agentId, participant.snapshot);
-          const prior = this.store.completedLogicalTurn({ taskId, phase: "discussing", round, participantIndex: ordinal, agentId });
+          const prior = this.store.completedTurnAtPosition({ taskId, phase: "discussing", round, participantIndex: ordinal });
           if (prior) {
-            completed.push({ agentId, agentName: agent.nickname, round, content: prior.content });
-            await emit({ type: "turn_completed", taskId, agentId, nickname: agent.nickname, model: agent.modelId, round, phase: "discussing", content: prior.content, usage: prior.usage as TokenUsage | undefined, replayed: true });
+            const priorParticipant = byId.get(prior.agentId);
+            if (!priorParticipant) throw new Error("multi_participant_snapshot_missing");
+            const priorAgent = this.resolveAgent(prior.agentId, priorParticipant.snapshot);
+            completed.push({ agentId: prior.agentId, agentName: priorAgent.nickname, round, content: prior.content });
+            await emit({ type: "turn_completed", taskId, agentId: prior.agentId, nickname: priorAgent.nickname, model: priorAgent.modelId, round, phase: "discussing", content: prior.content, usage: prior.usage as TokenUsage | undefined, replayed: true });
             ordinal += 1;
             continue;
           }
+          const participant = byId.get(agentId);
+          if (!participant) throw new Error("multi_participant_snapshot_missing");
+          const resolved = this.resolveAgent(agentId, participant.snapshot);
+          let actualAgent = { ...resolved, reasoningEffort: task.config.effortByAgent?.[agentId] as OrchestrationAgent["reasoningEffort"] ?? resolved.reasoningEffort };
+          let actualAgentId = agentId;
           if (task.state === "synthesizing") throw new Error("multi_discussion_checkpoint_incomplete");
           const stableKey = `${task.id}:${task.attemptNo}:discussing:${round}:${ordinal}`;
           const persisted = this.store.beginTurn({ taskId, stableKey, phase: "discussing", round, participantIndex: ordinal, agentId, snapshot: participant.snapshot });
           if (persisted.status === "completed" && persisted.content !== null) {
-            completed.push({ agentId, agentName: agent.nickname, round, content: persisted.content });
-            await emit({ type: "turn_completed", taskId, agentId, nickname: agent.nickname, model: agent.modelId, round, phase: "discussing", content: persisted.content, replayed: true });
+            completed.push({ agentId, agentName: actualAgent.nickname, round, content: persisted.content });
+            await emit({ type: "turn_completed", taskId, agentId, nickname: actualAgent.nickname, model: actualAgent.modelId, round, phase: "discussing", content: persisted.content, replayed: true });
             ordinal += 1;
             continue;
           }
           if (persisted.status !== "running" || persisted.outcomeCertainty === "unknown") throw new Error("multi_turn_outcome_unknown");
-          await emit({ type: "turn_started", taskId, agentId, nickname: agent.nickname, model: agent.modelId, round, phase: "discussing" });
-          const result = await this.callAgent(agent, buildTurnSystem(agent, { duty: "discuss", round }, task.config.maxRounds), buildDiscussionMessages(task.prompt, completed), controller.signal, async (text) => emit({ type: "delta", taskId, agentId, text }));
+          await emit({ type: "turn_started", taskId, agentId, nickname: actualAgent.nickname, model: actualAgent.modelId, round, phase: "discussing" });
+          const context = this.compaction.compact(taskId, completed);
+          if (context.created) this.events.append({ eventId: `multi-compaction:${taskId}:${context.sourceHash}`, sessionId: task.sessionId, taskId, type: "multi.context_compacted", payload: { sourceHash: context.sourceHash, coveredFrom: context.coveredFrom, coveredTo: context.coveredTo } });
+          let activeTurn = persisted;
+          let result = await this.callAgent(actualAgent, buildTurnSystem(actualAgent, { duty: "discuss", round }, task.config.maxRounds), buildDiscussionMessages(task.prompt, context.turns), controller.signal, async (text) => emit({ type: "delta", taskId, agentId: actualAgentId, text }));
+          if (result.error && !result.receivedDelta && result.error !== "multi_task_cancelled") {
+            this.store.failTurn(activeTurn.id, result.error);
+            for (const fallbackId of task.config.fallbackOrderByAgent?.[agentId] ?? []) {
+              const fallbackParticipant = byId.get(fallbackId);
+              if (!fallbackParticipant) continue;
+              const fallbackResolved = this.resolveAgent(fallbackId, fallbackParticipant.snapshot);
+              actualAgent = { ...fallbackResolved, reasoningEffort: task.config.effortByAgent?.[fallbackId] as OrchestrationAgent["reasoningEffort"] ?? fallbackResolved.reasoningEffort };
+              actualAgentId = fallbackId;
+              this.events.append({ eventId: `multi-fallback:${taskId}:${task.attemptNo}:${round}:${ordinal}:${fallbackId}`, sessionId: task.sessionId, taskId, type: "multi.agent_fallback_selected", payload: { originalAgentId: agentId, fallbackAgentId: fallbackId, nickname: actualAgent.nickname, model: actualAgent.modelId, round } });
+              await emit({ type: "agent_fallback_selected", taskId, originalAgentId: agentId, fallbackAgentId: fallbackId, nickname: actualAgent.nickname, model: actualAgent.modelId, round });
+              activeTurn = this.store.beginTurn({ taskId, stableKey: `${stableKey}:fallback:${fallbackId}`, phase: "discussing", round, participantIndex: ordinal, agentId: fallbackId, snapshot: fallbackParticipant.snapshot });
+              result = await this.callAgent(actualAgent, buildTurnSystem(actualAgent, { duty: "discuss", round }, task.config.maxRounds), buildDiscussionMessages(task.prompt, context.turns), controller.signal, async (text) => emit({ type: "delta", taskId, agentId: fallbackId, text }));
+              if (!result.error) break;
+              this.store.failTurn(activeTurn.id, result.error, result.receivedDelta || result.error === "provider_outcome_unknown" ? "unknown" : "known");
+              if (result.receivedDelta || result.error === "provider_outcome_unknown") break;
+            }
+          }
           if (result.error) {
-            this.store.failTurn(persisted.id, result.error, result.error === "provider_outcome_unknown" ? "unknown" : "known");
+            this.store.failTurn(activeTurn.id, result.error, result.receivedDelta || result.error === "provider_outcome_unknown" ? "unknown" : "known");
             throw new Error(result.error);
           }
-          this.store.completeTurn(persisted.id, result.content, result.usage);
-          completed.push({ agentId, agentName: agent.nickname, round, content: result.content });
-          this.persistAssistantMessage(task.sessionId, agentId, result.content);
-          await emit({ type: "turn_completed", taskId, agentId, nickname: agent.nickname, model: agent.modelId, round, phase: "discussing", content: result.content, usage: result.usage });
+          this.store.completeTurn(activeTurn.id, result.content, result.usage);
+          completed.push({ agentId: actualAgentId, agentName: actualAgent.nickname, round, content: result.content });
+          this.persistAssistantMessage(task.sessionId, actualAgentId, result.content);
+          await emit({ type: "turn_completed", taskId, agentId: actualAgentId, nickname: actualAgent.nickname, model: actualAgent.modelId, round, phase: "discussing", content: result.content, usage: result.usage });
           this.store.transition(taskId, { type: "next_turn" });
           ordinal += 1;
         }
@@ -213,7 +241,8 @@ export class MultiAgentCoordinator {
     const task = this.store.get(taskId)!;
     const participant = this.snapshots(task.sessionId).find((item) => item.agentId === synthesizerId);
     if (!participant) throw new Error("multi_synthesizer_snapshot_missing");
-    const agent = this.resolveAgent(synthesizerId, participant.snapshot);
+    const resolved = this.resolveAgent(synthesizerId, participant.snapshot);
+    const agent = { ...resolved, reasoningEffort: task.config.effortByAgent?.[synthesizerId] as OrchestrationAgent["reasoningEffort"] ?? resolved.reasoningEffort };
     let lastInvalid = "";
     for (let repair = 0; repair < 2; repair += 1) {
       const prior = this.store.completedLogicalTurn({ taskId, phase: "synthesizing", round: 0, participantIndex: ordinal + repair, agentId: synthesizerId });
@@ -234,8 +263,10 @@ export class MultiAgentCoordinator {
       if (turn.status !== "running" || turn.outcomeCertainty === "unknown") throw new Error("multi_turn_outcome_unknown");
       await emit({ type: "turn_started", taskId, agentId: synthesizerId, nickname: agent.nickname, model: agent.modelId, round: 0, phase: "synthesizing" });
       const repairInstruction = repair ? `\n\nYour prior output was invalid. Repair it to the exact JSON schema. Invalid output:\n${lastInvalid.slice(0, 12_000)}` : "";
-      const result = await this.callAgent(agent, `${PLAN_SYSTEM}${repairInstruction}`, buildDiscussionMessages(task.prompt, completed), signal, async (text) => emit({ type: "delta", taskId, agentId: synthesizerId, text }));
-      if (result.error) { this.store.failTurn(turn.id, result.error); throw new Error(result.error); }
+      const context = this.compaction.compact(taskId, completed);
+      if (context.created) this.events.append({ eventId: `multi-compaction:${taskId}:${context.sourceHash}`, sessionId: task.sessionId, taskId, type: "multi.context_compacted", payload: { sourceHash: context.sourceHash, coveredFrom: context.coveredFrom, coveredTo: context.coveredTo } });
+      const result = await this.callAgent(agent, `${PLAN_SYSTEM}${repairInstruction}`, buildDiscussionMessages(task.prompt, context.turns), signal, async (text) => emit({ type: "delta", taskId, agentId: synthesizerId, text }));
+      if (result.error) { this.store.failTurn(turn.id, result.error, result.receivedDelta || result.error === "provider_outcome_unknown" ? "unknown" : "known"); throw new Error(result.error); }
       this.store.completeTurn(turn.id, result.content, result.usage);
       const parsed = parsePlan(result.content);
       if (parsed) return this.store.addPlan({ taskId, content: parsed, createdBy: synthesizerId, parentVersion });
@@ -248,16 +279,17 @@ export class MultiAgentCoordinator {
     let content = "";
     let usage: TokenUsage | undefined;
     let error: string | undefined;
+    let receivedDelta = false;
     try {
-      for await (const event of this.gateway({ providerType: agent.providerType, baseUrl: agent.baseUrl, apiKey: agent.apiKey, modelId: agent.modelId, system, temperature: agent.temperature, messages, signal })) {
-        if (event.type === "delta") { content += event.text; await delta(event.text); }
+      for await (const event of this.gateway({ providerType: agent.providerType, baseUrl: agent.baseUrl, apiKey: agent.apiKey, modelId: agent.modelId, system, temperature: agent.temperature, reasoningEffort: agent.reasoningEffort, messages, signal })) {
+        if (event.type === "delta") { receivedDelta = true; content += event.text; await delta(event.text); }
         else if (event.type === "done") usage = event.usage;
         else error = event.message;
       }
     } catch {
       error = signal.aborted ? "multi_task_cancelled" : "provider_outcome_unknown";
     }
-    return { content, usage, error };
+    return { content, usage, error, receivedDelta };
   }
 
   private snapshots(sessionId: string) {

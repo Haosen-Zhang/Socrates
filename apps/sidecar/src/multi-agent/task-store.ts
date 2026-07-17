@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { hashStructuredPlan, reduceTaskState, type StructuredPlan, type TaskState, type TaskStateEvent } from "@socrates/core";
+import { hashStructuredPlan, reduceTaskState, type ReasoningEffort, type StructuredPlan, type TaskState, type TaskStateEvent, type TokenUsage } from "@socrates/core";
+import { UsageCollector, normalizeTokenUsage } from "../services/usage-collector";
 
 type TaskRow = {
   id: string; session_id: string; prompt: string; state: TaskState; resume_from_state: string | null;
@@ -21,6 +22,7 @@ export interface MultiTaskConfig {
   synthesizerId: string;
   executionAgentId: string;
   effortByAgent?: Record<string, string>;
+  fallbackOrderByAgent?: Record<string, string[]>;
 }
 
 export interface PlanVersionRecord {
@@ -37,7 +39,8 @@ const toTask = (row: TaskRow): MultiTaskRecord => ({
 });
 
 export class MultiTaskStore {
-  constructor(private readonly db: Database) {}
+  private readonly usage: UsageCollector;
+  constructor(private readonly db: Database) { this.usage = new UsageCollector(db); }
 
   create(input: { sessionId: string; prompt: string; config: MultiTaskConfig }): MultiTaskRecord {
     const session = this.db.query<{ mode: string; workspace_id: string | null; status: string }, [string]>("SELECT mode, workspace_id, status FROM sessions WHERE id = ?").get(input.sessionId);
@@ -45,11 +48,20 @@ export class MultiTaskStore {
     if (!session.workspace_id) throw new Error("multi_agent_workspace_required");
     if (!input.prompt.trim()) throw new Error("multi_agent_prompt_required");
     if (!Number.isInteger(input.config.maxRounds) || input.config.maxRounds < 1 || input.config.maxRounds > 20) throw new Error("multi_agent_rounds_invalid");
-    const snapshots = this.db.query<{ agent_id: string; execution_eligible: number }, [string]>("SELECT agent_id, execution_eligible FROM session_agents WHERE session_id = ? ORDER BY position").all(input.sessionId);
+    const snapshots = this.db.query<{ agent_id: string; execution_eligible: number; snapshot_json: string }, [string]>("SELECT agent_id, execution_eligible, snapshot_json FROM session_agents WHERE session_id = ? ORDER BY position").all(input.sessionId);
     const ids = new Set(snapshots.map((item) => item.agent_id));
     if (input.config.speakingOrder.length < 2 || new Set(input.config.speakingOrder).size !== input.config.speakingOrder.length || input.config.speakingOrder.some((id) => !ids.has(id))) throw new Error("multi_agent_order_invalid");
     if (!ids.has(input.config.synthesizerId)) throw new Error("multi_agent_synthesizer_invalid");
     if (!snapshots.some((item) => item.agent_id === input.config.executionAgentId && item.execution_eligible === 1)) throw new Error("multi_agent_executor_invalid");
+    for (const [agentId, effort] of Object.entries(input.config.effortByAgent ?? {})) {
+      const snapshot = snapshots.find((item) => item.agent_id === agentId);
+      const profile = snapshot ? JSON.parse(snapshot.snapshot_json) as Record<string, any> : null;
+      const supported = profile?.modelCapabilities?.reasoningEfforts;
+      if (!snapshot || !Array.isArray(supported) || !supported.includes(effort)) throw new Error("multi_agent_effort_unsupported");
+    }
+    for (const [agentId, fallback] of Object.entries(input.config.fallbackOrderByAgent ?? {})) {
+      if (!ids.has(agentId) || !Array.isArray(fallback) || new Set(fallback).size !== fallback.length || fallback.some((id) => id === agentId || !ids.has(id))) throw new Error("multi_agent_fallback_invalid");
+    }
     const id = crypto.randomUUID();
     const attemptId = crypto.randomUUID();
     const messageId = crypto.randomUUID();
@@ -150,14 +162,32 @@ export class MultiTaskStore {
     return row ? { id: row.id, content: row.content, usage: row.usage_json ? JSON.parse(row.usage_json) : null } : null;
   }
 
+  completedTurnAtPosition(input: { taskId: string; phase: string; round: number; participantIndex: number }): { id: string; agentId: string; content: string; usage: unknown } | null {
+    const row = this.db.query<{ id: string; agent_id: string; content: string; usage_json: string | null }, [string, string, number, number]>(`
+      SELECT id, agent_id, content, usage_json FROM multi_turns
+      WHERE task_id = ? AND phase = ? AND round = ? AND participant_index = ?
+        AND status = 'completed' AND content IS NOT NULL
+      ORDER BY completed_at DESC LIMIT 1
+    `).get(input.taskId, input.phase, input.round, input.participantIndex);
+    return row ? { id: row.id, agentId: row.agent_id, content: row.content, usage: row.usage_json ? JSON.parse(row.usage_json) : null } : null;
+  }
+
   hasOutcomeUnknown(taskId: string): boolean {
     return this.db.query<{ present: number }, [string]>("SELECT EXISTS(SELECT 1 FROM multi_turns WHERE task_id = ? AND outcome_certainty = 'unknown') AS present").get(taskId)?.present === 1;
   }
 
   completeTurn(id: string, content: string, usage: unknown): void {
-    this.db.query("UPDATE multi_turns SET status = 'completed', content = ?, usage_json = ?, completed_at = ? WHERE id = ? AND status = 'running'")
-      .run(content, usage ? JSON.stringify(usage) : null, new Date().toISOString(), id);
+    const turn = this.db.query<{ task_id: string; agent_id: string }, [string]>("SELECT task_id, agent_id FROM multi_turns WHERE id = ?").get(id);
+    const changed = this.db.query("UPDATE multi_turns SET status = 'completed', content = ?, usage_json = ?, completed_at = ? WHERE id = ? AND status = 'running'")
+      .run(content, usage ? JSON.stringify(usage) : null, new Date().toISOString(), id).changes;
+    if (changed === 1 && turn) {
+      const task = this.get(turn.task_id)!;
+      const effort = task.config.effortByAgent?.[turn.agent_id] as ReasoningEffort | undefined;
+      this.usage.record({ stableKey: `multi-turn:${id}`, sessionId: task.sessionId, taskId: task.id, turnId: id, agentId: turn.agent_id, usage: normalizeTokenUsage(usage as TokenUsage | null, effort ?? null) });
+    }
   }
+
+  usageSummaries(taskId: string) { return this.usage.summaries(taskId); }
 
   failTurn(id: string, error: string, outcomeCertainty: "known" | "unknown" = "known"): void {
     this.db.query("UPDATE multi_turns SET status = 'failed', error = ?, outcome_certainty = ?, completed_at = ? WHERE id = ? AND status = 'running'")

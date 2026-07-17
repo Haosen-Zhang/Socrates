@@ -44,4 +44,16 @@ describe("multi-agent routes", () => {
     await Bun.sleep(1);
     expect(executions()).toBe(1);
   });
+
+  it("never executes a rejected plan", async () => {
+    const { app, executions } = setup();
+    const response = await app.request("/multi/sessions/s/tasks", { method: "POST", body: JSON.stringify({ prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } }) });
+    await response.text();
+    const tasks = await (await app.request("/multi/sessions/s/tasks")).json() as Array<{ id: string }>;
+    const view = await (await app.request(`/multi/tasks/${tasks[0]!.id}`)).json() as { plan: { version: number; contentHash: string } };
+    const rejected = await app.request(`/multi/tasks/${tasks[0]!.id}/plan-decisions`, { method: "POST", body: JSON.stringify({ version: view.plan.version, hash: view.plan.contentHash, clientDecisionKey: "reject", decision: "reject" }) });
+    expect(rejected.status).toBe(200);
+    expect((await (await app.request(`/multi/tasks/${tasks[0]!.id}`)).json()).state).toBe("cancelled");
+    expect(executions()).toBe(0);
+  });
 });

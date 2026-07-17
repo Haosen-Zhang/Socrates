@@ -6,11 +6,13 @@ import { hashToolInput } from "../tools/executor";
 import type { WorkspaceLeaseManager } from "../workspace/leases";
 import type { RuntimeManager } from "./runtime-manager";
 import type { MultiTaskStore } from "../multi-agent/task-store";
+import { UsageCollector } from "../services/usage-collector";
 
 type ActiveExecution = { runtimeSessionId: string; leaseId: string; calls: Map<string, { name: string; input: unknown }>; cancelled: boolean; paused: boolean };
 
 export class ExecutionRunner {
   private readonly active = new Map<string, ActiveExecution>();
+  private readonly usage: UsageCollector;
 
   constructor(
     private readonly db: Database,
@@ -19,7 +21,7 @@ export class ExecutionRunner {
     private readonly leases: WorkspaceLeaseManager,
     private readonly approvals: ApprovalManager,
     private readonly events: EventStore,
-  ) {}
+  ) { this.usage = new UsageCollector(db); }
 
   async run(taskId: string, emit: (event: RuntimeEvent) => void | Promise<void> = () => {}): Promise<void> {
     if (this.active.has(taskId)) throw new Error("execution_already_running");
@@ -36,6 +38,7 @@ export class ExecutionRunner {
     }, 5 * 60_000);
     let runtimeSessionId = "";
     let assistantText = "";
+    let usageIndex = 0;
     try {
       const snapshot = this.db.query<{ snapshot_json: string; execution_eligible: number }, [string, string]>("SELECT snapshot_json, execution_eligible FROM session_agents WHERE session_id = ? AND agent_id = ?").get(task.sessionId, task.executionAgentId!);
       if (!snapshot || snapshot.execution_eligible !== 1) throw new Error("execution_agent_not_eligible");
@@ -53,6 +56,9 @@ export class ExecutionRunner {
         prompt: `Execute only this user-approved plan. Plan approval is not blanket tool approval; request approval for every concrete side effect.\n\n${JSON.stringify(plan.content)}`,
         onEvent: async (event) => {
           if (event.type === "text_delta") assistantText += event.text;
+          if (event.type === "usage") {
+            this.usage.record({ stableKey: `multi-execution:${taskId}:${task.attemptNo}:${usageIndex++}`, sessionId: task.sessionId, taskId, agentId: task.executionAgentId, usage: event.usage });
+          }
           if (event.type === "tool_call") active.calls.set(event.callId, { name: event.name, input: event.input });
           if (event.type === "approval_required") {
             const call = active.calls.get(event.callId);
@@ -119,13 +125,13 @@ export class ExecutionRunner {
     const task = this.tasks.get(taskId);
     if (!task || !["executing", "awaiting_tool_approval"].includes(task.state)) throw new Error("multi_task_not_pausable");
     active.paused = true;
-    this.tasks.transition(taskId, { type: "pause" });
+    this.tasks.transition(taskId, { type: "pause", reason: "execution_interrupted_requires_review" });
     this.approvals.expireForTask(taskId);
     await this.runtimes.interrupt(active.runtimeSessionId);
   }
 
-  async resume(taskId: string, emit: (event: RuntimeEvent) => void | Promise<void> = () => {}): Promise<void> {
-    const resumed = this.tasks.resumeNewAttempt(taskId);
+  async resumeAfterReview(taskId: string, emit: (event: RuntimeEvent) => void | Promise<void> = () => {}): Promise<void> {
+    const resumed = this.tasks.resumeNewAttempt(taskId, { allowOutcomeUnknown: true });
     if (resumed.state === "awaiting_tool_approval") this.tasks.transition(taskId, { type: "tool_approval_settled" });
     if (this.tasks.get(taskId)?.state !== "executing") throw new Error("multi_task_execution_resume_invalid");
     await this.run(taskId, emit);

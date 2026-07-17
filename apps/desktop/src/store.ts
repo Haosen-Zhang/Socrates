@@ -20,6 +20,8 @@ import {
   type WorkspaceRef,
   type McpServerInput,
   type McpServerRecord,
+  type ReasoningEffort,
+  type NormalizedUsage,
 } from "@socrates/core";
 import { relativeWorkspacePath } from "./workspace/workspacePath";
 
@@ -42,6 +44,9 @@ export type AgentForm = {
   role: string;
   systemPrompt: string;
   temperature: string; // 表单态，空串=未设置
+  reasoningCapabilityKnown: boolean;
+  reasoningEfforts: ReasoningEffort[];
+  reasoningEffort: ReasoningEffort | "";
 };
 
 export type TestResult = { outcome: TestOutcome; status?: number; detail?: string };
@@ -63,6 +68,7 @@ export type PendingApproval = {
   freshHumanRequired: boolean;
   status: string;
 };
+export type UsageSummaryView = { agentId: string | null; current: NormalizedUsage; cumulative: NormalizedUsage; records: number };
 export type WorkspacePathResult = { relativePath: string; kind: "file" | "directory" };
 export type McpToolView = {
   name: string; namespacedName: string; description: string; generation: number; risk: string;
@@ -73,11 +79,12 @@ export type MultiPlan = {
   content: { objective: string; summary: string; steps: Array<{ id: string; title: string; description: string; files: string[]; commands: string[]; risks: string[]; verification: string[] }>; evidence: Array<{ refId: string; snapshotHash: string }> };
 };
 export type MultiTaskView = {
-  id: string; sessionId: string; prompt: string; state: string; resumeFrom: string | null; terminalReason: string | null; outcomeUnknown: boolean;
-  config: { speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string };
+  id: string; sessionId: string; prompt: string; state: string; resumeFrom: string | null; terminalReason: string | null; outcomeUnknown: boolean; requiresExecutionReview: boolean;
+  config: { speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string; effortByAgent?: Record<string, ReasoningEffort>; fallbackOrderByAgent?: Record<string, string[]> };
   plan: MultiPlan | null;
   turns: Array<{ id: string; phase: string; round: number; agentId: string; snapshot: Record<string, unknown>; status: string; content: string | null; usage: { inputTokens?: number; outputTokens?: number } | null; error: string | null }>;
   pendingApprovals: PendingApproval[];
+  usageSummaries: Array<{ agentId: string | null; current: NormalizedUsage; cumulative: NormalizedUsage; records: number }>;
 };
 
 export type DebateRoleForm = {
@@ -128,13 +135,15 @@ type Store = {
   sendAgentPrompt: (prompt: string, sandbox: "read-only" | "workspace-write") => Promise<boolean>;
   decideAgentApproval: (requestId: string, decision: ApprovalDecision) => Promise<void>;
   cancelAgentRun: () => Promise<void>;
+  usageSummaries: UsageSummaryView[];
+  loadCurrentUsage: () => Promise<void>;
   multiTasks: MultiTaskView[];
   currentMultiTask: MultiTaskView | null;
   multiRunning: boolean;
   multiError: string | null;
   loadMultiTasks: () => Promise<void>;
   loadMultiTask: (id: string) => Promise<void>;
-  sendMultiTask: (input: { prompt: string; speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string }) => Promise<void>;
+  sendMultiTask: (input: { prompt: string; speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string; effortByAgent?: Record<string, ReasoningEffort>; fallbackOrderByAgent?: Record<string, string[]> }) => Promise<void>;
   decideMultiPlan: (input: { decision: "approve_exact_plan" | "request_replan" | "reject" | "edit_and_approve"; reason?: string; content?: MultiPlan["content"] }) => Promise<void>;
   decideMultiApproval: (requestId: string, decision: ApprovalDecision) => Promise<void>;
   cancelMultiTask: () => Promise<void>;
@@ -294,6 +303,7 @@ export const useStore = create<Store>((set, get) => {
     } finally {
       set({ streaming: null, activeTaskId: null, failedTurn: null });
       void get().loadTasks();
+      void get().loadCurrentUsage();
     }
   };
 
@@ -317,6 +327,7 @@ export const useStore = create<Store>((set, get) => {
     sessionMessages: [],
     agentEvents: [],
     pendingApprovals: [],
+    usageSummaries: [],
     agentRunning: false,
     agentError: null,
     activeAgentRunId: null,
@@ -431,7 +442,8 @@ export const useStore = create<Store>((set, get) => {
     },
     selectAgentSession: async (id) => {
       const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${id}/messages`));
-      set({ currentSessionId: id, currentRoomId: null, messages: [], sessionMessages, agentEvents: [], pendingApprovals: [], agentError: null, multiTasks: [], currentMultiTask: null, multiError: null });
+      set({ currentSessionId: id, currentRoomId: null, messages: [], sessionMessages, agentEvents: [], pendingApprovals: [], agentError: null, multiTasks: [], currentMultiTask: null, multiError: null, usageSummaries: [] });
+      await get().loadCurrentUsage();
       if (get().sessions.find((session) => session.id === id)?.mode === "multi_agent") await get().loadMultiTasks();
     },
     sendAgentPrompt: async (prompt, sandbox) => {
@@ -489,6 +501,7 @@ export const useStore = create<Store>((set, get) => {
       } finally {
         const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${sessionId}/messages`));
         set({ agentRunning: false, activeAgentRunId: null, sessionMessages });
+        await get().loadCurrentUsage();
         await get().loadSessions();
       }
       return runError === null;
@@ -504,6 +517,12 @@ export const useStore = create<Store>((set, get) => {
       const runId = get().activeAgentRunId;
       if (!runId) return;
       await requireOk(await sidecarFetch(hs(), `/agent/runs/${runId}/cancel`, { method: "POST" }));
+    },
+    loadCurrentUsage: async () => {
+      const state = get();
+      const path = state.currentSessionId ? `/sessions/${state.currentSessionId}/usage` : state.currentRoomId ? `/rooms/${state.currentRoomId}/usage` : null;
+      if (!path) { set({ usageSummaries: [] }); return; }
+      set({ usageSummaries: await requireOk<UsageSummaryView[]>(await sidecarFetch(hs(), path)) });
     },
     loadMultiTasks: async () => {
       const sessionId = get().currentSessionId;
@@ -738,6 +757,8 @@ export const useStore = create<Store>((set, get) => {
         role: form.role,
         systemPrompt: form.systemPrompt,
         temperature: form.temperature === "" ? undefined : Number(form.temperature),
+        reasoningEfforts: form.reasoningCapabilityKnown ? form.reasoningEfforts : undefined,
+        reasoningEffort: form.reasoningEffort || undefined,
       };
       const res = editingId
         ? await sidecarFetch(hs(), `/agents/${editingId}`, { method: "PUT", body: JSON.stringify(payload) })
@@ -783,10 +804,11 @@ export const useStore = create<Store>((set, get) => {
       if (archived && get().currentRoomId === id) set({ currentRoomId: null, messages: [], tasks: [] });
     },
     selectRoom: async (id) => {
-      set({ currentRoomId: id, currentSessionId: null, messages: [], sessionMessages: [], tasks: [], chatError: null });
+      set({ currentRoomId: id, currentSessionId: null, messages: [], sessionMessages: [], tasks: [], chatError: null, usageSummaries: [] });
       const messages = await requireOk<StoredMessage[]>(await sidecarFetch(hs(), `/rooms/${id}/messages`));
       // 加载期间用户可能已切换房间
       if (get().currentRoomId === id) set({ messages });
+      await get().loadCurrentUsage();
       void get().loadTasks();
     },
 

@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { agentLabel, type Agent, type ConversationMode, type StoredMessage, type TaskSummary } from "@socrates/core";
+import { agentLabel, type Agent, type ConversationMode, type ReasoningEffort, type StoredMessage, type TaskSummary } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
 import { toggleRoomAgentSelection } from "./roomSelection";
@@ -11,6 +11,7 @@ import { shouldSubmitComposerEnter } from "./composerIme";
 import WorkspaceChip from "./workspace/WorkspaceChip";
 import AttachmentTray, { AttachmentImage } from "./attachments/AttachmentTray";
 import { canReviewPlan, dropAgentBefore, moveAgentId } from "./multiAgentUi";
+import ResizableComposer from "./composer/ResizableComposer";
 
 const DUTY_CLS: Record<string, string> = {
   propose: "bg-blue-100 text-blue-800",
@@ -279,14 +280,6 @@ function ComposerTextarea({
   const ref = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const lastCompositionEndAt = useRef(Number.NEGATIVE_INFINITY);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.height = "0px";
-    const nextHeight = Math.min(el.scrollHeight, 160);
-    el.style.height = `${nextHeight}px`;
-    el.style.overflowY = el.scrollHeight > 160 ? "auto" : "hidden";
-  }, [value]);
   return (
     <textarea
       ref={ref}
@@ -527,7 +520,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
           </div>
         </div>
       )}
-      <div className={`pixel-composer flex items-end gap-2 px-2.5 py-2 ${showConfig ? "pixel-composer--configured" : ""}`}>
+      <ResizableComposer configured={showConfig} label={t("composer_resize")}>
         <button
           type="button"
           className={`pixel-composer-tool shrink-0 ${showConfig ? "is-active" : ""}`}
@@ -561,7 +554,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
         >
           <PixelIcon name="send" size={18} />
         </button>
-      </div>
+      </ResizableComposer>
     </form>
   );
 }
@@ -584,7 +577,7 @@ function SimpleComposer() {
       }}
       className="composer-dock"
     >
-      <div className="pixel-composer flex items-end gap-2 px-3 py-2">
+      <ResizableComposer label={t("composer_resize")}>
         <span className="pixel-composer-chevron mb-1.5 shrink-0">›</span>
         <ComposerTextarea
           placeholder={streaming ? t("replying") : t("message_placeholder")}
@@ -602,7 +595,7 @@ function SimpleComposer() {
         >
           <PixelIcon name="send" size={18} />
         </button>
-      </div>
+      </ResizableComposer>
     </form>
   );
 }
@@ -610,12 +603,15 @@ function SimpleComposer() {
 function SingleAgentSession() {
   const {
     sessions, currentSessionId, sessionMessages, agentEvents, pendingApprovals,
-    agentRunning, agentError, sendAgentPrompt, decideAgentApproval, cancelAgentRun, workspacePathResults, searchWorkspacePaths, addWorkspaceRef,
+    agentRunning, agentError, sendAgentPrompt, decideAgentApproval, cancelAgentRun, workspacePathResults, searchWorkspacePaths, addWorkspaceRef, usageSummaries,
   } = useStore();
   const t = useT();
   const [draft, setDraft] = useState("");
   const [sandbox, setSandbox] = useState<"read-only" | "workspace-write">("read-only");
   const session = sessions.find((item) => item.id === currentSessionId);
+  const agentSnapshot = session?.agents[0]?.snapshot;
+  const agentUsage = usageSummaries.find((item) => item.agentId === session?.agents[0]?.agentId);
+  const usageText = (value: number | null | undefined) => value == null ? t("usage_unavailable") : value.toLocaleString();
   const streamingText = agentEvents.filter((event) => event.type === "text_delta").map((event) => event.type === "text_delta" ? event.text : "").join("");
   const submit = async () => {
     const prompt = draft.trim();
@@ -635,6 +631,7 @@ function SingleAgentSession() {
           <div className="text-[10px] uppercase tracking-wider text-neutral-500">Single Agent · {sandbox}</div>
         </div>
         <div className="flex items-center gap-2">
+          {agentSnapshot && <div className="pixel-card flex items-center gap-2 px-2 py-1"><AgentAvatar src={String(agentSnapshot.avatar ?? "")} label={String(agentSnapshot.nickname ?? "Agent")} size={28} lively={false} /><span className="text-[10px]">{t("usage_current")}: {usageText(agentUsage?.current.totalTokens)}<br />{t("usage_total")}: {usageText(agentUsage?.cumulative.totalTokens)}</span></div>}
           <WorkspaceChip workspaceId={session?.workspaceId} locked />
           <select className="pixel-input px-2 py-1 text-xs" value={sandbox} disabled={agentRunning} onChange={(event) => setSandbox(event.target.value as typeof sandbox)}>
             <option value="read-only">{t("sandbox_read_only")}</option>
@@ -697,11 +694,11 @@ function SingleAgentSession() {
           </div>
         )}
         <AttachmentTray />
-        <div className="pixel-composer flex items-end gap-2 px-3 py-2">
+        <ResizableComposer label={t("composer_resize")}>
           <span className="pixel-composer-chevron mb-1.5 shrink-0">›</span>
           <ComposerTextarea placeholder={agentRunning ? t("replying") : t("message_placeholder")} value={draft} disabled={agentRunning} onChange={updateDraft} onSubmit={() => void submit()} />
           <button className="pixel-send shrink-0" type="submit" disabled={agentRunning || !draft.trim()} aria-label={t("send")}><PixelIcon name="send" size={18} /></button>
-        </div>
+        </ResizableComposer>
       </form>
     </div>
   );
@@ -761,10 +758,13 @@ function MultiAgentSession() {
   const [rounds, setRounds] = useState(1);
   const [synthesizerId, setSynthesizerId] = useState(order[order.length - 1] ?? "");
   const [executionAgentId, setExecutionAgentId] = useState(order[0] ?? "");
+  const [effortByAgent, setEffortByAgent] = useState<Record<string, ReasoningEffort>>({});
+  const [fallbackOrderByAgent, setFallbackOrderByAgent] = useState<Record<string, string[]>>({});
   const dragging = useRef<string | null>(null);
   useEffect(() => {
     const ids = participants.map((item) => item.id);
     setOrder(ids); setSynthesizerId(ids[ids.length - 1] ?? ""); setExecutionAgentId(ids[0] ?? "");
+    setEffortByAgent(Object.fromEntries(participants.flatMap((item) => typeof item.reasoningEffort === "string" ? [[item.id, item.reasoningEffort as ReasoningEffort]] : [])));
   }, [currentSessionId]);
   useEffect(() => {
     if (!currentMultiTask || ["awaiting_plan_approval", "failed", "cancelled", "completed", "paused"].includes(currentMultiTask.state)) return;
@@ -777,11 +777,12 @@ function MultiAgentSession() {
   return <div className="flex min-h-0 flex-1 flex-col">
     <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
       <div><div className="text-sm font-bold">{session?.title}</div><div className="text-[10px] uppercase tracking-wider text-neutral-500">Multi-Agent · {currentMultiTask?.state ?? "idle"}</div></div>
-      <div className="flex items-center gap-2"><WorkspaceChip workspaceId={session?.workspaceId} locked /><div className="flex -space-x-2">{participants.slice(0, 6).map((agent) => <AgentAvatar key={agent.id} src={String(agent.avatar ?? "")} label={String(agent.nickname ?? agent.id)} size={28} lively={false} />)}</div>{currentMultiTask?.state === "paused" ? <button className="pixel-button pixel-button--primary px-2 py-1 text-xs" onClick={() => void (currentMultiTask.outcomeUnknown ? retryMultiTask() : resumeMultiTask())}>{t(currentMultiTask.outcomeUnknown ? "multi_retry_reviewed" : "multi_resume")}</button> : pausable && <button className="pixel-button px-2 py-1 text-xs" onClick={() => void pauseMultiTask()}>{t("multi_pause")}</button>}{currentMultiTask && !terminal && <button className="pixel-button px-2 py-1 text-xs text-red-700" onClick={() => void cancelMultiTask()}>{t("cancel_task")}</button>}</div>
+      <div className="flex items-center gap-2"><WorkspaceChip workspaceId={session?.workspaceId} locked /><div className="flex -space-x-2">{participants.slice(0, 6).map((agent) => <AgentAvatar key={agent.id} src={String(agent.avatar ?? "")} label={String(agent.nickname ?? agent.id)} size={28} lively={false} />)}</div>{currentMultiTask?.state === "paused" ? <button className="pixel-button pixel-button--primary px-2 py-1 text-xs" onClick={() => void (currentMultiTask.outcomeUnknown || currentMultiTask.requiresExecutionReview ? retryMultiTask() : resumeMultiTask())}>{t(currentMultiTask.outcomeUnknown || currentMultiTask.requiresExecutionReview ? "multi_retry_reviewed" : "multi_resume")}</button> : pausable && <button className="pixel-button px-2 py-1 text-xs" onClick={() => void pauseMultiTask()}>{t("multi_pause")}</button>}{currentMultiTask && !terminal && <button className="pixel-button px-2 py-1 text-xs text-red-700" onClick={() => void cancelMultiTask()}>{t("cancel_task")}</button>}</div>
     </header>
     <div className="flex-1 space-y-4 overflow-y-auto p-4">
       {multiError && <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{multiError}</div>}
       {currentMultiTask?.state === "paused" && currentMultiTask.outcomeUnknown && <div role="alert" className="border border-amber-400 bg-amber-50 p-3 text-xs text-amber-900">{t("multi_outcome_unknown")}</div>}
+      {currentMultiTask?.state === "paused" && currentMultiTask.requiresExecutionReview && <div role="alert" className="border border-amber-400 bg-amber-50 p-3 text-xs text-amber-900">{t("multi_execution_review")}</div>}
       {sessionMessages.map((message) => {
         const author = participants.find((item) => item.id === message.authorId);
         return <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}><div className={`max-w-[82%] ${message.role === "user" ? "" : "flex gap-3"}`}>
@@ -790,18 +791,23 @@ function MultiAgentSession() {
         </div></div>;
       })}
       {currentMultiTask?.turns.filter((turn) => turn.status === "running").map((turn) => <div key={turn.id} className="pixel-card animate-pulse p-3 text-sm">{String(turn.snapshot.nickname ?? turn.agentId)} {t("multi_thinking")}</div>)}
+      {currentMultiTask && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{participants.map((agent) => {
+        const usage = currentMultiTask.usageSummaries.find((item) => item.agentId === agent.id);
+        const fmt = (value: number | null) => value === null ? t("usage_unavailable") : value.toLocaleString();
+        return <div key={agent.id} className="pixel-card flex items-center gap-3 p-2"><AgentAvatar src={String(agent.avatar ?? "")} label={String(agent.nickname ?? agent.id)} size={34} lively={false} /><div className="min-w-0 text-[10px]"><div className="truncate font-bold">{String(agent.nickname ?? agent.id)}</div><div>{t("usage_current")}: {fmt(usage?.current.totalTokens ?? null)} · {t("usage_total")}: {fmt(usage?.cumulative.totalTokens ?? null)}</div><div>{t("usage_cached")}: {fmt(usage?.cumulative.cachedInputTokens ?? null)} · {t("usage_reasoning")}: {fmt(usage?.cumulative.reasoningTokens ?? null)}</div></div></div>;
+      })}</div>}
       {currentMultiTask?.plan && <MultiPlanCard plan={currentMultiTask.plan} />}
       {currentMultiTask?.pendingApprovals.map((approval) => <section key={approval.id} className="pixel-approval-card p-4">
         <div className="flex items-center justify-between"><strong>{approval.kind}</strong><span className="pixel-chip">{approval.risk}</span></div>
         <p className="my-2 text-xs text-neutral-600">{approval.kind === "plan_scope_expansion" ? t("multi_scope_expansion") : t("multi_tool_approval_hint")}</p>
         <div className="flex gap-2"><button className="pixel-button pixel-button--primary px-3 py-1.5 text-xs" onClick={() => void decideMultiApproval(approval.id, "allow_once")}>{t("approval_allow_once")}</button>{!approval.freshHumanRequired && <button className="pixel-button px-3 py-1.5 text-xs" onClick={() => void decideMultiApproval(approval.id, "allow_session")}>{t("approval_allow_session")}</button>}<button className="pixel-button px-3 py-1.5 text-xs text-red-700" onClick={() => void decideMultiApproval(approval.id, "deny")}>{t("approval_deny")}</button></div>
       </section>)}
-      {terminal && <form className="pixel-card space-y-4 p-4" onSubmit={(event) => { event.preventDefault(); void sendMultiTask({ prompt, speakingOrder: order, maxRounds: rounds, synthesizerId, executionAgentId }); }}>
+      {terminal && <form className="pixel-card space-y-4 p-4" onSubmit={(event) => { event.preventDefault(); void sendMultiTask({ prompt, speakingOrder: order, maxRounds: rounds, synthesizerId, executionAgentId, effortByAgent, fallbackOrderByAgent }); }}>
         <div><div className="pixel-kicker">DISCUSSION SETUP</div><h3 className="font-bold">{t("multi_new_task")}</h3></div>
         <textarea className="pixel-input min-h-28 w-full p-3 text-sm" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={t("multi_prompt_placeholder")} />
         <div className="grid gap-4 md:grid-cols-2"><div><div className="mb-2 text-xs font-bold">{t("speaking_order")}</div><div className="max-h-64 space-y-2 overflow-y-auto">
           {order.map((id, index) => { const agent = participants.find((item) => item.id === id); return <div key={id} draggable className="pixel-card flex items-center gap-2 p-2" onDragStart={() => { dragging.current = id; }} onDragOver={(event) => event.preventDefault()} onDrop={() => { const source = dragging.current; if (!source || source === id) return; setOrder((current) => dropAgentBefore(current, source, id)); dragging.current = null; }}>
-            <span className="cursor-grab">⠿</span><AgentAvatar src={String(agent?.avatar ?? "")} label={String(agent?.nickname ?? id)} size={30} /><span className="min-w-0 flex-1 truncate text-sm">{agent?.nickname as string ?? id}</span><button type="button" aria-label="move up" className="pixel-button px-1" disabled={index === 0} onClick={() => move(id, -1)}>↑</button><button type="button" aria-label="move down" className="pixel-button px-1" disabled={index === order.length - 1} onClick={() => move(id, 1)}>↓</button>
+            <span className="cursor-grab">⠿</span><AgentAvatar src={String(agent?.avatar ?? "")} label={String(agent?.nickname ?? id)} size={30} /><span className="min-w-0 flex-1 truncate text-sm">{agent?.nickname as string ?? id}</span>{Array.isArray((agent?.modelCapabilities as { reasoningEfforts?: unknown } | undefined)?.reasoningEfforts) && ((agent?.modelCapabilities as { reasoningEfforts: ReasoningEffort[] }).reasoningEfforts.length > 0) && <select aria-label={t("reasoning_effort")} className="pixel-input max-w-24 px-1 py-1 text-xs" value={effortByAgent[id] ?? ""} onChange={(event) => setEffortByAgent((current) => event.target.value ? { ...current, [id]: event.target.value as ReasoningEffort } : Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)))}><option value="">—</option>{(agent?.modelCapabilities as { reasoningEfforts: ReasoningEffort[] }).reasoningEfforts.map((effort) => <option key={effort}>{effort}</option>)}</select>}<select aria-label={t("multi_fallback")} title={t("multi_fallback")} className="pixel-input max-w-28 px-1 py-1 text-xs" value={fallbackOrderByAgent[id]?.[0] ?? ""} onChange={(event) => setFallbackOrderByAgent((current) => event.target.value ? { ...current, [id]: [event.target.value] } : Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)))}><option value="">{t("multi_no_fallback")}</option>{order.filter((candidate) => candidate !== id).map((candidate) => <option key={candidate} value={candidate}>{String(participants.find((item) => item.id === candidate)?.nickname ?? candidate)}</option>)}</select><button type="button" aria-label="move up" className="pixel-button px-1" disabled={index === 0} onClick={() => move(id, -1)}>↑</button><button type="button" aria-label="move down" className="pixel-button px-1" disabled={index === order.length - 1} onClick={() => move(id, 1)}>↓</button>
           </div>; })}
         </div></div><div className="space-y-3"><label className="block text-xs font-bold">{t("max_rounds")}<input className="pixel-input mt-1 w-full px-3 py-2" type="number" min={1} max={20} value={rounds} onChange={(event) => setRounds(Number(event.target.value))} /></label><label className="block text-xs font-bold">{t("multi_synthesizer")}<select className="pixel-input mt-1 w-full px-3 py-2" value={synthesizerId} onChange={(event) => setSynthesizerId(event.target.value)}>{order.map((id) => <option key={id} value={id}>{String(participants.find((item) => item.id === id)?.nickname ?? id)}</option>)}</select></label><label className="block text-xs font-bold">{t("multi_executor")}<select className="pixel-input mt-1 w-full px-3 py-2" value={executionAgentId} onChange={(event) => setExecutionAgentId(event.target.value)}>{order.map((id) => <option key={id} value={id}>{String(participants.find((item) => item.id === id)?.nickname ?? id)}</option>)}</select></label></div></div>
         <button className="pixel-button pixel-button--primary px-4 py-2 text-sm" disabled={multiRunning || !prompt.trim()}>{multiRunning ? t("multi_discussing") : t("multi_start")}</button>
@@ -1098,7 +1104,7 @@ function RoomMembersDialog({
 }
 
 export default function ChatPage() {
-  const { rooms, agents, sessions, currentRoomId, currentSessionId, messages, streaming, chatError, tasks, selectRoom, selectAgentSession, clearChatError } =
+  const { rooms, agents, sessions, currentRoomId, currentSessionId, messages, streaming, chatError, tasks, usageSummaries, selectRoom, selectAgentSession, clearChatError } =
     useStore();
   const t = useT();
   const [creating, setCreating] = useState(false);
@@ -1241,6 +1247,7 @@ export default function ChatPage() {
               <span className="text-sm font-bold">{currentRoom?.name}</span>
               <div className="flex items-center gap-2">
                 <WorkspaceChip />
+                {roomAgents.slice(0, 3).map((agent) => { const usage = usageSummaries.find((item) => item.agentId === agent.id); return <span key={agent.id} className="pixel-chip text-[10px]" title={`${t("usage_current")}: ${usage?.current.totalTokens ?? t("usage_unavailable")} · ${t("usage_total")}: ${usage?.cumulative.totalTokens ?? t("usage_unavailable")}`}>{agent.nickname}: {usage?.cumulative.totalTokens ?? "—"}</span>; })}
                 <button className="pixel-member-button flex items-center gap-1 px-2 py-1" onClick={() => setShowMembers(true)} title={t("room_members_title")}>
                   <span className="flex -space-x-2">
                     {roomAgents.slice(0, 4).map((agent) => <AgentAvatar key={agent.id} src={agent.avatar} label={agent.nickname} size={26} lively={false} />)}
