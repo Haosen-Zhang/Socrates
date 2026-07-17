@@ -279,6 +279,11 @@ button, input, select, textarea { font: inherit; }
   box-shadow: 2px 2px 0 var(--pixel-shadow);
 }
 .pixel-workspace-chip:disabled { cursor: not-allowed; opacity: 0.55; }
+.pixel-mode-card { border: 2px solid color-mix(in srgb, var(--pixel-ink) 40%, transparent); background: var(--pixel-paper); }
+.pixel-mode-card.is-selected { border-color: var(--pixel-accent); box-shadow: 3px 3px 0 var(--pixel-shadow); }
+.pixel-tool-card { border: 2px solid var(--pixel-ink); background: color-mix(in srgb, var(--pixel-paper) 88%, #b8e3ff); box-shadow: 3px 3px 0 var(--pixel-shadow); }
+.pixel-approval-card { border: 3px double var(--pixel-accent); background: var(--pixel-paper); box-shadow: 4px 4px 0 var(--pixel-shadow); }
+.pixel-attachment-chip { border: 2px solid color-mix(in srgb, var(--pixel-ink) 45%, transparent); background: var(--pixel-paper); box-shadow: 2px 2px 0 var(--pixel-shadow); }
 
 @keyframes pixel-pet-idle {
   0%, 82%, 100% { transform: translateY(0) rotate(0); }

@@ -1,5 +1,6 @@
 import type { ModelCapabilities } from "./model-capabilities";
 import type { NormalizedUsage } from "./usage";
+import type { MessagePart } from "./message-parts";
 
 export type RuntimeStatus = "opening" | "ready" | "running" | "awaiting_approval" | "interrupted" | "completed" | "failed" | "closed";
 
@@ -34,7 +35,7 @@ export interface AgentRuntime {
   readonly kind: string;
   readonly capabilities: ModelCapabilities;
   open(input: { sessionId: string; workspaceId?: string }): Promise<void>;
-  start(input: { prompt: string; signal?: AbortSignal }): AsyncIterable<RuntimeEvent>;
+  start(input: { prompt: string; parts?: MessagePart[]; signal?: AbortSignal }): AsyncIterable<RuntimeEvent>;
   answerApproval(requestId: string, decision: "allow_once" | "allow_session" | "deny"): Promise<void>;
   interrupt(): Promise<void>;
   resume?(): Promise<void>;

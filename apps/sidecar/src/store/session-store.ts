@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { validateConversation, type ConversationMode, type ConversationSession, type SessionAgentSnapshot } from "@socrates/core";
+import { validateConversation, type ConversationMode, type ConversationSession, type MessagePart, type SessionAgentSnapshot, type SessionMessage } from "@socrates/core";
 
 type SessionRow = {
   id: string;
@@ -13,6 +13,8 @@ type SessionRow = {
 };
 
 type AgentRow = { agent_id: string; snapshot_json: string; position: number; execution_eligible: number };
+type MessageRow = { id: string; session_id: string; role: SessionMessage["role"]; author_id: string | null; content: string; status: string; created_at: string };
+type PartRow = { type: string; text: string | null; attachment_id: string | null; metadata_json: string | null };
 
 export class SessionStore {
   constructor(private readonly db: Database) {}
@@ -75,6 +77,32 @@ export class SessionStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
+  }
+
+  list(): ConversationSession[] {
+    return this.db.query<{ id: string }, []>("SELECT id FROM sessions ORDER BY updated_at DESC").all()
+      .map((row) => this.get(row.id)!)
+      .filter(Boolean);
+  }
+
+  listMessages(sessionId: string): SessionMessage[] {
+    return this.db.query<MessageRow, [string]>("SELECT * FROM session_messages WHERE session_id = ? ORDER BY created_at, id").all(sessionId).map((row) => ({
+      id: row.id,
+      sessionId: row.session_id,
+      role: row.role,
+      authorId: row.author_id,
+      content: row.content,
+      status: row.status,
+      createdAt: row.created_at,
+      parts: this.db.query<PartRow, [string]>("SELECT type, text, attachment_id, metadata_json FROM message_parts WHERE message_id = ? ORDER BY ordinal").all(row.id).flatMap((part): MessagePart[] => {
+        const metadata = part.metadata_json ? JSON.parse(part.metadata_json) as Record<string, unknown> : {};
+        if (part.type === "text") return [{ type: "text", text: part.text ?? "" }];
+        if (part.type === "image" && part.attachment_id) return [{ type: "image", attachmentId: part.attachment_id, mediaType: String(metadata.mediaType ?? "application/octet-stream"), alt: String(metadata.filename ?? "image") }];
+        if (part.type === "file" && part.attachment_id) return [{ type: "file", attachmentId: part.attachment_id, mediaType: String(metadata.mediaType ?? "application/octet-stream"), filename: String(metadata.filename ?? "file") }];
+        if (part.type === "workspace_ref") return [{ type: "workspace_ref", refId: String(metadata.refId ?? ""), relativePath: String(metadata.relativePath ?? ""), snapshotHash: typeof metadata.snapshotHash === "string" ? metadata.snapshotHash : undefined }];
+        return [];
+      }),
+    }));
   }
 
   bindWorkspace(sessionId: string, workspaceId: string | null): ConversationSession {

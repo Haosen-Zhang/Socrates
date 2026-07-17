@@ -104,6 +104,11 @@ export class ApprovalManager {
     return row ? toRequest(row) : null;
   }
 
+  getRequest(id: string): DurableApprovalRequest | null {
+    const row = this.db.query<RequestRow, [string]>("SELECT * FROM approval_requests WHERE id = ?").get(id);
+    return row ? toRequest(row) : null;
+  }
+
   getDecision(requestId: string): DurableApprovalDecision | null {
     const row = this.db.query<DecisionRow, [string]>("SELECT * FROM approval_decisions WHERE request_id = ? ORDER BY decided_at DESC LIMIT 1").get(requestId);
     return row ? toDecision(row) : null;

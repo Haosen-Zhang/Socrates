@@ -69,11 +69,11 @@ export class CodexProtocolClient {
     }) as CodexThreadStartResponse;
   }
 
-  async startTurn(threadId: string, prompt: string): Promise<CodexTurnStartResponse> {
+  async startTurn(threadId: string, prompt: string, additionalInput: unknown[] = []): Promise<CodexTurnStartResponse> {
     this.assertInitialized();
     return await this.supervisor.request("turn/start", {
       threadId,
-      input: [{ type: "text", text: prompt, text_elements: [] }],
+      input: [{ type: "text", text: prompt, text_elements: [] }, ...additionalInput],
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
     }) as CodexTurnStartResponse;

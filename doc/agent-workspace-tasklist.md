@@ -236,7 +236,7 @@
 
 ### MODE-001 — 三模式 Session 创建与切换 UI
 
-- **优先级 / 状态：** P2 / 未开始
+- **优先级 / 状态：** P2 / 进行中（三模式创建卡、Single Agent Session authority 与切换已完成；Chat/Multi 仍走 legacy Room compatibility path）
 - **目标：** 用户在创建 session 时明确选择 Chat、Single Agent 或 Multi-Agent，并看到各自能力说明。
 - **依赖：** DB-003、WS-001、CAP-001。
 - **修改文件：** `apps/desktop/src/App.tsx`、`ChatPage.tsx`、`store.ts`、`i18n.ts`、`index.css`、sidecar routes。
@@ -248,7 +248,7 @@
 
 ### CHAT-001 — 将现有 Chat 迁移到结构化消息与 replay，保持无工具隔离
 
-- **优先级 / 状态：** P2 / 未开始
+- **优先级 / 状态：** P2 / 进行中（MessagePart/Event contracts 与 Single Agent replay 已完成；legacy Chat 双写/reconnect reducer 待完成）
 - **目标：** 保持现在简单聊天体验，同时获得 event replay、content parts 与 usage，不继承 workspace工具权限。
 - **依赖：** MODE-001、DB-002、CAP-001。
 - **修改文件：** `packages/core/src/chat.ts`、sidecar `rooms.ts`/gateway、desktop ChatPage/store。
@@ -260,7 +260,7 @@
 
 ### NATIVE-001 — Native Single Agent 的只读 Tool Loop
 
-- **优先级 / 状态：** P2 / 未开始
+- **优先级 / 状态：** P2 / 已完成（真实 AI SDK Provider、5 个只读工具、8-step 上限、持久化 ToolCall、附件能力 fail-closed）
 - **目标：** 用现有 AI SDK 7 为所有受支持 Provider 提供 list/search/read 的多步 Agent Loop。
 - **依赖：** RUN-001、TOOL-001、PERM-001、MODE-001。
 - **修改文件：** `apps/sidecar/src/gateway-aisdk.ts`、Provider adapter、runtime manager。
@@ -272,7 +272,7 @@
 
 ### CODEX-002 — 上线有 sandbox 与审批的 Codex Single Agent
 
-- **优先级 / 状态：** P2 / 未开始
+- **优先级 / 状态：** P2 / 进行中（Codex adapter、sandbox、双向审批、取消/关闭与 UI 已完成；受控真实 workspace smoke 和发布发现待完成）
 - **目标：** 首次提供成熟 write/shell Agent Runtime，同时由 Socrates 保存 presentation、approval和audit。
 - **依赖：** CODEX-001、WS-002、APR-001、MODE-001、SEC-001。
 - **修改文件：** runtime manager、single-agent runner、Tauri release discovery（开发期）、desktop capability UI。
@@ -284,7 +284,7 @@
 
 ### TL-001 — Structured timeline、Tool/Approval/Plan cards
 
-- **优先级 / 状态：** P2 / 未开始
+- **优先级 / 状态：** P2 / 进行中（Tool/Approval/usage runtime events 与基础卡片已完成；reducer、PlanCard、可访问性/大输出交互待完成）
 - **目标：** 不把 tool/approval/runtime事件压进 Markdown 文本，用户能审计每一步。
 - **依赖：** DB-002、APR-001、MODE-001；Plan card先支持占位数据，P4接真状态。
 - **修改文件：** `ChatPage.tsx`、`store.ts`、`index.css`、`i18n.ts`。
@@ -296,7 +296,7 @@
 
 ### ATT-001 — Attachment schema、受控存储与 GC
 
-- **优先级 / 状态：** P2 / 未开始
+- **优先级 / 状态：** P2 / 进行中（hash/dedup、原子存储、Workspace 绑定和 limits 已完成；retention GC 待完成）
 - **目标：** bytes不进SQLite/消息/localStorage，附件可hash、引用和清理。
 - **依赖：** DB-001、DB-003、SEC-001。
 - **修改文件：** store migrations、sidecar composition、core message parts。
@@ -308,7 +308,7 @@
 
 ### ATT-002 — Picker、拖放、粘贴与 AttachmentTray
 
-- **优先级 / 状态：** P2 / 未开始
+- **优先级 / 状态：** P2 / 进行中（picker、Tauri drop、clipboard bytes、draft retain-on-failure 已完成；显式 retry/progress 待完成）
 - **目标：** 文件/图片以统一draft item进入composer，支持进度、失败重试和删除。
 - **依赖：** ATT-001、WS-001、CHAT-001。
 - **修改文件：** Tauri `lib.rs`/capabilities、desktop ChatPage/package/i18n/index.css。
@@ -320,7 +320,7 @@
 
 ### ATT-003 — 有界 `@path` 搜索与结构化 WorkspaceRef
 
-- **优先级 / 状态：** P2 / 未开始
+- **优先级 / 状态：** P2 / 进行中（bounded search、opaque ref、send-time containment/hash 已完成；caret/Unicode reducer 与 cache generation 待完成）
 - **目标：** composer可快速引用workspace文件，但suggestion不等于授权。
 - **依赖：** WS-002、CHAT-001。
 - **修改文件：** ChatPage/composer state、workspace routes、ContextAssembler。
@@ -332,7 +332,7 @@
 
 ### ATT-004 — Provider/Runtime attachment capability 与上传映射
 
-- **优先级 / 状态：** P2 / 未开始
+- **优先级 / 状态：** P2 / 进行中（Codex image/text mapping、Native text/ref mapping 与 image fail-closed 已完成；per-model capability UI 和 Provider upload cache 待完成）
 - **目标：** 清楚区分文本注入、原生图片、Provider file upload和Runtime path item。
 - **依赖：** ATT-001、CAP-001、NATIVE-001、CODEX-002。
 - **修改文件：** Provider adapters、ContextAssembler、runtime mappers、Agents/Providers UI。
@@ -344,7 +344,7 @@
 
 ### ATT-005 — 安全图片/文件预览与下载
 
-- **优先级 / 状态：** P2 / 未开始
+- **优先级 / 状态：** P2 / 进行中（Bearer content route、Blob URL revoke、nosniff/sandbox/disposition 已完成；download/GC 410 与恶意 fixture 待完成）
 - **目标：** UI可预览、复制/另存受控附件，不执行active content或泄露storage path。
 - **依赖：** ATT-001、ATT-002、SEC-001。
 - **修改文件：** sidecar auth/API、Timeline/ChatPage、CSP。

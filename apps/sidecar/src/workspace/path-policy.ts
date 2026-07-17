@@ -36,6 +36,18 @@ export class WorkspacePathPolicy {
   }
 
   readText(input: string, maxBytes: number): { text: string; byteSize: number; truncated: boolean } {
+    const result = this.readBytes(input, maxBytes);
+    if (result.bytes.includes(0)) throw new Error("workspace_binary_file");
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(result.bytes);
+    } catch {
+      throw new Error("workspace_non_utf8_file");
+    }
+    return { text, byteSize: result.byteSize, truncated: result.truncated };
+  }
+
+  readBytes(input: string, maxBytes: number): { bytes: Buffer; byteSize: number; truncated: boolean } {
     const resolved = this.resolveExisting(input);
     this.assertNotSecret(resolved.relativePath);
     const before = lstatSync(resolved.absolutePath);
@@ -45,18 +57,10 @@ export class WorkspacePathPolicy {
     try {
       const opened = fstatSync(fd);
       if (opened.dev !== before.dev || opened.ino !== before.ino) throw new Error("workspace_file_changed");
-      const limit = Math.max(1, Math.min(maxBytes, 4 * 1024 * 1024));
+      const limit = Math.max(1, Math.min(maxBytes, 25 * 1024 * 1024));
       const bytes = Buffer.alloc(Math.min(opened.size, limit) + (opened.size > limit ? 0 : 1));
       const read = readSync(fd, bytes, 0, Math.min(opened.size, limit), 0);
-      const content = bytes.subarray(0, read);
-      if (content.includes(0)) throw new Error("workspace_binary_file");
-      let text: string;
-      try {
-        text = new TextDecoder("utf-8", { fatal: true }).decode(content);
-      } catch {
-        throw new Error("workspace_non_utf8_file");
-      }
-      return { text, byteSize: opened.size, truncated: opened.size > limit };
+      return { bytes: bytes.subarray(0, read), byteSize: opened.size, truncated: opened.size > limit };
     } finally {
       closeSync(fd);
     }

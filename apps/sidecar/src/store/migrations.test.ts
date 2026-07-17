@@ -12,9 +12,9 @@ describe("migration runner", () => {
       CREATE TABLE rooms (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       INSERT INTO rooms VALUES ('room-1', 'Legacy', 'now', 'now');
     `);
-    expect(runMigrations(db, migrations)).toEqual([1, 2, 3]);
+    expect(runMigrations(db, migrations)).toEqual([1, 2, 3, 4]);
     expect(db.query("SELECT name FROM rooms WHERE id = 'room-1'").get()).toEqual({ name: "Legacy" });
-    expect(db.query("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 3 });
+    expect(db.query("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 4 });
     expect(runMigrations(db, migrations)).toEqual([]);
   });
 

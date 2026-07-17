@@ -55,3 +55,14 @@
 - Added ADR 0004–0007 and a threat model; generated protocol artifacts were inspected from the local 0.144.5 binary and were not copied wholesale.
 - Dependency changes: official `@tauri-apps/plugin-dialog` / `tauri-plugin-dialog` and `@biomejs/biome`, with Bun/Cargo lockfiles updated.
 - Verification to date: targeted suites pass; `cargo check` passes; authenticated sidecar smoke returns 200, malicious Origin returns 403 and valid CORS preflight returns 204.
+
+## Milestone 3 implementation checkpoint
+
+- Added P2 migration tables for runs, structured session messages/parts, attachments, Workspace-bound sources and opaque Workspace refs.
+- Single Agent preparation is atomic across run, journal event, user message/parts and session state; failures roll back all projections. Completion, failure and cancellation states are durable and Runtime sessions are closed after terminal state.
+- Added a real AI SDK Native runtime limited to Workspace read/list/search tools and eight model steps. It persists bounded tool results and never exposes write/shell/network/MCP tools.
+- Added the pinned Codex app-server runtime adapter for read-only/workspace-write sandbox, text/reasoning/tool/usage mapping, exact Socrates approval handoff, interrupt and attachment/ref conversion without sending local absolute paths.
+- Added native file picker, Tauri drag/drop and clipboard byte upload. Imports are size/MIME/hash checked, atomically stored outside SQLite, deduplicated and bound to the active Session Workspace.
+- Added bounded `@path` search and opaque refs with send-time Workspace/hash validation. Native text/ref context is tagged as untrusted; unsupported images fail explicitly instead of being dropped.
+- Added authenticated image Blob previews with URL revocation, `nosniff`, sandbox CSP and attachment disposition for non-images. Draft text/attachments remain after failed or cancelled runs.
+- Current known gaps: legacy Room Chat is not yet migrated to Session replay/structured attachments; attachment retention GC and explicit upload retry/progress remain; Native image support waits for reliable per-model capability data; real credentials were not used.

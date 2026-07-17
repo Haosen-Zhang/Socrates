@@ -12,7 +12,14 @@ import {
   type TaskSummary,
   type TestOutcome,
   type WorkspaceRecord,
+  type ConversationSession,
+  type SessionMessage,
+  type RuntimeEvent,
+  type ApprovalDecision,
+  type AttachmentRecord,
+  type WorkspaceRef,
 } from "@socrates/core";
+import { relativeWorkspacePath } from "./workspace/workspacePath";
 
 type Handshake = { port: number; token: string };
 export type ConnStatus = "connecting" | "connected" | "disconnected";
@@ -46,6 +53,16 @@ export type StreamingTurn = {
   duty?: string;
 };
 
+export type PendingApproval = {
+  id: string;
+  kind: string;
+  subjectId: string;
+  risk: string;
+  freshHumanRequired: boolean;
+  status: string;
+};
+export type WorkspacePathResult = { relativePath: string; kind: "file" | "directory" };
+
 export type DebateRoleForm = {
   proposerId: string;
   skepticId: string;
@@ -78,6 +95,30 @@ type Store = {
   activeWorkspace: WorkspaceRecord | null;
   loadWorkspaces: () => Promise<void>;
   selectWorkspacePath: (path: string) => Promise<void>;
+
+  sessions: ConversationSession[];
+  currentSessionId: string | null;
+  sessionMessages: SessionMessage[];
+  agentEvents: RuntimeEvent[];
+  pendingApprovals: PendingApproval[];
+  agentRunning: boolean;
+  agentError: string | null;
+  activeAgentRunId: string | null;
+  loadSessions: () => Promise<void>;
+  createAgentSession: (title: string, agentId: string) => Promise<void>;
+  selectAgentSession: (id: string) => Promise<void>;
+  sendAgentPrompt: (prompt: string, sandbox: "read-only" | "workspace-write") => Promise<boolean>;
+  decideAgentApproval: (requestId: string, decision: ApprovalDecision) => Promise<void>;
+  cancelAgentRun: () => Promise<void>;
+  draftAttachments: AttachmentRecord[];
+  workspacePathResults: WorkspacePathResult[];
+  importWorkspaceAttachment: (absolutePath: string) => Promise<void>;
+  importClipboardAttachment: (file: File) => Promise<void>;
+  removeDraftAttachment: (id: string) => void;
+  searchWorkspacePaths: (query: string) => Promise<void>;
+  draftWorkspaceRefs: WorkspaceRef[];
+  addWorkspaceRef: (relativePath: string) => Promise<void>;
+  removeDraftWorkspaceRef: (id: string) => void;
 
   providers: Provider[];
   testResults: Record<string, TestResult | "running">;
@@ -230,6 +271,17 @@ export const useStore = create<Store>((set, get) => {
     config: null,
     workspaces: [],
     activeWorkspace: null,
+    sessions: [],
+    currentSessionId: null,
+    sessionMessages: [],
+    agentEvents: [],
+    pendingApprovals: [],
+    agentRunning: false,
+    agentError: null,
+    activeAgentRunId: null,
+    draftAttachments: [],
+    workspacePathResults: [],
+    draftWorkspaceRefs: [],
     updateConfig: async (patch) => {
       const res = await sidecarFetch(hs(), "/config", { method: "PUT", body: JSON.stringify(patch) });
       const config = (await res.json()) as AppConfig;
@@ -271,7 +323,7 @@ export const useStore = create<Store>((set, get) => {
               } catch {
                 // 配置加载失败不阻塞连接，沿用本地默认
               }
-              await Promise.all([get().loadProviders(), get().loadAgents(), get().loadRooms(), get().loadWorkspaces()]);
+              await Promise.all([get().loadProviders(), get().loadAgents(), get().loadRooms(), get().loadWorkspaces(), get().loadSessions()]);
               const first = get().rooms[0];
               if (first) void get().selectRoom(first.id);
               return;
@@ -296,6 +348,153 @@ export const useStore = create<Store>((set, get) => {
       set({ activeWorkspace });
       await get().loadWorkspaces();
     },
+    loadSessions: async () => {
+      set({ sessions: await requireOk<ConversationSession[]>(await sidecarFetch(hs(), "/sessions")) });
+    },
+    createAgentSession: async (title, agentId) => {
+      const agent = get().agents.find((item) => item.id === agentId);
+      const workspace = get().activeWorkspace;
+      if (!agent || !workspace) throw new Error("agent_and_workspace_required");
+      const session = await requireOk<ConversationSession>(await sidecarFetch(hs(), "/sessions", {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          mode: "single_agent",
+          workspaceId: workspace.id,
+          agents: [{ agentId, snapshot: agent, executionEligible: true }],
+        }),
+      }));
+      await get().loadSessions();
+      await get().selectAgentSession(session.id);
+    },
+    selectAgentSession: async (id) => {
+      const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${id}/messages`));
+      set({ currentSessionId: id, currentRoomId: null, messages: [], sessionMessages, agentEvents: [], pendingApprovals: [], agentError: null });
+    },
+    sendAgentPrompt: async (prompt, sandbox) => {
+      const sessionId = get().currentSessionId;
+      if (!sessionId || get().agentRunning) return false;
+      set({ agentRunning: true, activeAgentRunId: null, agentEvents: [], pendingApprovals: [], agentError: null });
+      let runError: string | null = null;
+      try {
+        const response = await sidecarFetch(hs(), `/agent/sessions/${sessionId}/runs`, {
+          method: "POST",
+          body: JSON.stringify({
+            prompt,
+            attachmentIds: get().draftAttachments.map((attachment) => attachment.id),
+            workspaceRefIds: get().draftWorkspaceRefs.map((reference) => reference.id),
+            runtimeKind: sandbox === "read-only" ? "native_ai_sdk" : "codex_app_server",
+            runtimeOptions: { sandbox },
+          }),
+        });
+        if (!response.ok || !response.body) await requireOk(response);
+        const reader = response.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split("\n\n");
+          buffer = blocks.pop() ?? "";
+          for (const block of blocks) {
+            const data = block.split("\n").find((line) => line.startsWith("data:"))?.slice(5).trim();
+            if (!data) continue;
+            const event = JSON.parse(data) as RuntimeEvent | { status: string; error?: string };
+            if ("type" in event) {
+              set((state) => ({ agentEvents: [...state.agentEvents, event] }));
+              if (event.type === "extension" && event.name === "run_started" && event.payload && typeof event.payload === "object" && "runId" in event.payload) {
+                set({ activeAgentRunId: String((event.payload as { runId: unknown }).runId) });
+              }
+              if (event.type === "approval_required") {
+                const pendingApprovals = await requireOk<PendingApproval[]>(await sidecarFetch(hs(), "/agent/approvals"));
+                set({ pendingApprovals });
+              }
+            } else if (event.status === "failed") {
+              runError = event.error ?? "agent_run_failed";
+              set({ agentError: runError });
+            } else if (event.status === "cancelled") {
+              runError = tr(get().lang, "task_cancelled_notice");
+              set({ agentError: runError });
+            }
+          }
+        }
+        if (!runError) set({ draftAttachments: [], draftWorkspaceRefs: [], workspacePathResults: [] });
+      } catch (error) {
+        runError = error instanceof Error ? error.message : String(error);
+        set({ agentError: runError });
+      } finally {
+        const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${sessionId}/messages`));
+        set({ agentRunning: false, activeAgentRunId: null, sessionMessages });
+        await get().loadSessions();
+      }
+      return runError === null;
+    },
+    decideAgentApproval: async (requestId, decision) => {
+      await requireOk(await sidecarFetch(hs(), `/agent/approvals/${requestId}/decision`, {
+        method: "POST",
+        body: JSON.stringify({ decision, clientDecisionKey: crypto.randomUUID() }),
+      }));
+      set((state) => ({ pendingApprovals: state.pendingApprovals.filter((approval) => approval.id !== requestId) }));
+    },
+    cancelAgentRun: async () => {
+      const runId = get().activeAgentRunId;
+      if (!runId) return;
+      await requireOk(await sidecarFetch(hs(), `/agent/runs/${runId}/cancel`, { method: "POST" }));
+    },
+    importWorkspaceAttachment: async (absolutePath) => {
+      const state = get();
+      if (state.draftAttachments.length >= 10) throw new Error("attachment_count_exceeded");
+      const boundId = state.sessions.find((session) => session.id === state.currentSessionId)?.workspaceId;
+      const workspace = (boundId ? state.workspaces.find((item) => item.id === boundId) : null) ?? state.activeWorkspace;
+      if (!workspace) throw new Error("workspace_required");
+      const relativePath = relativeWorkspacePath(workspace.canonicalPath, absolutePath);
+      const attachment = await requireOk<AttachmentRecord>(await sidecarFetch(hs(), "/content/attachments/import", {
+        method: "POST",
+        body: JSON.stringify({ workspaceId: workspace.id, relativePath }),
+      }));
+      if (state.draftAttachments.reduce((total, item) => total + item.byteSize, 0) + attachment.byteSize > 50 * 1024 * 1024) throw new Error("attachment_batch_too_large");
+      set((state) => ({ draftAttachments: state.draftAttachments.some((item) => item.id === attachment.id) ? state.draftAttachments : [...state.draftAttachments, attachment] }));
+    },
+    importClipboardAttachment: async (file) => {
+      const state = get();
+      if (state.draftAttachments.length >= 10) throw new Error("attachment_count_exceeded");
+      if (state.draftAttachments.reduce((total, item) => total + item.byteSize, 0) + file.size > 50 * 1024 * 1024) throw new Error("attachment_batch_too_large");
+      const boundId = state.sessions.find((session) => session.id === state.currentSessionId)?.workspaceId;
+      const workspace = (boundId ? state.workspaces.find((item) => item.id === boundId) : null) ?? state.activeWorkspace;
+      if (!workspace) throw new Error("workspace_required");
+      const filename = file.name || `clipboard-${Date.now()}.${file.type === "image/png" ? "png" : "bin"}`;
+      const attachment = await requireOk<AttachmentRecord>(await sidecarFetch(
+        hs(),
+        `/content/attachments/upload?workspaceId=${encodeURIComponent(workspace.id)}&filename=${encodeURIComponent(filename)}`,
+        { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file },
+      ));
+      set((current) => ({ draftAttachments: current.draftAttachments.some((item) => item.id === attachment.id) ? current.draftAttachments : [...current.draftAttachments, attachment] }));
+    },
+    removeDraftAttachment: (id) => set((state) => ({ draftAttachments: state.draftAttachments.filter((item) => item.id !== id) })),
+    searchWorkspacePaths: async (query) => {
+      const state = get();
+      const boundId = state.sessions.find((session) => session.id === state.currentSessionId)?.workspaceId;
+      const workspace = (boundId ? state.workspaces.find((item) => item.id === boundId) : null) ?? state.activeWorkspace;
+      if (!workspace) return set({ workspacePathResults: [] });
+      const response = await sidecarFetch(hs(), `/content/workspaces/${workspace.id}/files?q=${encodeURIComponent(query)}`);
+      set({ workspacePathResults: await requireOk<WorkspacePathResult[]>(response) });
+    },
+    addWorkspaceRef: async (relativePath) => {
+      const state = get();
+      const boundId = state.sessions.find((session) => session.id === state.currentSessionId)?.workspaceId;
+      const workspace = (boundId ? state.workspaces.find((item) => item.id === boundId) : null) ?? state.activeWorkspace;
+      if (!workspace) throw new Error("workspace_required");
+      const reference = await requireOk<WorkspaceRef>(await sidecarFetch(hs(), `/content/workspaces/${workspace.id}/refs`, {
+        method: "POST",
+        body: JSON.stringify({ relativePath }),
+      }));
+      set((state) => ({
+        draftWorkspaceRefs: state.draftWorkspaceRefs.some((item) => item.id === reference.id) ? state.draftWorkspaceRefs : [...state.draftWorkspaceRefs, reference],
+        workspacePathResults: [],
+      }));
+    },
+    removeDraftWorkspaceRef: (id) => set((state) => ({ draftWorkspaceRefs: state.draftWorkspaceRefs.filter((item) => item.id !== id) })),
 
     loadProviders: async () => {
       set({ providers: await (await sidecarFetch(hs(), "/providers")).json() });
@@ -398,7 +597,7 @@ export const useStore = create<Store>((set, get) => {
       if (archived && get().currentRoomId === id) set({ currentRoomId: null, messages: [], tasks: [] });
     },
     selectRoom: async (id) => {
-      set({ currentRoomId: id, messages: [], tasks: [], chatError: null });
+      set({ currentRoomId: id, currentSessionId: null, messages: [], sessionMessages: [], tasks: [], chatError: null });
       const messages = await requireOk<StoredMessage[]>(await sidecarFetch(hs(), `/rooms/${id}/messages`));
       // 加载期间用户可能已切换房间
       if (get().currentRoomId === id) set({ messages });

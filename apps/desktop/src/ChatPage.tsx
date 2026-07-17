@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { agentLabel, type Agent, type StoredMessage, type TaskSummary } from "@socrates/core";
+import { agentLabel, type Agent, type ConversationMode, type StoredMessage, type TaskSummary } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
 import { toggleRoomAgentSelection } from "./roomSelection";
@@ -9,6 +9,7 @@ import { useStore, useT, type StreamingTurn } from "./store";
 import { sfx } from "./fx";
 import { shouldSubmitComposerEnter } from "./composerIme";
 import WorkspaceChip from "./workspace/WorkspaceChip";
+import AttachmentTray, { AttachmentImage } from "./attachments/AttachmentTray";
 
 const DUTY_CLS: Record<string, string> = {
   propose: "bg-blue-100 text-blue-800",
@@ -605,12 +606,113 @@ function SimpleComposer() {
   );
 }
 
+function SingleAgentSession() {
+  const {
+    sessions, currentSessionId, sessionMessages, agentEvents, pendingApprovals,
+    agentRunning, agentError, sendAgentPrompt, decideAgentApproval, cancelAgentRun, workspacePathResults, searchWorkspacePaths, addWorkspaceRef,
+  } = useStore();
+  const t = useT();
+  const [draft, setDraft] = useState("");
+  const [sandbox, setSandbox] = useState<"read-only" | "workspace-write">("read-only");
+  const session = sessions.find((item) => item.id === currentSessionId);
+  const streamingText = agentEvents.filter((event) => event.type === "text_delta").map((event) => event.type === "text_delta" ? event.text : "").join("");
+  const submit = async () => {
+    const prompt = draft.trim();
+    if (!prompt || agentRunning) return;
+    if (await sendAgentPrompt(prompt, sandbox)) setDraft("");
+  };
+  const updateDraft = (value: string) => {
+    setDraft(value);
+    const match = /(?:^|\s)@([^\s]*)$/u.exec(value);
+    if (match) void searchWorkspacePaths(match[1]);
+  };
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
+        <div>
+          <div className="text-sm font-bold">{session?.title}</div>
+          <div className="text-[10px] uppercase tracking-wider text-neutral-500">Single Agent · {sandbox}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <WorkspaceChip workspaceId={session?.workspaceId} locked />
+          <select className="pixel-input px-2 py-1 text-xs" value={sandbox} disabled={agentRunning} onChange={(event) => setSandbox(event.target.value as typeof sandbox)}>
+            <option value="read-only">{t("sandbox_read_only")}</option>
+            <option value="workspace-write">{t("sandbox_workspace_write")}</option>
+          </select>
+          {agentRunning && <button className="pixel-button px-2 py-1 text-xs text-red-700" onClick={() => void cancelAgentRun()}>{t("cancel_task")}</button>}
+        </div>
+      </header>
+      <div className="flex-1 space-y-3 overflow-y-auto p-4">
+        <div className="border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          {sandbox === "read-only" ? t("runtime_native_read_only") : t("runtime_codex_experimental")}
+        </div>
+        {agentError && <div role="alert" className="border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">{agentError}</div>}
+        {sessionMessages.map((message) => (
+          <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div className={`pixel-card max-w-[78%] whitespace-pre-wrap p-3 text-sm ${message.role === "user" ? "bg-violet-50" : "bg-white"}`}>
+              {message.content}
+              {message.parts.filter((part) => part.type !== "text").length > 0 && <div className="mt-2 flex flex-wrap gap-2">
+                {message.parts.map((part, index) => part.type === "image"
+                  ? <AttachmentImage key={`${part.attachmentId}-${index}`} id={part.attachmentId} alt={part.alt ?? "image"} className="max-h-64 w-auto max-w-full" />
+                  : part.type === "file" ? <span key={`${part.attachmentId}-${index}`} className="pixel-chip">{part.filename}</span>
+                  : part.type === "workspace_ref" ? <span key={`${part.refId}-${index}`} className="pixel-chip">@{part.relativePath}</span>
+                  : null)}
+              </div>}
+            </div>
+          </div>
+        ))}
+        {agentRunning && streamingText && <div className="pixel-card max-w-[78%] whitespace-pre-wrap bg-white p-3 text-sm">{streamingText}</div>}
+        {agentEvents.filter((event) => event.type === "tool_call").map((event) => event.type === "tool_call" && (
+          <div key={event.callId} className="pixel-tool-card p-3 text-xs">
+            <div className="font-bold">{event.name}</div>
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{JSON.stringify(event.input, null, 2)}</pre>
+          </div>
+        ))}
+        {pendingApprovals.map((approval) => {
+          const rawId = approval.subjectId.slice(approval.subjectId.indexOf(":") + 1);
+          const call = agentEvents.find((event) => event.type === "tool_call" && event.callId === rawId);
+          return (
+            <section key={approval.id} className="pixel-approval-card p-4" aria-label={approval.kind}>
+              <div className="flex items-center justify-between gap-3"><strong>{approval.kind}</strong><span className="pixel-chip">{approval.risk}</span></div>
+              {call?.type === "tool_call" && <pre className="my-3 max-h-48 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(call.input, null, 2)}</pre>}
+              <div className="flex flex-wrap gap-2">
+                <button className="pixel-button pixel-button--primary px-3 py-1.5 text-xs" onClick={() => void decideAgentApproval(approval.id, "allow_once")}>{t("approval_allow_once")}</button>
+                {!approval.freshHumanRequired && <button className="pixel-button px-3 py-1.5 text-xs" onClick={() => void decideAgentApproval(approval.id, "allow_session")}>{t("approval_allow_session")}</button>}
+                <button className="pixel-button px-3 py-1.5 text-xs text-red-700" onClick={() => void decideAgentApproval(approval.id, "deny")}>{t("approval_deny")}</button>
+              </div>
+            </section>
+          );
+        })}
+      </div>
+      <form className="composer-dock" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        {workspacePathResults.length > 0 && (
+          <div className="pixel-card mb-2 max-h-48 overflow-y-auto p-2">
+            {workspacePathResults.filter((result) => result.kind === "file").slice(0, 12).map((result) => (
+              <button key={result.relativePath} type="button" className="block w-full px-2 py-1 text-left text-xs hover:bg-neutral-100" onClick={() => {
+                void addWorkspaceRef(result.relativePath);
+                setDraft((current) => current.replace(/@[^\s]*$/u, `@${result.relativePath} `));
+              }}>@{result.relativePath}</button>
+            ))}
+          </div>
+        )}
+        <AttachmentTray />
+        <div className="pixel-composer flex items-end gap-2 px-3 py-2">
+          <span className="pixel-composer-chevron mb-1.5 shrink-0">›</span>
+          <ComposerTextarea placeholder={agentRunning ? t("replying") : t("message_placeholder")} value={draft} disabled={agentRunning} onChange={updateDraft} onSubmit={() => void submit()} />
+          <button className="pixel-send shrink-0" type="submit" disabled={agentRunning || !draft.trim()} aria-label={t("send")}><PixelIcon name="send" size={18} /></button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function NewRoomDialog({ onClose }: { onClose: () => void }) {
-  const { agents, createRoom } = useStore();
+  const { agents, createRoom, createAgentSession, activeWorkspace } = useStore();
   const t = useT();
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<ConversationMode>("chat");
 
   const toggle = (id: string) => {
     setSelected((current) => toggleRoomAgentSelection(current, id));
@@ -628,7 +730,8 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await createRoom(name, selected);
+      if (mode === "single_agent") await createAgentSession(name, selected[0]!);
+      else await createRoom(name, mode === "chat" ? selected.slice(0, 1) : selected);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -679,6 +782,27 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
           />
         </label>
 
+        <div className="mt-5 grid grid-cols-3 gap-2" role="radiogroup" aria-label={t("conversation_mode")}>
+          {(["chat", "single_agent", "multi_agent"] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={mode === value}
+              className={`pixel-mode-card p-3 text-left ${mode === value ? "is-selected" : ""}`}
+              onClick={() => {
+                setMode(value);
+                setSelected([]);
+                setError(null);
+              }}
+            >
+              <span className="block text-sm font-bold">{t(`mode_${value}`)}</span>
+              <span className="mt-1 block text-[11px] text-neutral-500">{t(`mode_${value}_desc`)}</span>
+            </button>
+          ))}
+        </div>
+        {mode === "single_agent" && !activeWorkspace && <p className="mt-2 text-xs text-amber-700">{t("workspace_required_hint")}</p>}
+
         <div className="mb-2 mt-5 flex items-center justify-between">
           <h3 className="text-sm font-bold">{t("choose_agents")}</h3>
           <span className="pixel-chip">{t("selected_agents", { n: selected.length })}</span>
@@ -695,7 +819,10 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
                   type="button"
                   className={`pixel-room-agent-card flex min-w-0 items-center gap-3 p-3 text-left ${isSelected ? "is-selected" : ""}`}
                   aria-pressed={isSelected}
-                  onClick={() => toggle(agent.id)}
+                  onClick={() => {
+                    if (mode !== "multi_agent" && !isSelected) setSelected([agent.id]);
+                    else toggle(agent.id);
+                  }}
                 >
                   <AgentAvatar src={agent.avatar} label={agent.nickname} size={52} />
                   <span className="min-w-0 flex-1">
@@ -725,7 +852,7 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
             <button
               className="pixel-button pixel-button--primary px-5 py-2 text-sm"
               type="submit"
-              disabled={!name.trim() || selected.length === 0}
+              disabled={!name.trim() || (mode === "multi_agent" ? selected.length < 2 : selected.length !== 1) || (mode === "single_agent" && !activeWorkspace)}
             >
               {t("create_room")}
             </button>
@@ -866,7 +993,7 @@ function RoomMembersDialog({
 }
 
 export default function ChatPage() {
-  const { rooms, agents, currentRoomId, messages, streaming, chatError, tasks, selectRoom, clearChatError } =
+  const { rooms, agents, sessions, currentRoomId, currentSessionId, messages, streaming, chatError, tasks, selectRoom, selectAgentSession, clearChatError } =
     useStore();
   const t = useT();
   const [creating, setCreating] = useState(false);
@@ -958,6 +1085,24 @@ export default function ChatPage() {
           <PixelIcon name="plus" size={20} />
           {t("new_room")}
         </button>
+        <div className="mt-2"><WorkspaceChip /></div>
+        {sessions.length > 0 && (
+          <div className="mt-3 border-t-2 border-dashed border-neutral-300 pt-3">
+            <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-neutral-500">{t("agent_sessions")}</div>
+            <div className="space-y-2">
+              {sessions.map((session) => (
+                <button
+                  key={session.id}
+                  className={`pixel-room-row block w-full px-2 py-2 text-left text-sm ${session.id === currentSessionId ? "is-active" : ""}`}
+                  onClick={() => void selectAgentSession(session.id)}
+                >
+                  <span className="block truncate font-medium">{session.title}</span>
+                  <span className="block text-[10px] uppercase text-neutral-400">{session.mode}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="pixel-room-list mt-3 flex-1 space-y-2 overflow-y-auto pr-1">
           {activeRooms.map(roomRow)}
         </div>
@@ -984,7 +1129,7 @@ export default function ChatPage() {
       )}
 
       <section className="flex min-w-0 flex-1 flex-col">
-        {currentRoomId ? (
+        {currentSessionId ? <SingleAgentSession /> : currentRoomId ? (
           <>
             <div className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
               <span className="text-sm font-bold">{currentRoom?.name}</span>

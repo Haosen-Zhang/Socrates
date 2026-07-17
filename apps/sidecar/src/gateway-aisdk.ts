@@ -4,6 +4,23 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import type { ModelGateway } from "@socrates/core";
 import type { FetchLike } from "./net";
 
+export function createAiSdkModel(input: {
+  providerType: "openai_compatible" | "anthropic";
+  baseUrl: string;
+  apiKey: string;
+  modelId: string;
+  fetchImpl: FetchLike;
+}) {
+  return input.providerType === "anthropic"
+    ? createAnthropic({ apiKey: input.apiKey, baseURL: `${input.baseUrl}/v1`, fetch: input.fetchImpl as typeof fetch })(input.modelId)
+    : createOpenAICompatible({
+        name: "openai-compatible",
+        apiKey: input.apiKey,
+        baseURL: input.baseUrl,
+        fetch: input.fetchImpl as typeof fetch,
+      })(input.modelId);
+}
+
 /** 把供应商错误翻译成可读分类（鉴权/限流/网络），UI 直接展示（docs/03 §7.1） */
 export function describeGatewayError(err: unknown): string {
   const e = err as { statusCode?: number; status?: number; name?: string; message?: string } | null;
@@ -22,17 +39,13 @@ export function describeGatewayError(err: unknown): string {
  */
 export function makeAiSdkGateway(fetchImpl: FetchLike): ModelGateway {
   return async function* (req) {
-  const model =
-    req.providerType === "anthropic"
-      ? createAnthropic({ apiKey: req.apiKey, baseURL: `${req.baseUrl}/v1`, fetch: fetchImpl as typeof fetch })(
-          req.modelId,
-        )
-      : createOpenAICompatible({
-          name: "openai-compatible",
-          apiKey: req.apiKey,
-          baseURL: req.baseUrl,
-          fetch: fetchImpl as typeof fetch,
-        })(req.modelId);
+  const model = createAiSdkModel({
+    providerType: req.providerType,
+    baseUrl: req.baseUrl,
+    apiKey: req.apiKey,
+    modelId: req.modelId,
+    fetchImpl,
+  });
   try {
     const result = streamText({
       model,

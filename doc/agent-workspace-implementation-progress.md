@@ -7,7 +7,7 @@ Implement the approved Agent Workspace plan in reversible, tested milestones wit
 ## Baseline
 
 - Starting commit: `9f7955d5704918e9e8375b4b89c31a7d44a31a2f`
-- Implementation branch: `codex/agent-workspace-m2-core` (stacked on the verified Milestone 1 commit)
+- Implementation branch: `codex/agent-workspace-m3-chat-agent` (stacked on the verified Milestone 2 commit)
 - Approved specifications:
   - `doc/agent-workspace-master-plan.md`
   - `doc/agent-workspace-tasklist.md`
@@ -17,8 +17,8 @@ Implement the approved Agent Workspace plan in reversible, tested milestones wit
 
 - [x] Milestone 0: Capture build/test/lint/typecheck/smoke baseline and add minimal regression seams.
 - [x] Milestone 1: Complete UI-001 through UI-004 (micro icons, hover entry, global particles, visual checks).
-- [ ] Milestone 2: Workspace and Agent Core foundation (safe foundation checkpoint complete; Codex production write/shell adapter remains).
-- [ ] Milestone 3: Chat, Single Agent, attachments, images, drag/drop, and `@path`.
+- [x] Milestone 2: Workspace and Agent Core foundation.
+- [ ] Milestone 3: Chat, Single Agent, attachments, images, drag/drop, and `@path` (Single Agent and attachment vertical slice implemented; legacy Chat migration and final visual/smoke checks remain).
 - [ ] Milestone 4: MCP settings, lifecycle, discovery, registry, permissions, and recovery.
 - [ ] Milestone 5: Multi-Agent discussion, plan approval, and designated execution.
 - [ ] Milestone 6: Per-Agent usage/reasoning, resizable composer, and recovery UX.
@@ -47,4 +47,4 @@ Implement the approved Agent Workspace plan in reversible, tested milestones wit
 
 ## Status
 
-**Milestone 2 in progress** — durable migrations, Session/Event stores, canonical Workspace reads, Tool/Permission/Approval foundations, single-writer leases, RuntimeManager, native folder picker, loopback hardening and the pinned Codex protocol supervisor spike are implemented. The current full gate is 141 tests passing before the final hardening additions; a fresh full gate is required at checkpoint commit. Production write/shell remains disabled until the Codex adapter and approval UI close the remaining safety gates.
+**Milestone 3 in progress** — three-mode creation UI, Workspace-bound Single Agent sessions, Native AI SDK read-only tool loop, experimental pinned Codex write runtime, durable approval cards, structured messages, safe attachment storage, picker/drag/paste, image preview and bounded `@path` refs are implemented. Current checkpoint gate: 165 tests / 0 failures / 541 assertions; typecheck, Biome lint, desktop production build and Rust `cargo check` pass. Legacy Room Chat still needs migration to Session/event replay, attachment GC remains open, and real-provider/Codex credential smoke is intentionally not run without explicit authorization.

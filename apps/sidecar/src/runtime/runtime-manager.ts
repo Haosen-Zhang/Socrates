@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { AgentRuntime, RuntimeEvent, RuntimeStatus } from "@socrates/core";
+import type { AgentRuntime, MessagePart, RuntimeEvent, RuntimeStatus } from "@socrates/core";
 import type { EventStore } from "../store/event-store";
 
 export interface RuntimeSessionHandle {
@@ -20,7 +20,16 @@ const toHandle = (row: RuntimeRow): RuntimeSessionHandle => ({
   status: row.status, createdAt: row.created_at, updatedAt: row.updated_at,
 });
 
-type RuntimeFactory = () => AgentRuntime;
+type RuntimeFactory = (input: RuntimeOpenInput) => AgentRuntime;
+
+export interface RuntimeOpenInput {
+  runtimeKind: string;
+  agentSessionId: string;
+  sessionId: string;
+  agentId: string;
+  workspaceId?: string;
+  runtimeOptions?: Record<string, unknown>;
+}
 
 export class RuntimeManager {
   private readonly factories = new Map<string, RuntimeFactory>();
@@ -33,10 +42,10 @@ export class RuntimeManager {
     this.factories.set(kind, factory);
   }
 
-  async open(input: { runtimeKind: string; agentSessionId: string; sessionId: string; agentId: string; workspaceId?: string }): Promise<RuntimeSessionHandle> {
+  async open(input: RuntimeOpenInput): Promise<RuntimeSessionHandle> {
     const factory = this.factories.get(input.runtimeKind);
     if (!factory) throw new Error(`unknown_runtime:${input.runtimeKind}`);
-    const runtime = factory();
+    const runtime = factory(input);
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     this.db.query(`
@@ -54,14 +63,14 @@ export class RuntimeManager {
     }
   }
 
-  async run(runtimeSessionId: string, input: { taskId: string; prompt: string; signal?: AbortSignal }): Promise<RuntimeEvent[]> {
+  async run(runtimeSessionId: string, input: { taskId: string; prompt: string; parts?: MessagePart[]; signal?: AbortSignal; onEvent?: (event: RuntimeEvent) => void | Promise<void> }): Promise<RuntimeEvent[]> {
     const active = this.active.get(runtimeSessionId);
     if (!active) throw new Error("runtime_not_active");
     this.updateStatus(runtimeSessionId, "running");
     const seen: RuntimeEvent[] = [];
     let ordinal = 0;
     try {
-      for await (const event of active.runtime.start({ prompt: input.prompt, signal: input.signal })) {
+      for await (const event of active.runtime.start({ prompt: input.prompt, parts: input.parts, signal: input.signal })) {
         ordinal += 1;
         this.events.append({
           eventId: `${runtimeSessionId}:${ordinal}`,
@@ -71,6 +80,7 @@ export class RuntimeManager {
           payload: { agentId: active.agentId, runtimeSessionId, event },
         });
         seen.push(event);
+        await input.onEvent?.(event);
         if (event.type === "status") this.updateStatus(runtimeSessionId, event.status);
       }
       const handle = this.get(runtimeSessionId);
@@ -94,6 +104,23 @@ export class RuntimeManager {
     if (!active) throw new Error("runtime_not_active");
     await active.runtime.interrupt();
     this.updateStatus(runtimeSessionId, "interrupted");
+  }
+
+  async answerApproval(runtimeSessionId: string, requestId: string, decision: "allow_once" | "allow_session" | "deny"): Promise<void> {
+    const active = this.active.get(runtimeSessionId);
+    if (!active) throw new Error("runtime_not_active");
+    await active.runtime.answerApproval(requestId, decision);
+  }
+
+  async close(runtimeSessionId: string): Promise<void> {
+    const active = this.active.get(runtimeSessionId);
+    if (!active) return;
+    try {
+      await active.runtime.close();
+      this.updateStatus(runtimeSessionId, "closed");
+    } finally {
+      this.active.delete(runtimeSessionId);
+    }
   }
 
   recoverInterrupted(): number {

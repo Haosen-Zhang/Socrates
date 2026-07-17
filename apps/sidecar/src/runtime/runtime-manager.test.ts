@@ -31,12 +31,14 @@ describe("RuntimeManager", () => {
     const manager = new RuntimeManager(db, events);
     manager.register("fake", () => new FakeRuntime());
     const handle = await manager.open({ runtimeKind: "fake", agentSessionId: "as", sessionId: "s", agentId: "a" });
-    const seen = await manager.run(handle.id, { taskId: "task", prompt: "go" });
+    const delivered: string[] = [];
+    const seen = await manager.run(handle.id, { taskId: "task", prompt: "go", onEvent: (event) => { delivered.push(event.type); } });
     expect(seen.map((event) => event.type)).toEqual(["text_delta", "tool_call", "approval_required", "extension", "status"]);
     expect(events.listAfter("s", 0).map((event) => event.type)).toEqual([
       "runtime.text_delta", "runtime.tool_call", "runtime.approval_required", "runtime.extension", "runtime.status",
     ]);
     expect(manager.get(handle.id)?.status).toBe("completed");
+    expect(delivered).toEqual(seen.map((event) => event.type));
   });
 
   it("marks non-authoritative active sessions interrupted on recovery", async () => {

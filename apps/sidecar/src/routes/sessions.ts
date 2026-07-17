@@ -7,6 +7,7 @@ const MODES = new Set<ConversationMode>(["chat", "single_agent", "multi_agent"])
 
 export function sessionRoutes(sessions: SessionStore, events: EventStore): Hono {
   const app = new Hono();
+  app.get("/", (c) => c.json(sessions.list()));
   app.post("/", async (c) => {
     const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
     if (!body || typeof body.title !== "string" || typeof body.mode !== "string" || !MODES.has(body.mode as ConversationMode) || !Array.isArray(body.agents)) {
@@ -26,6 +27,11 @@ export function sessionRoutes(sessions: SessionStore, events: EventStore): Hono 
   app.get("/:id", (c) => {
     const session = sessions.get(c.req.param("id"));
     return session ? c.json(session) : c.json({ error: "session_not_found" }, 404);
+  });
+  app.get("/:id/messages", (c) => {
+    const session = sessions.get(c.req.param("id"));
+    if (!session) return c.json({ error: "session_not_found" }, 404);
+    return c.json(sessions.listMessages(session.id));
   });
   app.put("/:id/workspace", async (c) => {
     const body = await c.req.json().catch(() => null) as { workspaceId?: unknown } | null;

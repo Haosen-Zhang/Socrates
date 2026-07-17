@@ -18,9 +18,11 @@ export function openDb(path: string): Database {
 
 /** MVP 仅 macOS（NFR-005），数据目录跟随 Tauri identifier */
 export function defaultDbPath(): string {
-  const dir =
-    process.env.SOCRATES_DATA_DIR ??
-    `${homedir()}/Library/Application Support/dev.haosen.socrates`;
+  const dir = defaultDataDir();
   mkdirSync(dir, { recursive: true });
   return `${dir}/socrates.db`;
+}
+
+export function defaultDataDir(): string {
+  return process.env.SOCRATES_DATA_DIR ?? `${homedir()}/Library/Application Support/dev.haosen.socrates`;
 }

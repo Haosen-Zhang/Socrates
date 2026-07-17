@@ -14,6 +14,15 @@ export interface WorkspaceCapability {
   access: "read" | "write";
 }
 
+export interface WorkspaceRef {
+  id: string;
+  workspaceId: string;
+  relativePath: string;
+  kind: "file" | "directory";
+  snapshotHash: string | null;
+  snapshotSize: number | null;
+}
+
 export function normalizeWorkspaceRelativePath(input: string): string {
   if (input.includes("\0")) throw new Error("workspace_path_contains_null");
   const portable = input.split("\\").join("/");

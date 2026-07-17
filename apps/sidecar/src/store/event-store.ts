@@ -26,6 +26,24 @@ function toEvent(row: EventRow): SessionEvent {
 export class EventStore {
   constructor(private readonly db: Database) {}
 
+  private insert(
+    event: Omit<SessionEvent, "seq" | "occurredAt"> & { occurredAt?: string },
+    project?: (event: SessionEvent) => void,
+  ): SessionEvent {
+    const last = this.db.query<{ seq: number | null }, [string]>("SELECT MAX(seq) AS seq FROM task_events WHERE session_id = ?").get(event.sessionId);
+    const committed: SessionEvent = {
+      ...event,
+      seq: (last?.seq ?? 0) + 1,
+      occurredAt: event.occurredAt ?? new Date().toISOString(),
+    };
+    this.db.query(`
+      INSERT INTO task_events (event_id, session_id, task_id, seq, type, payload_json, occurred_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(committed.eventId, committed.sessionId, committed.taskId ?? null, committed.seq, committed.type, JSON.stringify(committed.payload), committed.occurredAt ?? new Date().toISOString());
+    project?.(committed);
+    return committed;
+  }
+
   append(
     event: Omit<SessionEvent, "seq" | "occurredAt"> & { occurredAt?: string },
     project?: (event: SessionEvent) => void,
@@ -35,17 +53,7 @@ export class EventStore {
 
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const last = this.db.query<{ seq: number | null }, [string]>("SELECT MAX(seq) AS seq FROM task_events WHERE session_id = ?").get(event.sessionId);
-      const committed: SessionEvent = {
-        ...event,
-        seq: (last?.seq ?? 0) + 1,
-        occurredAt: event.occurredAt ?? new Date().toISOString(),
-      };
-      this.db.query(`
-        INSERT INTO task_events (event_id, session_id, task_id, seq, type, payload_json, occurred_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(committed.eventId, committed.sessionId, committed.taskId ?? null, committed.seq, committed.type, JSON.stringify(committed.payload), committed.occurredAt ?? new Date().toISOString());
-      project?.(committed);
+      const committed = this.insert(event, project);
       this.db.exec("COMMIT");
       return committed;
     } catch (error) {
@@ -54,6 +62,15 @@ export class EventStore {
       if (duplicate) return toEvent(duplicate);
       throw error;
     }
+  }
+
+  /** Use only when the caller owns the surrounding SQLite transaction. */
+  appendInTransaction(
+    event: Omit<SessionEvent, "seq" | "occurredAt"> & { occurredAt?: string },
+    project?: (event: SessionEvent) => void,
+  ): SessionEvent {
+    const existing = this.db.query<EventRow, [string]>("SELECT * FROM task_events WHERE event_id = ?").get(event.eventId);
+    return existing ? toEvent(existing) : this.insert(event, project);
   }
 
   listAfter(sessionId: string, after: number, limit = 500): SessionEvent[] {
