@@ -1,5 +1,11 @@
-import { useState } from "react";
-import type { Provider } from "@socrates/core";
+import { useRef, useState } from "react";
+import {
+  DEFAULT_BASE_URLS,
+  resolveBaseUrl,
+  selectCheapestOpenAiModel,
+  type Provider,
+  type ProviderType,
+} from "@socrates/core";
 import { useStore, useT, type ProviderForm, type TestResult } from "./store";
 import { sfx } from "./fx";
 
@@ -10,6 +16,15 @@ const EMPTY: ProviderForm = {
   defaultModel: "",
   apiKey: "",
 };
+
+function isOfficialOpenAi(form: ProviderForm): boolean {
+  if (form.type !== "openai_compatible") return false;
+  try {
+    return new URL(resolveBaseUrl(form.type, form.baseUrl)).hostname === "api.openai.com";
+  } catch {
+    return false;
+  }
+}
 
 function TestBadge({ result }: { result: TestResult | "running" | undefined }) {
   const t = useT();
@@ -121,12 +136,17 @@ function ProviderCard({
 }
 
 export default function ProvidersPage() {
-  const { providers, saveProvider } = useStore();
+  const { providers, saveProvider, discoverProviderModels } = useStore();
   const t = useT();
   const [form, setForm] = useState<ProviderForm>(EMPTY);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [models, setModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [manualModel, setManualModel] = useState(false);
+  const modelRequestId = useRef(0);
 
   const field = (key: keyof ProviderForm) => ({
     value: form[key],
@@ -135,18 +155,70 @@ export default function ProvidersPage() {
   });
 
   const close = () => {
+    modelRequestId.current += 1;
     setOpen(false);
     setError(null);
   };
+
+  const resetModels = () => {
+    modelRequestId.current += 1;
+    setModels([]);
+    setModelsLoading(false);
+    setModelsError(null);
+    setManualModel(false);
+  };
+
+  const refreshModels = async (candidate: ProviderForm, providerId: string | null) => {
+    if (!providerId && !candidate.apiKey.trim()) {
+      setModelsError(t("models_need_key"));
+      return;
+    }
+    const requestId = ++modelRequestId.current;
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const available = await discoverProviderModels(candidate, providerId);
+      if (requestId !== modelRequestId.current) return;
+      setModels(available);
+      setManualModel(false);
+      setForm((current) => {
+        if (current.type !== candidate.type || current.baseUrl !== candidate.baseUrl || current.defaultModel.trim()) {
+          return current;
+        }
+        const defaultModel = isOfficialOpenAi(candidate)
+          ? selectCheapestOpenAiModel(available)
+          : available[0];
+        return defaultModel ? { ...current, defaultModel } : current;
+      });
+    } catch (err) {
+      if (requestId !== modelRequestId.current) return;
+      setModels([]);
+      setModelsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (requestId === modelRequestId.current) setModelsLoading(false);
+    }
+  };
+
   const startCreate = () => {
     setEditingId(null);
     setForm(EMPTY);
+    resetModels();
     setOpen(true);
   };
   const startEdit = (p: Provider) => {
+    const next = { name: p.name, type: p.type, baseUrl: p.baseUrl, defaultModel: p.defaultModel ?? "", apiKey: "" };
     setEditingId(p.id);
-    setForm({ name: p.name, type: p.type, baseUrl: p.baseUrl, defaultModel: p.defaultModel ?? "", apiKey: "" });
+    setForm(next);
+    resetModels();
     setOpen(true);
+    void refreshModels(next, p.id);
+  };
+
+  const changeType = (type: ProviderType) => {
+    const oldDefault = DEFAULT_BASE_URLS[form.type];
+    const baseUrl = !form.baseUrl || form.baseUrl === oldDefault ? DEFAULT_BASE_URLS[type] : form.baseUrl;
+    setForm({ ...form, type, baseUrl, defaultModel: "" });
+    resetModels();
   };
 
   const submit = async (e: React.FormEvent) => {
@@ -219,18 +291,88 @@ export default function ProvidersPage() {
               </label>
               <label className="text-sm">
                 {t("provider_type")}
-                <select className={input} disabled={editingId !== null} {...field("type")}>
+                <select
+                  className={`${input} cursor-pointer`}
+                  value={form.type}
+                  onChange={(event) => changeType(event.target.value as ProviderType)}
+                >
                   <option value="openai_compatible">OpenAI-compatible</option>
                   <option value="anthropic">Anthropic</option>
                 </select>
               </label>
               <label className="text-sm">
                 {t("base_url")}
-                <input className={input} placeholder="https://…" {...field("baseUrl")} />
+                <input
+                  className={input}
+                  placeholder="https://…"
+                  value={form.baseUrl}
+                  onChange={(event) => {
+                    setForm({ ...form, baseUrl: event.target.value, defaultModel: "" });
+                    resetModels();
+                  }}
+                />
               </label>
               <label className="text-sm">
                 {t("default_model")}
-                <input className={input} placeholder="gpt-5.4 / deepseek-v4-flash" {...field("defaultModel")} />
+                {models.length > 0 && !manualModel ? (
+                  <div className="flex gap-1">
+                    <select className={`${input} cursor-pointer`} {...field("defaultModel")}>
+                      <option value="">{t("model_pick")}</option>
+                      {form.defaultModel && !models.includes(form.defaultModel) && (
+                        <option value={form.defaultModel}>{form.defaultModel}</option>
+                      )}
+                      {models.map((model) => (
+                        <option key={model} value={model}>
+                          {model}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="pixel-button shrink-0 px-2 text-sm"
+                      title={t("model_manual")}
+                      onClick={() => setManualModel(true)}
+                    >
+                      ✎
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex gap-1">
+                    <input
+                      className={input}
+                      placeholder="gpt-5-nano / deepseek-chat"
+                      {...field("defaultModel")}
+                    />
+                    {models.length > 0 && (
+                      <button
+                        type="button"
+                        className="pixel-button shrink-0 px-2 text-sm"
+                        title={t("model_from_list")}
+                        onClick={() => setManualModel(false)}
+                      >
+                        ☰
+                      </button>
+                    )}
+                  </div>
+                )}
+                <span className="mt-1 flex items-center justify-between gap-2 text-xs text-neutral-500">
+                  <span>
+                    {modelsError ??
+                      (isOfficialOpenAi(form) && form.defaultModel === selectCheapestOpenAiModel(models)
+                        ? t("model_cheapest_selected")
+                        : models.length > 0
+                          ? t("models_total", { n: models.length })
+                          : "")}
+                  </span>
+                  <button
+                    type="button"
+                    className="pixel-link shrink-0"
+                    disabled={modelsLoading}
+                    onClick={() => void refreshModels(form, editingId)}
+                  >
+                    {modelsLoading ? t("models_loading") : t("refresh_models")}
+                  </button>
+                </span>
               </label>
               <label className="col-span-2 text-sm">
                 {editingId ? t("api_key_keep") : t("api_key")}
@@ -239,7 +381,14 @@ export default function ProvidersPage() {
                   type="password"
                   required={editingId === null}
                   autoComplete="off"
-                  {...field("apiKey")}
+                  value={form.apiKey}
+                  onChange={(event) => {
+                    setForm({ ...form, apiKey: event.target.value });
+                    resetModels();
+                  }}
+                  onBlur={() => {
+                    if (form.apiKey.trim()) void refreshModels(form, editingId);
+                  }}
                 />
               </label>
               {error && <p className="col-span-2 text-sm text-red-700">{error}</p>}

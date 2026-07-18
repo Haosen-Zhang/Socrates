@@ -183,6 +183,7 @@ type Store = {
   testResults: Record<string, TestResult | "running">;
   loadProviders: () => Promise<void>;
   saveProvider: (form: ProviderForm, editingId: string | null) => Promise<void>;
+  discoverProviderModels: (form: ProviderForm, editingId: string | null) => Promise<string[]>;
   removeProvider: (id: string) => Promise<void>;
   testProvider: (id: string) => Promise<void>;
 
@@ -860,6 +861,7 @@ export const useStore = create<Store>((set, get) => {
     saveProvider: async (form, editingId) => {
       const payload: Record<string, string> = {
         name: form.name,
+        type: form.type,
         baseUrl: form.baseUrl,
         defaultModel: form.defaultModel,
       };
@@ -872,6 +874,19 @@ export const useStore = create<Store>((set, get) => {
           });
       await requireOk(res);
       await get().loadProviders();
+    },
+    discoverProviderModels: async (form, editingId) => {
+      return requireOk<string[]>(
+        await sidecarFetch(hs(), "/providers/models/discover", {
+          method: "POST",
+          body: JSON.stringify({
+            providerId: editingId ?? undefined,
+            type: form.type,
+            baseUrl: form.baseUrl,
+            apiKey: form.apiKey || undefined,
+          }),
+        }),
+      );
     },
     removeProvider: async (id) => {
       await sidecarFetch(hs(), `/providers/${id}`, { method: "DELETE" });

@@ -267,6 +267,15 @@ button, input, select, textarea { font: inherit; }
 }
 .pixel-input:focus { border-color: var(--pixel-accent); box-shadow: 0 0 0 2px #dcd2ff; }
 
+.pixel-link {
+  color: var(--pixel-accent);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+.pixel-link:hover { color: #7659e6; }
+.pixel-link:disabled { cursor: wait; opacity: 0.55; }
+
 .pixel-chip {
   border: 1px solid #746b8d;
   background: #ece6ff;
