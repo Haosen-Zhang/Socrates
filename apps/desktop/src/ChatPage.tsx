@@ -1032,6 +1032,7 @@ function SidebarEntityMenu({
   } = useStore();
   const t = useT();
   const [confirming, setConfirming] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const entity = menu.kind === "room"
     ? rooms.find((room) => room.id === menu.id)
     : menu.kind === "session"
@@ -1039,17 +1040,20 @@ function SidebarEntityMenu({
       : workspaces.find((workspace) => workspace.id === menu.id);
 
   useEffect(() => {
-    const close = (e: MouseEvent | KeyboardEvent) => {
-      if (e instanceof KeyboardEvent && e.key !== "Escape") return;
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (menuRef.current?.contains(event.target as Node)) return;
       onClose();
     };
-    window.addEventListener("click", close);
-    window.addEventListener("contextmenu", close);
-    window.addEventListener("keydown", close);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    // The trigger is a click. Closing on window click made a newly mounted menu
+    // consume that very same event and disappear before it could be seen.
+    window.addEventListener("pointerdown", closeOnPointerDown);
+    window.addEventListener("keydown", closeOnEscape);
     return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("contextmenu", close);
-      window.removeEventListener("keydown", close);
+      window.removeEventListener("pointerdown", closeOnPointerDown);
+      window.removeEventListener("keydown", closeOnEscape);
     };
   }, [onClose]);
 
@@ -1068,7 +1072,8 @@ function SidebarEntityMenu({
   };
   return (
     <div
-      className="pixel-card anim-panel fixed z-50 w-48 overflow-hidden py-1"
+      ref={menuRef}
+      className="pixel-card anim-panel fixed z-[90] w-48 overflow-hidden py-1"
       style={{ left: menu.x, top: menu.y }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -1329,7 +1334,7 @@ export default function ChatPage() {
             {groupSessions.length + groupRooms.length > 0 && <span className="text-[10px] font-normal text-neutral-400">{groupSessions.length + groupRooms.length}</span>}
           </button>
           {!archived && <button className="pixel-project-action" title={t("new_room")} aria-label={t("new_room")} onClick={() => void createInWorkspace(workspaceId)}><PixelIcon name="plus" size={15} /></button>}
-          {workspace && <button className="pixel-project-action" title={t("room_menu")} aria-label={t("room_menu")} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setMenu({ kind: "workspace", id: workspace.id, x: rect.right - 176, y: rect.bottom + 4 }); }}>⋯</button>}
+          {workspace && <button className="pixel-project-action" title={t("room_menu")} aria-label={t("room_menu")} onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setMenu({ kind: "workspace", id: workspace.id, x: rect.right - 176, y: rect.bottom + 4 }); }}>⋯</button>}
         </div>
         {(groupSessions.length + groupRooms.length > 0 || !archived) && <div className="space-y-1 px-1 pb-2">
           {groupSessions.map(sessionRow)}
@@ -1391,13 +1396,13 @@ export default function ChatPage() {
         <div className="pixel-room-list mt-3 flex-1 overflow-y-auto pr-1">
           <div className="mb-2 px-1 text-[10px] font-bold uppercase tracking-wider text-neutral-500">{t("project_conversations")}</div>
           {workspaces.filter((workspace) => !workspace.archived).map((workspace) => projectGroup(workspace.id, workspace.label))}
-          {projectGroup(null, t("project_none"))}
+          {projectGroup(null, t("chat_section"))}
         </div>
         <div className="pixel-archive-dock mt-3 pt-3">
           {showArchived && archivedRooms.length + archivedSessions.length + archivedWorkspaces.length > 0 && (
             <div className="pixel-archive-panel mb-2 max-h-56 overflow-y-auto p-2">
               {archivedWorkspaces.map((workspace) => projectGroup(workspace.id, workspace.label, true))}
-              {projectGroup(null, t("project_none"), true)}
+              {projectGroup(null, t("chat_section"), true)}
             </div>
           )}
           <button
