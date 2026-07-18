@@ -28,6 +28,7 @@ export interface ConversationSession {
   title: string;
   mode: ConversationMode;
   workspaceId: string | null;
+  archived: boolean;
   status: string;
   legacyRoomId: string | null;
   agents: SessionAgentSnapshot[];

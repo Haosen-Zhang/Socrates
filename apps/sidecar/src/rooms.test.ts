@@ -111,8 +111,20 @@ describe("agent & room CRUD", () => {
           method: "POST",
           body: JSON.stringify({ agentId: newcomer.id }),
         })
-      ).status,
+    ).status,
     ).toBe(409);
+  });
+
+  it("renames a room without changing its members", async () => {
+    const { room } = await setupRoom(app);
+    const response = await app.request(`/rooms/${room.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ name: "Renamed discussion" }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).name).toBe("Renamed discussion");
+    const listed = await (await app.request("/rooms")).json();
+    expect(listed[0]).toMatchObject({ name: "Renamed discussion", agentIds: room.agentIds, workspaceId: null });
   });
 });
 

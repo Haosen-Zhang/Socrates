@@ -150,7 +150,7 @@
 
 ### WS-001 — 原生 Workspace picker、Recent 与 Session binding
 
-- **优先级 / 状态：** P1 / 进行中（原生 picker、recent、canonical identity、Session binding 与 active lock 已完成；recent 切换 UI/bookmark seam 待补）
+- **优先级 / 状态：** P1 / 进行中（原生 picker、recent、canonical identity、Session binding、active lock，以及项目下分组的 Room/Session、项目/会话归档和安全的 app-local 移除已完成；macOS bookmark seam 待补）
 - **目标：** 用户显式选择目录，sidecar 以 canonical identity 绑定 session。
 - **依赖：** DB-003、SEC-001。
 - **修改文件：** Tauri `Cargo.toml`/`Cargo.lock`、`src/lib.rs`、capabilities、desktop `package.json`/store/ChatPage。

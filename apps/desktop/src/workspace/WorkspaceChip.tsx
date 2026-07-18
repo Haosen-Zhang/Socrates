@@ -60,7 +60,7 @@ export default function WorkspaceChip({ workspaceId, locked = false }: { workspa
             <PixelIcon name="chat" size={16} />
             <span className="min-w-0 flex-1 text-left">{t("project_none")}</span>
           </button>
-          {workspaces.map((item) => (
+          {workspaces.filter((item) => !item.archived).map((item) => (
             <button key={item.id} className={`pixel-project-menu-item ${activeWorkspace?.id === item.id ? "is-active" : ""}`} role="menuitem" title={item.canonicalPath} onClick={() => void chooseKnownWorkspace(item.id)}>
               <PixelIcon name="folder" size={16} />
               <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>

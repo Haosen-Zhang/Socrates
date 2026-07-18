@@ -106,6 +106,7 @@ export type Agent = {
 export type Room = {
   id: string;
   name: string;
+  workspaceId: string | null;
   agentIds: string[];
   archived: boolean;
   createdAt: string;

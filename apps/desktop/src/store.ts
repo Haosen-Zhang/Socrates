@@ -121,6 +121,9 @@ type Store = {
   loadWorkspaces: () => Promise<void>;
   selectWorkspacePath: (path: string) => Promise<void>;
   setActiveWorkspace: (workspaceId: string | null) => Promise<void>;
+  renameWorkspace: (id: string, label: string) => Promise<void>;
+  archiveWorkspace: (id: string, archived: boolean) => Promise<void>;
+  removeWorkspace: (id: string) => Promise<void>;
 
   sessions: ConversationSession[];
   currentSessionId: string | null;
@@ -134,6 +137,10 @@ type Store = {
   createAgentSession: (title: string, agentId: string) => Promise<void>;
   createMultiAgentSession: (title: string, agentIds: string[]) => Promise<void>;
   selectAgentSession: (id: string) => Promise<void>;
+  renameSession: (id: string, title: string) => Promise<void>;
+  archiveSession: (id: string, archived: boolean) => Promise<void>;
+  removeSession: (id: string) => Promise<void>;
+  rewindSessionTo: (messageId: string) => Promise<void>;
   sendAgentPrompt: (prompt: string, sandbox: "read-only" | "workspace-write") => Promise<boolean>;
   decideAgentApproval: (requestId: string, decision: ApprovalDecision) => Promise<void>;
   cancelAgentRun: () => Promise<void>;
@@ -192,6 +199,8 @@ type Store = {
   currentRoomId: string | null;
   messages: StoredMessage[];
   streaming: StreamingTurn | null;
+  /** Request has left the composer but the first SSE event has not arrived yet. */
+  roomSending: boolean;
   chatError: string | null;
   /** 当前房间的历史任务（新在前） */
   tasks: TaskSummary[];
@@ -206,6 +215,7 @@ type Store = {
   decideTurn: (action: "retry" | "skip" | "abort") => Promise<void>;
   loadRooms: () => Promise<void>;
   createRoom: (name: string, agentIds: string[]) => Promise<void>;
+  renameRoom: (id: string, name: string) => Promise<void>;
   addRoomAgent: (roomId: string, agentId: string) => Promise<void>;
   removeRoom: (id: string) => Promise<void>;
   archiveRoom: (id: string, archived: boolean) => Promise<void>;
@@ -262,11 +272,33 @@ export const useStore = create<Store>((set, get) => {
     return h;
   };
 
-  /** POST 到当前房间的流式端点并消费 SSE，把事件映射进 store */
-  const streamPost = async (suffix: string, body: unknown) => {
+  /** POST 到当前房间的流式端点并消费 SSE，把事件映射进 store。
+   *
+   * The composer writes its user turn optimistically before this starts.  Stream
+   * deltas are committed at most once per animation frame so an active model
+   * cannot starve typing, pointer, or modal-close work in the WebView.
+   */
+  const streamPost = async (suffix: string, body: unknown, optimisticMessage?: StoredMessage) => {
     const roomId = get().currentRoomId;
-    if (!roomId || get().streaming || get().activeTaskId) return;
-    set({ chatError: null });
+    if (!roomId || get().streaming || get().activeTaskId || get().roomSending) return;
+    set({ chatError: null, roomSending: true });
+    let pendingDelta = "";
+    let deltaFrame: number | null = null;
+    const flushDelta = () => {
+      if (!pendingDelta) return;
+      const text = pendingDelta;
+      pendingDelta = "";
+      set((state) =>
+        state.streaming ? { streaming: { ...state.streaming, text: state.streaming.text + text } } : {},
+      );
+    };
+    const scheduleDelta = () => {
+      if (deltaFrame !== null) return;
+      deltaFrame = window.requestAnimationFrame(() => {
+        deltaFrame = null;
+        flushDelta();
+      });
+    };
     try {
       const res = await sidecarFetch(hs(), `/rooms/${roomId}${suffix}`, {
         method: "POST",
@@ -287,7 +319,12 @@ export const useStore = create<Store>((set, get) => {
         buffer = rest;
         for (const e of events) {
           if (e.type === "user_message") {
-            set((s) => ({ messages: [...s.messages, e.message], activeTaskId: e.message.taskId ?? null }));
+            set((state) => ({
+              messages: optimisticMessage
+                ? state.messages.map((message) => (message.id === optimisticMessage.id ? e.message : message))
+                : [...state.messages, e.message],
+              activeTaskId: e.message.taskId ?? null,
+            }));
           } else if (e.type === "turn_started") {
             set({
               failedTurn: null,
@@ -303,10 +340,10 @@ export const useStore = create<Store>((set, get) => {
               },
             });
           } else if (e.type === "delta") {
-            set((s) =>
-              s.streaming ? { streaming: { ...s.streaming, text: s.streaming.text + e.text } } : {},
-            );
+            pendingDelta += e.text;
+            scheduleDelta();
           } else if (e.type === "message_completed") {
+            flushDelta();
             set((s) => ({ messages: [...s.messages, e.message], streaming: null }));
           } else if (e.type === "turn_failed") {
             // 任务流：引擎挂起等处置；单聊流：随后会收到 error 事件
@@ -322,7 +359,9 @@ export const useStore = create<Store>((set, get) => {
     } catch (err) {
       set({ chatError: err instanceof Error ? err.message : String(err), streaming: null });
     } finally {
-      set({ streaming: null, activeTaskId: null, failedTurn: null });
+      if (deltaFrame !== null) window.cancelAnimationFrame(deltaFrame);
+      flushDelta();
+      set({ streaming: null, roomSending: false, activeTaskId: null, failedTurn: null });
       void get().loadTasks();
       void get().loadCurrentUsage();
     }
@@ -378,6 +417,7 @@ export const useStore = create<Store>((set, get) => {
     currentRoomId: null,
     messages: [],
     streaming: null,
+    roomSending: false,
     chatError: null,
     tasks: [],
     activeTaskId: null,
@@ -440,6 +480,32 @@ export const useStore = create<Store>((set, get) => {
       persistActiveWorkspaceId(workspace?.id ?? null);
       await get().loadMcpServers();
     },
+    renameWorkspace: async (id, label) => {
+      await requireOk<WorkspaceRecord>(await sidecarFetch(hs(), `/workspaces/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({ label }),
+      }));
+      await get().loadWorkspaces();
+    },
+    archiveWorkspace: async (id, archived) => {
+      await requireOk<WorkspaceRecord>(await sidecarFetch(hs(), `/workspaces/${id}/archive`, {
+        method: "PUT",
+        body: JSON.stringify({ archived }),
+      }));
+      if (archived && get().activeWorkspace?.id === id) {
+        set({ activeWorkspace: null });
+        persistActiveWorkspaceId(null);
+      }
+      await Promise.all([get().loadWorkspaces(), get().loadMcpServers()]);
+    },
+    removeWorkspace: async (id) => {
+      await requireOk(await sidecarFetch(hs(), `/workspaces/${id}`, { method: "DELETE" }));
+      if (get().activeWorkspace?.id === id) {
+        set({ activeWorkspace: null });
+        persistActiveWorkspaceId(null);
+      }
+      await Promise.all([get().loadWorkspaces(), get().loadRooms(), get().loadSessions(), get().loadMcpServers()]);
+    },
     loadSessions: async () => {
       set({ sessions: await requireOk<ConversationSession[]>(await sidecarFetch(hs(), "/sessions")) });
     },
@@ -473,6 +539,39 @@ export const useStore = create<Store>((set, get) => {
       await get().loadSessions();
       await get().selectAgentSession(session.id);
     },
+    renameSession: async (id, title) => {
+      await requireOk<ConversationSession>(await sidecarFetch(hs(), `/sessions/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({ title }),
+      }));
+      await get().loadSessions();
+    },
+    archiveSession: async (id, archived) => {
+      await requireOk<ConversationSession>(await sidecarFetch(hs(), `/sessions/${id}/archive`, {
+        method: "PUT",
+        body: JSON.stringify({ archived }),
+      }));
+      await get().loadSessions();
+      if (archived && get().currentSessionId === id) {
+        set({ currentSessionId: null, sessionMessages: [], agentEvents: [], pendingApprovals: [] });
+      }
+    },
+    removeSession: async (id) => {
+      await requireOk(await sidecarFetch(hs(), `/sessions/${id}`, { method: "DELETE" }));
+      await get().loadSessions();
+      if (get().currentSessionId === id) {
+        set({ currentSessionId: null, sessionMessages: [], agentEvents: [], pendingApprovals: [], multiTasks: [], currentMultiTask: null });
+      }
+    },
+    rewindSessionTo: async (messageId) => {
+      const sessionId = get().currentSessionId;
+      if (!sessionId || get().agentRunning || get().multiRunning) return;
+      await requireOk(await sidecarFetch(hs(), `/sessions/${sessionId}/rewind`, {
+        method: "POST",
+        body: JSON.stringify({ messageId }),
+      }));
+      await get().selectAgentSession(sessionId);
+    },
     selectAgentSession: async (id) => {
       const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${id}/messages`));
       set({ currentSessionId: id, currentRoomId: null, messages: [], sessionMessages, agentEvents: [], pendingApprovals: [], agentError: null, multiTasks: [], currentMultiTask: null, multiError: null, usageSummaries: [] });
@@ -482,7 +581,24 @@ export const useStore = create<Store>((set, get) => {
     sendAgentPrompt: async (prompt, sandbox) => {
       const sessionId = get().currentSessionId;
       if (!sessionId || get().agentRunning) return false;
-      set({ agentRunning: true, activeAgentRunId: null, agentEvents: [], pendingApprovals: [], agentError: null });
+      const optimisticMessage: SessionMessage = {
+        id: `local:${crypto.randomUUID()}`,
+        sessionId,
+        role: "user",
+        authorId: null,
+        content: prompt,
+        status: "sending",
+        createdAt: new Date().toISOString(),
+        parts: [],
+      };
+      set((state) => ({
+        agentRunning: true,
+        activeAgentRunId: null,
+        agentEvents: [],
+        pendingApprovals: [],
+        agentError: null,
+        sessionMessages: [...state.sessionMessages, optimisticMessage],
+      }));
       let runError: string | null = null;
       try {
         const response = await sidecarFetch(hs(), `/agent/sessions/${sessionId}/runs`, {
@@ -532,10 +648,14 @@ export const useStore = create<Store>((set, get) => {
         runError = error instanceof Error ? error.message : String(error);
         set({ agentError: runError });
       } finally {
-        const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${sessionId}/messages`));
-        set({ agentRunning: false, activeAgentRunId: null, sessionMessages });
-        await get().loadCurrentUsage();
-        await get().loadSessions();
+        try {
+          const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${sessionId}/messages`));
+          set({ sessionMessages });
+        } catch (refreshError) {
+          set({ agentError: refreshError instanceof Error ? refreshError.message : String(refreshError) });
+        }
+        set({ agentRunning: false, activeAgentRunId: null });
+        await Promise.allSettled([get().loadCurrentUsage(), get().loadSessions()]);
       }
       return runError === null;
     },
@@ -809,10 +929,20 @@ export const useStore = create<Store>((set, get) => {
     },
     createRoom: async (name, agentIds) => {
       const room = await requireOk<Room>(
-        await sidecarFetch(hs(), "/rooms", { method: "POST", body: JSON.stringify({ name, agentIds }) }),
+        await sidecarFetch(hs(), "/rooms", {
+          method: "POST",
+          body: JSON.stringify({ name, agentIds, workspaceId: get().activeWorkspace?.id ?? null }),
+        }),
       );
       await get().loadRooms();
       await get().selectRoom(room.id);
+    },
+    renameRoom: async (id, name) => {
+      await requireOk<Room>(await sidecarFetch(hs(), `/rooms/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({ name }),
+      }));
+      await get().loadRooms();
     },
     addRoomAgent: async (roomId, agentId) => {
       await requireOk(
@@ -837,7 +967,7 @@ export const useStore = create<Store>((set, get) => {
       if (archived && get().currentRoomId === id) set({ currentRoomId: null, messages: [], tasks: [] });
     },
     selectRoom: async (id) => {
-      set({ currentRoomId: id, currentSessionId: null, messages: [], sessionMessages: [], tasks: [], chatError: null, usageSummaries: [] });
+      set({ currentRoomId: id, currentSessionId: null, messages: [], sessionMessages: [], tasks: [], roomSending: false, chatError: null, usageSummaries: [] });
       const messages = await requireOk<StoredMessage[]>(await sidecarFetch(hs(), `/rooms/${id}/messages`));
       // 加载期间用户可能已切换房间
       if (get().currentRoomId === id) set({ messages });
@@ -854,11 +984,31 @@ export const useStore = create<Store>((set, get) => {
     clearChatError: () => set({ chatError: null }),
 
     sendMessage: async (content) => {
-      await streamPost(`/messages`, { content });
+      const roomId = get().currentRoomId;
+      if (!roomId || get().streaming || get().activeTaskId || get().roomSending) return;
+      const optimisticMessage: StoredMessage = {
+        id: `local:${crypto.randomUUID()}`,
+        roomId,
+        role: "user",
+        content,
+        createdAt: new Date().toISOString(),
+      };
+      set((state) => ({ messages: [...state.messages, optimisticMessage] }));
+      await streamPost(`/messages`, { content }, optimisticMessage);
     },
 
     sendTask: async (form) => {
-      await streamPost(`/tasks`, form);
+      const roomId = get().currentRoomId;
+      if (!roomId || get().streaming || get().activeTaskId || get().roomSending) return;
+      const optimisticMessage: StoredMessage = {
+        id: `local:${crypto.randomUUID()}`,
+        roomId,
+        role: "user",
+        content: form.prompt,
+        createdAt: new Date().toISOString(),
+      };
+      set((state) => ({ messages: [...state.messages, optimisticMessage] }));
+      await streamPost(`/tasks`, form, optimisticMessage);
     },
 
     rewindTo: async (messageId) => {

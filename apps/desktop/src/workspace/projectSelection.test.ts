@@ -8,6 +8,7 @@ const workspace = (id: string): WorkspaceRecord => ({
   displayPath: `/${id}`,
   identityHash: id,
   label: id,
+  archived: false,
   createdAt: "2026-01-01T00:00:00.000Z",
   lastOpenedAt: "2026-01-01T00:00:00.000Z",
 });
@@ -21,6 +22,11 @@ describe("project selection", () => {
     const choices = [workspace("first"), workspace("second")];
     expect(resolveActiveWorkspace(choices, null, "second")?.id).toBe("second");
     expect(resolveActiveWorkspace(choices, workspace("first"), "second")?.id).toBe("first");
+  });
+
+  it("does not silently retain an archived project as the active target", () => {
+    const archived = { ...workspace("old"), archived: true };
+    expect(resolveActiveWorkspace([archived], archived, "old")).toBeNull();
   });
 
   it("uses a fallback title for quick room creation", () => {

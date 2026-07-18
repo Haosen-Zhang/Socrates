@@ -4,6 +4,7 @@ export interface WorkspaceRecord {
   displayPath: string;
   identityHash: string;
   label: string;
+  archived: boolean;
   createdAt: string;
   lastOpenedAt: string;
 }

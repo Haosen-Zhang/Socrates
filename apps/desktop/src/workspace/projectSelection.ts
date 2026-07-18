@@ -6,9 +6,9 @@ export function resolveActiveWorkspace(
   current: WorkspaceRecord | null,
   persistedId: string | null,
 ): WorkspaceRecord | null {
-  const currentMatch = current && workspaces.find((workspace) => workspace.id === current.id);
+  const currentMatch = current && workspaces.find((workspace) => workspace.id === current.id && !workspace.archived);
   if (currentMatch) return currentMatch;
-  return persistedId ? workspaces.find((workspace) => workspace.id === persistedId) ?? null : null;
+  return persistedId ? workspaces.find((workspace) => workspace.id === persistedId && !workspace.archived) ?? null : null;
 }
 
 /** Empty titles are intentional for quick chats; the UI supplies a localized default. */
