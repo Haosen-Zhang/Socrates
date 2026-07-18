@@ -6,6 +6,7 @@ type SessionRow = {
   title: string;
   mode: ConversationMode;
   workspace_id: string | null;
+  archived: number;
   status: string;
   legacy_room_id: string | null;
   created_at: string;
@@ -35,8 +36,8 @@ export class SessionStore {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.query(`
-        INSERT INTO sessions (id, title, mode, workspace_id, status, legacy_room_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'idle', ?, ?, ?)
+        INSERT INTO sessions (id, title, mode, workspace_id, archived, status, legacy_room_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 0, 'idle', ?, ?, ?)
       `).run(id, input.title.trim() || "Untitled", input.mode, input.workspaceId ?? null, input.legacyRoomId ?? null, now, now);
       const insertAgent = this.db.query(`
         INSERT INTO session_agents (session_id, agent_id, snapshot_json, position, execution_eligible)
@@ -71,6 +72,7 @@ export class SessionStore {
       title: row.title,
       mode: row.mode,
       workspaceId: row.workspace_id,
+      archived: row.archived === 1,
       status: row.status,
       legacyRoomId: row.legacy_room_id,
       agents,
@@ -80,7 +82,7 @@ export class SessionStore {
   }
 
   list(): ConversationSession[] {
-    return this.db.query<{ id: string }, []>("SELECT id FROM sessions ORDER BY updated_at DESC").all()
+    return this.db.query<{ id: string }, []>("SELECT id FROM sessions ORDER BY archived, updated_at DESC").all()
       .map((row) => this.get(row.id)!)
       .filter(Boolean);
   }
@@ -114,5 +116,72 @@ export class SessionStore {
     this.db.query("UPDATE sessions SET workspace_id = ?, updated_at = ? WHERE id = ?")
       .run(workspaceId, new Date().toISOString(), sessionId);
     return this.get(sessionId)!;
+  }
+
+  rename(sessionId: string, title: string): ConversationSession {
+    const value = title.trim();
+    if (!value) throw new Error("session_title_required");
+    if (!this.get(sessionId)) throw new Error("session_not_found");
+    this.db.query("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?").run(value.slice(0, 120), new Date().toISOString(), sessionId);
+    return this.get(sessionId)!;
+  }
+
+  archive(sessionId: string, archived: boolean): ConversationSession {
+    const session = this.get(sessionId);
+    if (!session) throw new Error("session_not_found");
+    if (archived && !["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) {
+      throw new Error("active_session_archive_locked");
+    }
+    this.db.query("UPDATE sessions SET archived = ?, updated_at = ? WHERE id = ?").run(archived ? 1 : 0, new Date().toISOString(), sessionId);
+    return this.get(sessionId)!;
+  }
+
+  remove(sessionId: string): void {
+    const session = this.get(sessionId);
+    if (!session) throw new Error("session_not_found");
+    if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) throw new Error("active_session_delete_locked");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.query("DELETE FROM usage_records WHERE session_id = ?").run(sessionId);
+      this.db.query("DELETE FROM multi_tasks WHERE session_id = ?").run(sessionId);
+      this.db.query("DELETE FROM agent_runs WHERE session_id = ?").run(sessionId);
+      this.db.query("DELETE FROM agent_sessions WHERE session_id = ?").run(sessionId);
+      this.db.query("DELETE FROM task_events WHERE session_id = ?").run(sessionId);
+      this.db.query("DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM session_messages WHERE session_id = ?)").run(sessionId);
+      this.db.query("DELETE FROM message_parts WHERE message_id IN (SELECT id FROM session_messages WHERE session_id = ?)").run(sessionId);
+      this.db.query("DELETE FROM session_messages WHERE session_id = ?").run(sessionId);
+      this.db.query("DELETE FROM session_agents WHERE session_id = ?").run(sessionId);
+      this.db.query("DELETE FROM sessions WHERE id = ?").run(sessionId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** Context-only rewind: it never attempts to reverse workspace files or shell side effects. */
+  rewind(sessionId: string, messageId: string): void {
+    const session = this.get(sessionId);
+    if (!session) throw new Error("session_not_found");
+    if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) throw new Error("active_session_rewind_locked");
+    const target = this.db.query<{ rid: number; created_at: string }, [string, string]>(
+      "SELECT rowid AS rid, created_at FROM session_messages WHERE id = ? AND session_id = ?",
+    ).get(messageId, sessionId);
+    if (!target) throw new Error("session_message_not_found");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.query("DELETE FROM usage_records WHERE session_id = ? AND created_at >= ?").run(sessionId, target.created_at);
+      this.db.query("DELETE FROM multi_tasks WHERE session_id = ? AND created_at >= ?").run(sessionId, target.created_at);
+      this.db.query("DELETE FROM agent_runs WHERE session_id = ? AND created_at >= ?").run(sessionId, target.created_at);
+      this.db.query("DELETE FROM task_events WHERE session_id = ? AND occurred_at >= ?").run(sessionId, target.created_at);
+      this.db.query("DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM session_messages WHERE session_id = ? AND rowid >= ?)").run(sessionId, target.rid);
+      this.db.query("DELETE FROM message_parts WHERE message_id IN (SELECT id FROM session_messages WHERE session_id = ? AND rowid >= ?)").run(sessionId, target.rid);
+      this.db.query("DELETE FROM session_messages WHERE session_id = ? AND rowid >= ?").run(sessionId, target.rid);
+      this.db.query("UPDATE sessions SET status = 'idle', updated_at = ? WHERE id = ?").run(new Date().toISOString(), sessionId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 }

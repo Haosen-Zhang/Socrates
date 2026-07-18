@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { agentLabel, type Agent, type ConversationMode, type ReasoningEffort, type StoredMessage, type TaskSummary } from "@socrates/core";
+import { agentLabel, type Agent, type ConversationMode, type ReasoningEffort, type SessionMessage, type StoredMessage, type TaskSummary } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
 import { toggleRoomAgentSelection } from "./roomSelection";
@@ -12,6 +12,7 @@ import WorkspaceChip from "./workspace/WorkspaceChip";
 import AttachmentTray, { AttachmentImage } from "./attachments/AttachmentTray";
 import { canReviewPlan, dropAgentBefore, moveAgentId } from "./multiAgentUi";
 import ResizableComposer from "./composer/ResizableComposer";
+import { roomTitleOrFallback } from "./workspace/projectSelection";
 
 const DUTY_CLS: Record<string, string> = {
   propose: "bg-blue-100 text-blue-800",
@@ -50,13 +51,41 @@ async function copyText(text: string): Promise<boolean> {
 
 const DATE_LOCALE_OF: Record<string, string> = { "zh-CN": "zh-CN", "zh-TW": "zh-TW", en: "en-US" };
 
-/** 悬停消息时的操作条：时间 · 复制 · 回溯（二次点击确认） */
-function MsgActions({ m, align }: { m: StoredMessage; align: "left" | "right" }) {
-  const { lang, streaming, activeTaskId, rewindTo } = useStore();
+/** Let modal close transitions finish before their parent unmounts the dialog. */
+function useAnimatedDialogClose(onClose: () => void) {
+  const [closing, setClosing] = useState(false);
+  const timeoutRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+  }, []);
+  return {
+    closing,
+    close: () => {
+      if (closing) return;
+      setClosing(true);
+      timeoutRef.current = window.setTimeout(onClose, 150);
+    },
+  };
+}
+
+type MessageActionTarget = Pick<StoredMessage | SessionMessage, "id" | "content" | "createdAt">;
+
+/** 悬停消息时的操作条：时间 · 复制 · 回溯（二次点击确认）。 */
+function MsgActions({
+  m,
+  align,
+  busy = false,
+  onRewind,
+}: {
+  m: MessageActionTarget;
+  align: "left" | "right";
+  busy?: boolean;
+  onRewind: (messageId: string) => void;
+}) {
+  const { lang } = useStore();
   const t = useT();
   const [copied, setCopied] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const busy = !!streaming || !!activeTaskId;
   const btn = "hover:text-neutral-700 hover:underline";
 
   return (
@@ -91,7 +120,7 @@ function MsgActions({ m, align }: { m: StoredMessage; align: "left" | "right" })
               setTimeout(() => setConfirming(false), 3000);
               return;
             }
-            void rewindTo(m.id);
+            onRewind(m.id);
           }}
         >
           {confirming ? t("confirm_delete") : t("msg_rewind")}
@@ -102,6 +131,8 @@ function MsgActions({ m, align }: { m: StoredMessage; align: "left" | "right" })
 }
 
 function Bubble({ m }: { m: StoredMessage }) {
+  const { streaming, activeTaskId, rewindTo } = useStore();
+  const busy = !!streaming || !!activeTaskId;
   if (m.role === "user") {
     return (
       // 任务的用户消息作为回放跳转锚点
@@ -109,7 +140,7 @@ function Bubble({ m }: { m: StoredMessage }) {
         <div className="max-w-[70%] rounded-lg bg-neutral-900 px-3 py-2 text-sm whitespace-pre-wrap text-white">
           {m.content}
         </div>
-        <MsgActions m={m} align="right" />
+        <MsgActions m={m} align="right" busy={busy} onRewind={(messageId) => void rewindTo(messageId)} />
       </div>
     );
   }
@@ -125,7 +156,7 @@ function Bubble({ m }: { m: StoredMessage }) {
         >
           <Markdown remarkPlugins={[remarkGfm]}>{m.content}</Markdown>
         </div>
-        <MsgActions m={m} align="left" />
+        <MsgActions m={m} align="left" busy={busy} onRewind={(messageId) => void rewindTo(messageId)} />
       </div>
     </div>
   );
@@ -322,9 +353,9 @@ function ComposerTextarea({
 }
 
 function TaskComposer({ agents }: { agents: Agent[] }) {
-  const { streaming, activeTaskId, sendTask } = useStore();
+  const { streaming, roomSending, activeTaskId, sendTask } = useStore();
   const t = useT();
-  const busy = !!streaming || !!activeTaskId;
+  const busy = !!streaming || roomSending || !!activeTaskId;
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState<"round_robin" | "debate">("round_robin");
   const [items, setItems] = useState<OrderItem[]>(agents.map((a) => ({ id: a.id, enabled: true })));
@@ -560,12 +591,12 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
 }
 
 function SimpleComposer() {
-  const { streaming, sendMessage } = useStore();
+  const { streaming, roomSending, sendMessage } = useStore();
   const t = useT();
   const [draft, setDraft] = useState("");
   const doSubmit = async () => {
     const content = draft.trim();
-    if (!content || streaming) return;
+    if (!content || streaming || roomSending) return;
     setDraft("");
     await sendMessage(content);
   };
@@ -580,9 +611,9 @@ function SimpleComposer() {
       <ResizableComposer label={t("composer_resize")}>
         <span className="pixel-composer-chevron mb-1.5 shrink-0">›</span>
         <ComposerTextarea
-          placeholder={streaming ? t("replying") : t("message_placeholder")}
+          placeholder={streaming || roomSending ? t("replying") : t("message_placeholder")}
           value={draft}
-          disabled={!!streaming}
+          disabled={!!streaming || roomSending}
           onChange={setDraft}
           onSubmit={() => void doSubmit()}
         />
@@ -590,7 +621,7 @@ function SimpleComposer() {
           className="pixel-send shrink-0"
           title={t("send")}
           aria-label={t("send")}
-          disabled={!!streaming || !draft.trim()}
+          disabled={!!streaming || roomSending || !draft.trim()}
           type="submit"
         >
           <PixelIcon name="send" size={18} />
@@ -603,7 +634,7 @@ function SimpleComposer() {
 function SingleAgentSession() {
   const {
     sessions, currentSessionId, sessionMessages, agentEvents, pendingApprovals,
-    agentRunning, agentError, sendAgentPrompt, decideAgentApproval, cancelAgentRun, workspacePathResults, searchWorkspacePaths, addWorkspaceRef, usageSummaries,
+    agentRunning, agentError, sendAgentPrompt, decideAgentApproval, cancelAgentRun, rewindSessionTo, workspacePathResults, searchWorkspacePaths, addWorkspaceRef, usageSummaries,
   } = useStore();
   const t = useT();
   const [draft, setDraft] = useState("");
@@ -616,7 +647,10 @@ function SingleAgentSession() {
   const submit = async () => {
     const prompt = draft.trim();
     if (!prompt || agentRunning) return;
-    if (await sendAgentPrompt(prompt, sandbox)) setDraft("");
+    // Local echo and an empty composer are committed before the network request
+    // starts.  Waiting for the stream here made an Enter press look stuck.
+    setDraft("");
+    void sendAgentPrompt(prompt, sandbox);
   };
   const updateDraft = (value: string) => {
     setDraft(value);
@@ -646,9 +680,9 @@ function SingleAgentSession() {
         </div>
         {agentError && <div role="alert" className="border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">{agentError}</div>}
         {sessionMessages.map((message) => (
-          <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div className={`pixel-card max-w-[78%] whitespace-pre-wrap p-3 text-sm ${message.role === "user" ? "bg-violet-50" : "bg-white"}`}>
-              {message.content}
+          <div key={message.id} className={`anim-msg group flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}>
+            <div className={`pixel-card max-w-[78%] p-3 text-sm ${message.role === "user" ? "whitespace-pre-wrap bg-violet-50" : "md-body bg-white"}`}>
+              {message.role === "user" ? message.content : <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>}
               {message.parts.filter((part) => part.type !== "text").length > 0 && <div className="mt-2 flex flex-wrap gap-2">
                 {message.parts.map((part, index) => part.type === "image"
                   ? <AttachmentImage key={`${part.attachmentId}-${index}`} id={part.attachmentId} alt={part.alt ?? "image"} className="max-h-64 w-auto max-w-full" />
@@ -657,6 +691,7 @@ function SingleAgentSession() {
                   : null)}
               </div>}
             </div>
+            <MsgActions m={message} align={message.role === "user" ? "right" : "left"} busy={agentRunning} onRewind={(messageId) => void rewindSessionTo(messageId)} />
           </div>
         ))}
         {agentRunning && streamingText && <div className="pixel-card max-w-[78%] whitespace-pre-wrap bg-white p-3 text-sm">{streamingText}</div>}
@@ -748,7 +783,7 @@ function MultiPlanCard({ plan }: { plan: MultiPlan }) {
 function MultiAgentSession() {
   const {
     sessions, currentSessionId, sessionMessages, currentMultiTask, multiRunning, multiError,
-    sendMultiTask, loadMultiTask, decideMultiApproval, cancelMultiTask, pauseMultiTask, resumeMultiTask, retryMultiTask,
+    sendMultiTask, loadMultiTask, decideMultiApproval, cancelMultiTask, pauseMultiTask, resumeMultiTask, retryMultiTask, rewindSessionTo,
   } = useStore();
   const t = useT();
   const session = sessions.find((item) => item.id === currentSessionId);
@@ -785,10 +820,10 @@ function MultiAgentSession() {
       {currentMultiTask?.state === "paused" && currentMultiTask.requiresExecutionReview && <div role="alert" className="border border-amber-400 bg-amber-50 p-3 text-xs text-amber-900">{t("multi_execution_review")}</div>}
       {sessionMessages.map((message) => {
         const author = participants.find((item) => item.id === message.authorId);
-        return <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}><div className={`max-w-[82%] ${message.role === "user" ? "" : "flex gap-3"}`}>
+        return <div key={message.id} className={`anim-msg group flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}><div className={`max-w-[82%] ${message.role === "user" ? "" : "flex gap-3"}`}>
           {message.role !== "user" && <AgentAvatar src={String(author?.avatar ?? "")} label={String(author?.nickname ?? "Agent")} size={34} />}
           <div className={`md-body pixel-card p-3 text-sm ${message.role === "user" ? "bg-violet-50" : "bg-white"}`}><Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown></div>
-        </div></div>;
+        </div><MsgActions m={message} align={message.role === "user" ? "right" : "left"} busy={multiRunning} onRewind={(messageId) => void rewindSessionTo(messageId)} /></div>;
       })}
       {currentMultiTask?.turns.filter((turn) => turn.status === "running").map((turn) => <div key={turn.id} className="pixel-card animate-pulse p-3 text-sm">{String(turn.snapshot.nickname ?? turn.agentId)} {t("multi_thinking")}</div>)}
       {currentMultiTask && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{participants.map((agent) => {
@@ -823,6 +858,7 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<ConversationMode>("chat");
+  const dialog = useAnimatedDialogClose(onClose);
 
   const toggle = (id: string) => {
     setSelected((current) => toggleRoomAgentSelection(current, id));
@@ -831,26 +867,27 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") dialog.close();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
+  }, [dialog]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      if (mode === "single_agent") await createAgentSession(name, selected[0]!);
-      else if (mode === "multi_agent") await createMultiAgentSession(name, selected);
-      else await createRoom(name, selected.slice(0, 1));
-      onClose();
+      const title = roomTitleOrFallback(name, t("room_untitled"));
+      if (mode === "single_agent") await createAgentSession(title, selected[0]!);
+      else if (mode === "multi_agent") await createMultiAgentSession(title, selected);
+      else await createRoom(title, selected);
+      dialog.close();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
   return (
-    <div className="pixel-dialog-backdrop" role="presentation" onMouseDown={onClose}>
+    <div className={`pixel-dialog-backdrop ${dialog.closing ? "is-closing" : ""}`} role="presentation" onMouseDown={dialog.close}>
       <form
         onSubmit={submit}
         className="pixel-dialog max-h-[calc(100vh-32px)] w-[min(720px,calc(100vw-48px))] overflow-y-auto p-5"
@@ -871,7 +908,7 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
             aria-label={t("close")}
             onClick={() => {
               sfx.close();
-              onClose();
+              dialog.close();
             }}
           >
             ×
@@ -884,7 +921,6 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
             autoFocus
             className="pixel-input mt-1 w-full px-3 py-2.5 text-sm"
             placeholder={t("room_name_placeholder")}
-            required
             value={name}
             onChange={(event) => {
               setName(event.target.value);
@@ -931,7 +967,7 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
                   className={`pixel-room-agent-card flex min-w-0 items-center gap-3 p-3 text-left ${isSelected ? "is-selected" : ""}`}
                   aria-pressed={isSelected}
                   onClick={() => {
-                    if (mode !== "multi_agent" && !isSelected) setSelected([agent.id]);
+                    if (mode === "single_agent" && !isSelected) setSelected([agent.id]);
                     else toggle(agent.id);
                   }}
                 >
@@ -959,11 +995,11 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
             {selected.length > 6 && <span className="ml-2 text-xs text-neutral-500">+{selected.length - 6}</span>}
           </div>
           <div className="flex shrink-0 gap-3">
-            <button className="pixel-button px-4 py-2 text-sm" type="button" onClick={onClose}>{t("cancel")}</button>
+            <button className="pixel-button px-4 py-2 text-sm" type="button" onClick={dialog.close}>{t("cancel")}</button>
             <button
               className="pixel-button pixel-button--primary px-5 py-2 text-sm"
               type="submit"
-              disabled={!name.trim() || (mode === "multi_agent" ? selected.length < 2 : selected.length !== 1) || (mode !== "chat" && !activeWorkspace)}
+              disabled={(mode === "multi_agent" ? selected.length < 2 : mode === "single_agent" ? selected.length !== 1 : selected.length < 1) || (mode !== "chat" && !activeWorkspace)}
             >
               {t("create_room")}
             </button>
@@ -974,14 +1010,33 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** 房间右键菜单（类 Codex/OpenCode）：归档/恢复、删除（二次点击确认） */
-type MenuState = { roomId: string; x: number; y: number };
+/** Side-bar entities all share the same predictable rename/archive/remove menu. */
+type SidebarEntityKind = "room" | "session" | "workspace";
+type MenuState = { kind: SidebarEntityKind; id: string; x: number; y: number };
+type RenameTarget = { kind: SidebarEntityKind; id: string; value: string };
 
-function RoomContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) {
-  const { rooms, archiveRoom, removeRoom } = useStore();
+function SidebarEntityMenu({
+  menu,
+  onClose,
+  onRename,
+  onError,
+}: {
+  menu: MenuState;
+  onClose: () => void;
+  onRename: (target: RenameTarget) => void;
+  onError: (message: string) => void;
+}) {
+  const {
+    rooms, sessions, workspaces,
+    archiveRoom, removeRoom, archiveSession, removeSession, archiveWorkspace, removeWorkspace,
+  } = useStore();
   const t = useT();
   const [confirming, setConfirming] = useState(false);
-  const room = rooms.find((r) => r.id === menu.roomId);
+  const entity = menu.kind === "room"
+    ? rooms.find((room) => room.id === menu.id)
+    : menu.kind === "session"
+      ? sessions.find((session) => session.id === menu.id)
+      : workspaces.find((workspace) => workspace.id === menu.id);
 
   useEffect(() => {
     const close = (e: MouseEvent | KeyboardEvent) => {
@@ -998,11 +1053,22 @@ function RoomContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => vo
     };
   }, [onClose]);
 
-  if (!room) return null;
+  if (!entity) return null;
+  const value = "name" in entity ? entity.name : "title" in entity ? entity.title : entity.label;
+  const archived = entity.archived;
   const item = "block w-full px-3 py-2 text-left text-sm hover:bg-neutral-100";
+  const run = async (operation: () => Promise<void>) => {
+    try {
+      await operation();
+      onClose();
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error));
+      onClose();
+    }
+  };
   return (
     <div
-      className="pixel-card anim-panel fixed z-50 w-40 overflow-hidden py-1"
+      className="pixel-card anim-panel fixed z-50 w-48 overflow-hidden py-1"
       style={{ left: menu.x, top: menu.y }}
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
@@ -1010,12 +1076,24 @@ function RoomContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => vo
       <button
         className={item}
         onClick={() => {
-          sfx.delete();
-          void archiveRoom(room.id, !room.archived);
+          onRename({ kind: menu.kind, id: menu.id, value });
           onClose();
         }}
       >
-        {room.archived ? t("unarchive") : t("archive")}
+        {t("rename")}
+      </button>
+      <button
+        className={item}
+        onClick={() => {
+          sfx.delete();
+          void run(() => menu.kind === "room"
+            ? archiveRoom(menu.id, !archived)
+            : menu.kind === "session"
+              ? archiveSession(menu.id, !archived)
+              : archiveWorkspace(menu.id, !archived));
+        }}
+      >
+        {archived ? t("unarchive") : t("archive")}
       </button>
       <button
         className={`${item} ${confirming ? "font-medium text-red-700" : "text-red-600"}`}
@@ -1025,12 +1103,49 @@ function RoomContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => vo
             return;
           }
           sfx.delete();
-          void removeRoom(room.id);
-          onClose();
+          void run(() => menu.kind === "room"
+            ? removeRoom(menu.id)
+            : menu.kind === "session"
+              ? removeSession(menu.id)
+              : removeWorkspace(menu.id));
         }}
       >
-        {confirming ? t("confirm_delete") : t("delete")}
+        {confirming ? t("confirm_delete") : menu.kind === "workspace" ? t("remove_from_socrates") : t("delete")}
       </button>
+    </div>
+  );
+}
+
+function RenameDialog({ target, onClose }: { target: RenameTarget; onClose: () => void }) {
+  const { renameRoom, renameSession, renameWorkspace } = useStore();
+  const t = useT();
+  const dialog = useAnimatedDialogClose(onClose);
+  const [value, setValue] = useState(target.value);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    try {
+      const next = value.trim();
+      if (!next) throw new Error("name_required");
+      if (target.kind === "room") await renameRoom(target.id, next);
+      else if (target.kind === "session") await renameSession(target.id, next);
+      else await renameWorkspace(target.id, next);
+      dialog.close();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+  return (
+    <div className={`pixel-dialog-backdrop ${dialog.closing ? "is-closing" : ""}`} role="presentation" onMouseDown={dialog.close}>
+      <form className="pixel-dialog w-[min(440px,calc(100vw-40px))] p-5" role="dialog" aria-modal="true" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div><div className="pixel-kicker">RENAME</div><h2 className="text-lg font-bold">{t(`rename_${target.kind}`)}</h2></div>
+          <button className="pixel-button h-8 w-8" type="button" aria-label={t("close")} onClick={dialog.close}>×</button>
+        </div>
+        <input autoFocus className="pixel-input w-full px-3 py-2 text-sm" value={value} maxLength={80} onChange={(event) => { setValue(event.target.value); setError(null); }} />
+        {error && <p className="mt-2 text-xs text-red-700">{error}</p>}
+        <div className="mt-5 flex justify-end gap-2"><button className="pixel-button px-3 py-2 text-sm" type="button" onClick={dialog.close}>{t("cancel")}</button><button className="pixel-button pixel-button--primary px-4 py-2 text-sm" disabled={!value.trim()}>{t("save")}</button></div>
+      </form>
     </div>
   );
 }
@@ -1046,10 +1161,11 @@ function RoomMembersDialog({
 }) {
   const { agents, addRoomAgent } = useStore();
   const t = useT();
+  const dialog = useAnimatedDialogClose(onClose);
   const members = memberIds.map((id) => agents.find((agent) => agent.id === id)).filter((agent): agent is Agent => !!agent);
   const available = agents.filter((agent) => !memberIds.includes(agent.id));
   return (
-    <div className="pixel-dialog-backdrop" role="presentation" onMouseDown={onClose}>
+    <div className={`pixel-dialog-backdrop ${dialog.closing ? "is-closing" : ""}`} role="presentation" onMouseDown={dialog.close}>
       <section className="pixel-dialog w-[min(560px,calc(100vw-48px))] p-5" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
         <div className="mb-4 flex items-start justify-between">
           <div>
@@ -1060,7 +1176,7 @@ function RoomMembersDialog({
             className="pixel-button h-8 w-8"
             onClick={() => {
               sfx.close();
-              onClose();
+              dialog.close();
             }}
             aria-label={t("close")}
           >
@@ -1104,18 +1220,21 @@ function RoomMembersDialog({
 }
 
 export default function ChatPage() {
-  const { rooms, agents, sessions, currentRoomId, currentSessionId, messages, streaming, chatError, tasks, usageSummaries, selectRoom, selectAgentSession, clearChatError } =
+  const { rooms, agents, sessions, workspaces, activeWorkspace, currentRoomId, currentSessionId, messages, streaming, chatError, tasks, usageSummaries, selectRoom, selectAgentSession, setActiveWorkspace, clearChatError } =
     useStore();
   const t = useT();
   const [creating, setCreating] = useState(false);
   const [showTasks, setShowTasks] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
+  const [sidebarError, setSidebarError] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const activeRooms = rooms.filter((r) => !r.archived);
   const archivedRooms = rooms.filter((r) => r.archived);
+  const archivedSessions = sessions.filter((session) => session.archived);
+  const archivedWorkspaces = workspaces.filter((workspace) => workspace.archived);
 
   const roomRow = (r: (typeof rooms)[number]) => (
     <div
@@ -1126,7 +1245,7 @@ export default function ChatPage() {
       onClick={() => void selectRoom(r.id)}
       onContextMenu={(e) => {
         e.preventDefault();
-        setMenu({ roomId: r.id, x: e.clientX, y: e.clientY });
+        setMenu({ kind: "room", id: r.id, x: e.clientX, y: e.clientY });
       }}
     >
       <span className="flex -space-x-2">
@@ -1139,11 +1258,11 @@ export default function ChatPage() {
       {/* macOS WKWebView 不可靠派发 contextmenu，用常驻 ⋯ 按钮作主入口，右键作补充 */}
       <button
         title={t("room_menu")}
-        className={`pixel-room-more ml-1 shrink-0 px-1 text-sm opacity-0 group-hover:opacity-100 ${menu?.roomId === r.id ? "opacity-100" : ""}`}
+        className={`pixel-room-more ml-1 shrink-0 px-1 text-sm opacity-0 group-hover:opacity-100 ${menu?.kind === "room" && menu.id === r.id ? "opacity-100" : ""}`}
         onClick={(e) => {
           e.stopPropagation();
           const rect = e.currentTarget.getBoundingClientRect();
-          setMenu({ roomId: r.id, x: rect.right - 144, y: rect.bottom + 4 });
+          setMenu({ kind: "room", id: r.id, x: rect.right - 176, y: rect.bottom + 4 });
         }}
       >
         ⋯
@@ -1156,13 +1275,83 @@ export default function ChatPage() {
     </div>
   );
 
+  const sessionRow = (session: (typeof sessions)[number]) => (
+    <div
+      key={session.id}
+      className={`pixel-room-row group flex cursor-pointer items-center gap-2 px-2 py-2 text-sm ${session.id === currentSessionId ? "is-active" : ""} ${session.archived ? "opacity-60" : ""}`}
+      onClick={() => void selectAgentSession(session.id)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setMenu({ kind: "session", id: session.id, x: event.clientX, y: event.clientY });
+      }}
+    >
+      <PixelIcon name={session.mode === "multi_agent" ? "robot" : "chat"} size={18} />
+      <span className="min-w-0 flex-1"><span className="block truncate font-medium">{session.title}</span><span className="block text-[9px] uppercase tracking-wider text-neutral-400">{session.mode.replace("_", " ")}</span></span>
+      <button
+        title={t("room_menu")}
+        className={`pixel-room-more shrink-0 px-1 text-sm opacity-0 group-hover:opacity-100 ${menu?.kind === "session" && menu.id === session.id ? "opacity-100" : ""}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          const rect = event.currentTarget.getBoundingClientRect();
+          setMenu({ kind: "session", id: session.id, x: rect.right - 176, y: rect.bottom + 4 });
+        }}
+      >
+        ⋯
+      </button>
+    </div>
+  );
+
+  const createInWorkspace = async (workspaceId: string | null) => {
+    try {
+      await setActiveWorkspace(workspaceId);
+      setCreating(true);
+    } catch (error) {
+      setSidebarError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const projectGroup = (workspaceId: string | null, label: string, archived = false) => {
+    const groupSessions = sessions.filter((session) => session.workspaceId === workspaceId && session.archived === archived);
+    const groupRooms = rooms.filter((room) => room.workspaceId === workspaceId && room.archived === archived);
+    const workspace = workspaceId ? workspaces.find((item) => item.id === workspaceId) : null;
+    if (!workspace && workspaceId) return null;
+    if (!workspace && groupSessions.length + groupRooms.length === 0 && archived) return null;
+    return (
+      <section key={workspaceId ?? "none"} className={`pixel-project-group ${archived ? "is-archived" : ""} ${(activeWorkspace?.id ?? null) === workspaceId ? "is-current" : ""}`}>
+        <div className="pixel-project-heading group flex items-center gap-1 px-1 py-1.5">
+          <button
+            className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs font-bold"
+            title={workspace?.canonicalPath ?? t("project_none")}
+            onClick={() => void setActiveWorkspace(workspaceId).catch((error: unknown) => setSidebarError(error instanceof Error ? error.message : String(error)))}
+          >
+            <PixelIcon name={workspace ? "folder" : "chat"} size={18} />
+            <span className="truncate">{label}</span>
+            {groupSessions.length + groupRooms.length > 0 && <span className="text-[10px] font-normal text-neutral-400">{groupSessions.length + groupRooms.length}</span>}
+          </button>
+          {!archived && <button className="pixel-project-action" title={t("new_room")} aria-label={t("new_room")} onClick={() => void createInWorkspace(workspaceId)}><PixelIcon name="plus" size={15} /></button>}
+          {workspace && <button className="pixel-project-action" title={t("room_menu")} aria-label={t("room_menu")} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setMenu({ kind: "workspace", id: workspace.id, x: rect.right - 176, y: rect.bottom + 4 }); }}>⋯</button>}
+        </div>
+        {(groupSessions.length + groupRooms.length > 0 || !archived) && <div className="space-y-1 px-1 pb-2">
+          {groupSessions.map(sessionRow)}
+          {groupRooms.map(roomRow)}
+          {groupSessions.length + groupRooms.length === 0 && <p className="px-2 py-1 text-[10px] text-neutral-400">{t("project_empty")}</p>}
+        </div>}
+      </section>
+    );
+  };
+
   const jumpToTask = (taskId: string) => {
     document.getElementById(`task-${taskId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  // A smooth scroll for every token queues animations in WKWebView and makes
+  // Enter feel delayed. New turns ease in once; streaming follows immediately.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length, streaming?.text]);
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages.length]);
+  useEffect(() => {
+    if (streaming?.text) bottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+  }, [streaming?.text]);
 
   const currentRoom = rooms.find((r) => r.id === currentRoomId);
   const currentSession = sessions.find((session) => session.id === currentSessionId);
@@ -1188,7 +1377,7 @@ export default function ChatPage() {
     streaming?.round !== undefined && streaming.round !== lastRound && streaming.phase !== "summary";
 
   return (
-    <div className="flex h-[calc(100vh-53px)]">
+    <div className="flex h-[calc(100dvh-var(--app-header-height))]">
       <aside className="pixel-room-sidebar flex w-64 shrink-0 flex-col p-3">
         <button
           className="pixel-new-room-button flex w-full items-center justify-center gap-2 px-3 py-2.5 text-sm font-bold"
@@ -1198,30 +1387,17 @@ export default function ChatPage() {
           {t("new_room")}
         </button>
         <div className="mt-2"><WorkspaceChip /></div>
-        {sessions.length > 0 && (
-          <div className="mt-3 border-t-2 border-dashed border-neutral-300 pt-3">
-            <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-neutral-500">{t("agent_sessions")}</div>
-            <div className="space-y-2">
-              {sessions.map((session) => (
-                <button
-                  key={session.id}
-                  className={`pixel-room-row block w-full px-2 py-2 text-left text-sm ${session.id === currentSessionId ? "is-active" : ""}`}
-                  onClick={() => void selectAgentSession(session.id)}
-                >
-                  <span className="block truncate font-medium">{session.title}</span>
-                  <span className="block text-[10px] uppercase text-neutral-400">{session.mode}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        <div className="pixel-room-list mt-3 flex-1 space-y-2 overflow-y-auto pr-1">
-          {activeRooms.map(roomRow)}
+        {sidebarError && <div role="alert" className="mt-2 border border-red-300 bg-red-50 px-2 py-1 text-[10px] text-red-700">{sidebarError}</div>}
+        <div className="pixel-room-list mt-3 flex-1 overflow-y-auto pr-1">
+          <div className="mb-2 px-1 text-[10px] font-bold uppercase tracking-wider text-neutral-500">{t("project_conversations")}</div>
+          {workspaces.filter((workspace) => !workspace.archived).map((workspace) => projectGroup(workspace.id, workspace.label))}
+          {projectGroup(null, t("project_none"))}
         </div>
         <div className="pixel-archive-dock mt-3 pt-3">
-          {showArchived && archivedRooms.length > 0 && (
-            <div className="pixel-archive-panel mb-2 max-h-48 space-y-2 overflow-y-auto p-2">
-              {archivedRooms.map(roomRow)}
+          {showArchived && archivedRooms.length + archivedSessions.length + archivedWorkspaces.length > 0 && (
+            <div className="pixel-archive-panel mb-2 max-h-56 overflow-y-auto p-2">
+              {archivedWorkspaces.map((workspace) => projectGroup(workspace.id, workspace.label, true))}
+              {projectGroup(null, t("project_none"), true)}
             </div>
           )}
           <button
@@ -1229,13 +1405,14 @@ export default function ChatPage() {
             onClick={() => setShowArchived((v) => !v)}
           >
             <PixelIcon name="archive" size={20} />
-            <span className="min-w-0 flex-1">{t("archived_section", { n: archivedRooms.length })}</span>
+            <span className="min-w-0 flex-1">{t("archived_section", { n: archivedRooms.length + archivedSessions.length + archivedWorkspaces.length })}</span>
             <span>{showArchived ? "▾" : "▸"}</span>
           </button>
         </div>
       </aside>
       {creating && <NewRoomDialog onClose={() => setCreating(false)} />}
-      {menu && <RoomContextMenu menu={menu} onClose={() => setMenu(null)} />}
+      {renameTarget && <RenameDialog target={renameTarget} onClose={() => setRenameTarget(null)} />}
+      {menu && <SidebarEntityMenu menu={menu} onClose={() => setMenu(null)} onRename={setRenameTarget} onError={setSidebarError} />}
       {showMembers && currentRoom && (
         <RoomMembersDialog roomId={currentRoom.id} memberIds={currentRoom.agentIds} onClose={() => setShowMembers(false)} />
       )}
@@ -1246,7 +1423,6 @@ export default function ChatPage() {
             <div className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
               <span className="text-sm font-bold">{currentRoom?.name}</span>
               <div className="flex items-center gap-2">
-                <WorkspaceChip />
                 {roomAgents.slice(0, 3).map((agent) => { const usage = usageSummaries.find((item) => item.agentId === agent.id); return <span key={agent.id} className="pixel-chip text-[10px]" title={`${t("usage_current")}: ${usage?.current.totalTokens ?? t("usage_unavailable")} · ${t("usage_total")}: ${usage?.cumulative.totalTokens ?? t("usage_unavailable")}`}>{agent.nickname}: {usage?.cumulative.totalTokens ?? "—"}</span>; })}
                 <button className="pixel-member-button flex items-center gap-1 px-2 py-1" onClick={() => setShowMembers(true)} title={t("room_members_title")}>
                   <span className="flex -space-x-2">

@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
 :root {
+  --app-header-height: 54px;
   --app-font-size: 14px;
   --app-font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
   font-family: var(--app-font-family);
@@ -10,6 +11,7 @@
   font-synthesis: none;
 }
 
+html, body, #root { width: 100%; height: 100%; overflow: hidden; }
 body { margin: 0; font-size: var(--app-font-size); }
 button, input, select, textarea { font: inherit; }
 
@@ -71,13 +73,20 @@ button, input, select, textarea { font: inherit; }
   --pixel-grid: rgba(40, 35, 63, 0.035);
   --pixel-shadow: #c7bea5;
   --pixel-muted: #6b6580;
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   color: var(--pixel-ink);
   background-color: var(--pixel-bg);
   background-image:
     linear-gradient(var(--pixel-grid) 1px, transparent 1px),
     linear-gradient(90deg, var(--pixel-grid) 1px, transparent 1px);
   background-size: 12px 12px;
+}
+.pixel-app > .anim-view {
+  height: calc(100dvh - var(--app-header-height));
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* 深色调色板（#37）：切到 data-theme=dark 时重定义变量 */
@@ -112,6 +121,7 @@ button, input, select, textarea { font: inherit; }
 .pixel-app .rounded-lg { border-radius: 2px; }
 
 .pixel-header {
+  box-sizing: border-box;
   border-bottom: 3px solid var(--pixel-ink);
   box-shadow: 0 3px 0 #c7bea5;
 }
@@ -145,7 +155,8 @@ button, input, select, textarea { font: inherit; }
   background: var(--pixel-paper);
   color: var(--pixel-ink);
   box-shadow: 2px 2px 0 var(--pixel-shadow);
-  transition: transform 80ms ease, box-shadow 80ms ease;
+  will-change: transform;
+  transition: transform 150ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 150ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 120ms ease;
 }
 
 .pixel-button:hover,
@@ -180,17 +191,18 @@ button, input, select, textarea { font: inherit; }
   color: white;
   background: var(--pixel-accent);
   box-shadow: 3px 3px 0 var(--pixel-shadow);
-  transition: transform 100ms steps(2, end), box-shadow 100ms steps(2, end);
+  will-change: transform;
+  transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 160ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 120ms ease;
 }
-.pixel-new-room-button:hover { filter: brightness(1.08); transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--pixel-shadow); }
+.pixel-new-room-button:hover { background: #7659e6; transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--pixel-shadow); }
 .pixel-new-room-button:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--pixel-shadow); }
-.pixel-room-list { scrollbar-width: thin; }
+.pixel-room-list { min-height: 0; scrollbar-width: thin; overscroll-behavior: contain; }
 .pixel-room-row {
   min-height: 42px;
   border: 2px solid transparent;
   border-radius: 2px;
   color: var(--pixel-ink);
-  transition: background 100ms steps(2, end), border-color 100ms steps(2, end), transform 100ms steps(2, end);
+  transition: background-color 130ms ease, border-color 130ms ease, transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .pixel-room-row:hover { border-color: color-mix(in srgb, var(--pixel-accent) 48%, transparent); background: color-mix(in srgb, var(--pixel-accent) 10%, var(--pixel-paper)); }
 .pixel-room-row.is-active {
@@ -201,6 +213,30 @@ button, input, select, textarea { font: inherit; }
 }
 .pixel-room-more { border: 1px solid currentColor; border-radius: 1px; }
 .pixel-room-row.is-active .pixel-room-more:hover { background: rgba(255, 255, 255, 0.16); }
+.pixel-project-group {
+  margin-bottom: 6px;
+  border: 2px solid color-mix(in srgb, var(--pixel-ink) 24%, transparent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--pixel-paper) 90%, var(--pixel-accent) 10%);
+  box-shadow: 2px 2px 0 color-mix(in srgb, var(--pixel-shadow) 70%, transparent);
+}
+.pixel-project-group.is-current { border-color: var(--pixel-accent); box-shadow: inset 3px 0 0 var(--pixel-accent), 2px 2px 0 var(--pixel-shadow); }
+.pixel-project-group.is-archived { opacity: 0.72; }
+.pixel-project-heading { border-bottom: 1px dashed color-mix(in srgb, var(--pixel-ink) 30%, transparent); color: var(--pixel-muted); }
+.pixel-project-heading:hover { color: var(--pixel-ink); background: color-mix(in srgb, var(--pixel-accent) 8%, var(--pixel-paper)); }
+.pixel-project-action {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 1px;
+  color: var(--pixel-muted);
+  transition: color 110ms ease, background-color 110ms ease, transform 110ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.pixel-project-action:hover { color: var(--pixel-accent); border-color: currentColor; background: var(--pixel-paper); transform: translateY(-1px); }
+.pixel-project-action:active { transform: translateY(1px); }
 .pixel-archive-dock { border-top: 2px dashed color-mix(in srgb, var(--pixel-ink) 28%, transparent); }
 .pixel-archive-panel { border: 2px solid color-mix(in srgb, var(--pixel-ink) 50%, transparent); background: var(--pixel-paper); box-shadow: 2px 2px 0 var(--pixel-shadow); }
 .pixel-archive-button {
@@ -279,6 +315,25 @@ button, input, select, textarea { font: inherit; }
   box-shadow: 2px 2px 0 var(--pixel-shadow);
 }
 .pixel-workspace-chip:disabled { cursor: not-allowed; opacity: 0.55; }
+.pixel-project-status { width: 7px; height: 7px; background: #2eab62; box-shadow: 1px 1px 0 var(--pixel-shadow); }
+.pixel-project-menu {
+  border: 2px solid var(--pixel-ink);
+  background: var(--pixel-paper);
+  box-shadow: 4px 4px 0 var(--pixel-shadow);
+}
+.pixel-project-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  color: var(--pixel-ink);
+  text-align: left;
+  font-size: 12px;
+}
+.pixel-project-menu-item:hover, .pixel-project-menu-item.is-active { background: color-mix(in srgb, var(--pixel-accent) 16%, var(--pixel-paper)); }
+.pixel-project-menu-item.is-active { box-shadow: inset 3px 0 0 var(--pixel-accent); }
+.pixel-project-menu-item--open { color: var(--pixel-accent); font-weight: 700; }
 .pixel-mode-card { border: 2px solid color-mix(in srgb, var(--pixel-ink) 40%, transparent); background: var(--pixel-paper); }
 .pixel-mode-card.is-selected { border-color: var(--pixel-accent); box-shadow: 3px 3px 0 var(--pixel-shadow); }
 .pixel-tool-card { border: 2px solid var(--pixel-ink); background: color-mix(in srgb, var(--pixel-paper) 88%, #b8e3ff); box-shadow: 3px 3px 0 var(--pixel-shadow); }
@@ -358,7 +413,7 @@ button, input, select, textarea { font: inherit; }
   resize: none;
   line-height: 1.55;
   scrollbar-width: thin;
-  transition: height 140ms cubic-bezier(0.2, 0.72, 0.2, 1);
+  transition: none;
 }
 .pixel-composer-resize-handle {
   position: absolute;
@@ -441,7 +496,7 @@ button, input, select, textarea { font: inherit; }
   box-shadow: 2px 2px 0 var(--pixel-shadow);
 }
 
-/* 全局像素动效（#40）：steps 缓动，短促干脆；reduced-motion 全部关闭 */
+/* 全局像素动效：保留像素位移尺度，但只动画合成属性以保持 60fps。 */
 @keyframes pixel-pop-in {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
@@ -454,18 +509,28 @@ button, input, select, textarea { font: inherit; }
   from { opacity: 0; }
   to { opacity: 1; }
 }
+@keyframes pixel-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
 @keyframes pixel-dialog-in {
   from { opacity: 0; transform: translateY(10px) scale(0.98); }
   to { opacity: 1; transform: none; }
 }
+@keyframes pixel-dialog-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(6px) scale(0.985); }
+}
 
-.anim-msg { animation: pixel-pop-in 160ms steps(3, end) both; }
-.anim-panel { animation: pixel-slide-down 140ms steps(3, end) both; }
-.anim-view { animation: pixel-fade 180ms steps(4, end) both; }
-.pixel-dialog { animation: pixel-dialog-in 170ms steps(3, end) both; }
-.pixel-dialog-backdrop { animation: pixel-fade 140ms linear both; }
+.anim-msg { will-change: transform, opacity; animation: pixel-pop-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.anim-panel { will-change: transform, opacity; animation: pixel-slide-down 160ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.anim-view { will-change: opacity; animation: pixel-fade 160ms ease-out both; }
+.pixel-dialog { will-change: transform, opacity; animation: pixel-dialog-in 190ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.pixel-dialog-backdrop { will-change: opacity; animation: pixel-fade 150ms ease-out both; }
+.pixel-dialog-backdrop.is-closing { animation: pixel-fade-out 150ms ease-in both; }
+.pixel-dialog-backdrop.is-closing .pixel-dialog { animation: pixel-dialog-out 150ms ease-in both; }
 
 @media (prefers-reduced-motion: reduce) {
-  .anim-msg, .anim-panel, .anim-view, .pixel-dialog, .pixel-dialog-backdrop { animation: none; }
+  .anim-msg, .anim-panel, .anim-view, .pixel-dialog, .pixel-dialog-backdrop, .pixel-dialog-backdrop.is-closing, .pixel-dialog-backdrop.is-closing .pixel-dialog { animation: none; }
   .pixel-composer, .pixel-composer textarea, .pixel-composer-tool, .pixel-send { transition: none; }
 }

@@ -18,7 +18,7 @@ import { toAgent, type AgentRow } from "./agents";
 import type { SecretStore } from "./secrets";
 import { normalizeTokenUsage, type UsageCollector } from "./services/usage-collector";
 
-type RoomRow = { id: string; name: string; archived: number; created_at: string; updated_at: string };
+type RoomRow = { id: string; name: string; workspace_id: string | null; archived: number; created_at: string; updated_at: string };
 type MessageRow = {
   id: string;
   room_id: string;
@@ -163,6 +163,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
       rows.map((r) => ({
         id: r.id,
         name: r.name,
+        workspaceId: r.workspace_id,
         agentIds: roomAgents(r.id).map((a) => a.id),
         archived: r.archived === 1,
         createdAt: r.created_at,
@@ -181,6 +182,16 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
       room.id,
     ]);
     return c.json({ ok: true });
+  });
+
+  app.put("/:id", async (c) => {
+    const room = roomById(c.req.param("id"));
+    if (!room) return c.json({ error: "房间不存在" }, 404);
+    const body = await c.req.json().catch(() => null) as { name?: unknown } | null;
+    if (typeof body?.name !== "string" || !body.name.trim()) return c.json({ error: "room_name_required" }, 400);
+    const name = body.name.trim().slice(0, 120);
+    db.query("UPDATE rooms SET name = ?, updated_at = ? WHERE id = ?").run(name, new Date().toISOString(), room.id);
+    return c.json({ ...room, name, workspaceId: room.workspace_id, archived: room.archived === 1, createdAt: room.created_at, updatedAt: new Date().toISOString() });
   });
 
   app.post("/:id/agents", async (c) => {
@@ -202,7 +213,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
   });
 
   app.post("/", async (c) => {
-    const b = await c.req.json<{ name: string; agentIds: string[] }>();
+    const b = await c.req.json<{ name: string; agentIds: string[]; workspaceId?: string | null }>();
     if (!b.name?.trim()) return c.json({ error: "房间名不能为空" }, 400);
     if (!Array.isArray(b.agentIds) || b.agentIds.length === 0) {
       return c.json({ error: "至少邀请一个 Agent" }, 400);
@@ -212,14 +223,17 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
         return c.json({ error: "存在无效的 Agent" }, 400);
       }
     }
+    if (b.workspaceId !== undefined && b.workspaceId !== null && !db.query("SELECT id FROM workspaces WHERE id = ?").get(b.workspaceId)) {
+      return c.json({ error: "workspace_not_found" }, 400);
+    }
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    db.run("INSERT INTO rooms (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)", [id, b.name.trim(), now, now]);
+    db.run("INSERT INTO rooms (id, name, workspace_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", [id, b.name.trim(), b.workspaceId ?? null, now, now]);
     b.agentIds.forEach((aid, i) =>
       db.run("INSERT INTO room_agents (room_id, agent_id, position) VALUES (?, ?, ?)", [id, aid, i]),
     );
     return c.json(
-      { id, name: b.name.trim(), agentIds: b.agentIds, archived: false, createdAt: now, updatedAt: now },
+      { id, name: b.name.trim(), workspaceId: b.workspaceId ?? null, agentIds: b.agentIds, archived: false, createdAt: now, updatedAt: now },
       201,
     );
   });

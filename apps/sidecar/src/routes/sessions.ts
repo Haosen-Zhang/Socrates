@@ -49,6 +49,46 @@ export function sessionRoutes(sessions: SessionStore, events: EventStore, usage?
       return c.json({ error: message }, message === "session_not_found" ? 404 : 409);
     }
   });
+  app.put("/:id", async (c) => {
+    const body = await c.req.json().catch(() => null) as { title?: unknown } | null;
+    if (typeof body?.title !== "string") return c.json({ error: "session_title_required" }, 400);
+    try {
+      return c.json(sessions.rename(c.req.param("id"), body.title));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "session_rename_failed";
+      return c.json({ error: message }, message === "session_not_found" ? 404 : 400);
+    }
+  });
+  app.put("/:id/archive", async (c) => {
+    const body = await c.req.json().catch(() => null) as { archived?: unknown } | null;
+    if (typeof body?.archived !== "boolean") return c.json({ error: "invalid_session_archive" }, 400);
+    try {
+      return c.json(sessions.archive(c.req.param("id"), body.archived));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "session_archive_failed";
+      return c.json({ error: message }, message === "session_not_found" ? 404 : 409);
+    }
+  });
+  app.delete("/:id", (c) => {
+    try {
+      sessions.remove(c.req.param("id"));
+      return c.json({ ok: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "session_delete_failed";
+      return c.json({ error: message }, message === "session_not_found" ? 404 : 409);
+    }
+  });
+  app.post("/:id/rewind", async (c) => {
+    const body = await c.req.json().catch(() => null) as { messageId?: unknown } | null;
+    if (typeof body?.messageId !== "string") return c.json({ error: "session_message_not_found" }, 400);
+    try {
+      sessions.rewind(c.req.param("id"), body.messageId);
+      return c.json({ ok: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "session_rewind_failed";
+      return c.json({ error: message }, message === "session_not_found" || message === "session_message_not_found" ? 404 : 409);
+    }
+  });
   app.get("/:id/events", (c) => {
     const after = Number.parseInt(c.req.query("after") ?? "0", 10);
     if (!Number.isSafeInteger(after) || after < 0) return c.json({ error: "invalid_event_cursor" }, 400);
