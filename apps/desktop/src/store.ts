@@ -152,6 +152,9 @@ export type Store = {
   currentMultiTask: MultiTaskView | null;
   multiRunning: boolean;
   multiError: string | null;
+  /** 当前正在发言的 turn 的实时文本（SSE delta，rAF 批处理）；turn 完成后清空并重载 */
+  multiStreamAgentId: string | null;
+  multiStreamText: string;
   loadMultiTasks: () => Promise<void>;
   loadMultiTask: (id: string) => Promise<void>;
   sendMultiTask: (input: { prompt: string; speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string; effortByAgent?: Record<string, ReasoningEffort>; fallbackOrderByAgent?: Record<string, string[]> }) => Promise<void>;
@@ -400,6 +403,8 @@ export const useStore = create<Store>((set, get) => {
     currentMultiTask: null,
     multiRunning: false,
     multiError: null,
+    multiStreamAgentId: null,
+    multiStreamText: "",
     mcpServers: [],
     mcpTools: {},
     updateConfig: async (patch) => {
@@ -727,7 +732,24 @@ export const useStore = create<Store>((set, get) => {
     sendMultiTask: async (input) => {
       const sessionId = get().currentSessionId;
       if (!sessionId || get().multiRunning) return;
-      set({ multiRunning: true, multiError: null, currentMultiTask: null });
+      set({ multiRunning: true, multiError: null, currentMultiTask: null, multiStreamAgentId: null, multiStreamText: "" });
+      // 讨论/综合阶段 turn 级 delta 是主实时路径；turn 边界事件驱动一次精准重载
+      let pendingText = "";
+      let rafHandle: number | null = null;
+      const flushText = () => {
+        rafHandle = null;
+        if (!pendingText) return;
+        const chunk = pendingText;
+        pendingText = "";
+        set((state) => ({ multiStreamText: state.multiStreamText + chunk }));
+      };
+      const scheduleFlush = () => {
+        if (rafHandle === null) rafHandle = requestAnimationFrame(flushText);
+      };
+      const flushNow = () => {
+        if (rafHandle !== null) { cancelAnimationFrame(rafHandle); rafHandle = null; }
+        flushText();
+      };
       try {
         const response = await sidecarFetch(hs(), `/multi/sessions/${sessionId}/tasks`, { method: "POST", body: JSON.stringify({ prompt: input.prompt, config: input }) });
         if (!response.ok || !response.body) await requireOk(response);
@@ -744,15 +766,35 @@ export const useStore = create<Store>((set, get) => {
           for (const block of blocks) {
             const data = block.split("\n").find((line) => line.startsWith("data:"))?.slice(5).trim();
             if (!data) continue;
-            const event = JSON.parse(data) as { type: string; taskId: string; message?: string };
+            const event = JSON.parse(data) as { type: string; taskId: string; agentId?: string; text?: string; message?: string };
             taskId = event.taskId;
-            if (event.type === "task_failed") set({ multiError: event.message ?? "multi_task_failed" });
+            if (event.type === "delta" && typeof event.text === "string") {
+              if (event.agentId && event.agentId !== get().multiStreamAgentId) {
+                flushNow();
+                set({ multiStreamAgentId: event.agentId, multiStreamText: "" });
+              }
+              pendingText += event.text;
+              scheduleFlush();
+            } else if (event.type === "turn_started") {
+              flushNow();
+              set({ multiStreamAgentId: event.agentId ?? null, multiStreamText: "" });
+            } else if (event.type === "turn_completed") {
+              flushNow();
+              set({ multiStreamAgentId: null, multiStreamText: "" });
+              await get().loadMultiTask(event.taskId); // 内容已落库，精准重载
+            } else if (event.type === "task_state") {
+              await get().loadMultiTask(event.taskId);
+            } else if (event.type === "task_failed" || event.type === "task_cancelled") {
+              flushNow();
+              set({ multiStreamAgentId: null, multiStreamText: "" });
+              if (event.type === "task_failed") set({ multiError: event.message ?? "multi_task_failed" });
+            }
           }
         }
         await get().loadMultiTasks();
         if (taskId) await get().loadMultiTask(taskId);
       } catch (error) { set({ multiError: error instanceof Error ? error.message : String(error) }); }
-      finally { set({ multiRunning: false }); }
+      finally { flushNow(); set({ multiRunning: false, multiStreamAgentId: null, multiStreamText: "" }); }
     },
     decideMultiPlan: async (input) => {
       const task = get().currentMultiTask;

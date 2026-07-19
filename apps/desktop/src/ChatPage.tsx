@@ -783,9 +783,9 @@ function MultiPlanCard({ plan }: { plan: MultiPlan }) {
 
 function MultiAgentSession() {
   const {
-    sessions, currentSessionId, sessionMessages, currentMultiTask, multiRunning, multiError,
+    sessions, currentSessionId, sessionMessages, currentMultiTask, multiRunning, multiError, multiStreamAgentId, multiStreamText,
     sendMultiTask, loadMultiTask, decideMultiApproval, cancelMultiTask, pauseMultiTask, resumeMultiTask, retryMultiTask, rewindSessionTo,
-  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "currentMultiTask", "multiRunning", "multiError", "sendMultiTask", "loadMultiTask", "decideMultiApproval", "cancelMultiTask", "pauseMultiTask", "resumeMultiTask", "retryMultiTask", "rewindSessionTo");
+  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "currentMultiTask", "multiRunning", "multiError", "multiStreamAgentId", "multiStreamText", "sendMultiTask", "loadMultiTask", "decideMultiApproval", "cancelMultiTask", "pauseMultiTask", "resumeMultiTask", "retryMultiTask", "rewindSessionTo");
   const t = useT();
   const session = sessions.find((item) => item.id === currentSessionId);
   const participants: Array<{ id: string; nickname?: unknown; avatar?: unknown; modelId?: unknown; [key: string]: unknown }> = session?.agents.map((item) => ({ id: item.agentId, ...item.snapshot })) ?? [];
@@ -802,9 +802,11 @@ function MultiAgentSession() {
     setOrder(ids); setSynthesizerId(ids[ids.length - 1] ?? ""); setExecutionAgentId(ids[0] ?? "");
     setEffortByAgent(Object.fromEntries(participants.flatMap((item) => typeof item.reasoningEffort === "string" ? [[item.id, item.reasoningEffort as ReasoningEffort]] : [])));
   }, [currentSessionId]);
+  // 主实时路径是 SSE delta / turn 事件（见 store.sendMultiTask）；此定时器仅为无 SSE 流阶段
+  // （如 executing）的兜底对账，2s 一次，不再是 750ms 的主轮询。
   useEffect(() => {
     if (!currentMultiTask || ["awaiting_plan_approval", "failed", "cancelled", "completed", "paused"].includes(currentMultiTask.state)) return;
-    const timer = window.setInterval(() => void loadMultiTask(currentMultiTask.id), 750);
+    const timer = window.setInterval(() => void loadMultiTask(currentMultiTask.id), 2000);
     return () => window.clearInterval(timer);
   }, [currentMultiTask?.id, currentMultiTask?.state, loadMultiTask]);
   const move = (id: string, delta: number) => setOrder((current) => moveAgentId(current, id, delta));
@@ -826,7 +828,15 @@ function MultiAgentSession() {
           <div className={`md-body pixel-card p-3 text-sm ${message.role === "user" ? "bg-violet-50" : "bg-white"}`}><Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown></div>
         </div><MsgActions m={message} align={message.role === "user" ? "right" : "left"} busy={multiRunning} onRewind={(messageId) => void rewindSessionTo(messageId)} /></div>;
       })}
-      {currentMultiTask?.turns.filter((turn) => turn.status === "running").map((turn) => <div key={turn.id} className="pixel-card animate-pulse p-3 text-sm">{String(turn.snapshot.nickname ?? turn.agentId)} {t("multi_thinking")}</div>)}
+      {currentMultiTask?.turns.filter((turn) => turn.status === "running").map((turn) => {
+        const live = multiStreamAgentId === turn.agentId ? multiStreamText : "";
+        return (
+          <div key={turn.id} className={`pixel-card p-3 text-sm ${live ? "" : "animate-pulse"}`}>
+            <div className="mb-1 text-xs text-neutral-500">{String(turn.snapshot.nickname ?? turn.agentId)} {live ? "" : t("multi_thinking")}</div>
+            {live && <div className="md-body whitespace-pre-wrap">{live}<span className="animate-pulse">▋</span></div>}
+          </div>
+        );
+      })}
       {currentMultiTask && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{participants.map((agent) => {
         const usage = currentMultiTask.usageSummaries.find((item) => item.agentId === agent.id);
         const fmt = (value: number | null) => value === null ? t("usage_unavailable") : value.toLocaleString();
