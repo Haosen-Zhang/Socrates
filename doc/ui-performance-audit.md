@@ -45,8 +45,27 @@
 | R5 | 三个列表窗口化：默认渲染最近 80 条 + 顶部「显示更早」展开（无新依赖，不动滚动行为） | 窗口化纯函数单测（边界/展开/完整性） |
 | R6 | confirm 复位 timer 抽成 `useConfirmingFlag` hook，卸载时清理 | hook 逻辑单测 |
 
-## 4. 修复后复验（完成后填写）
+## 4. 修复后复验
 
-- [ ] `bun test` 全绿（含新增订阅边界/管线/窗口化测试）
-- [ ] `tsc` / lint / build 绿
-- [ ] 手动 profiling（§1 步骤）由用户在真机执行确认
+已落地（分支 `perf/p0-ui-stabilization`，提交见下）：
+
+| 根因 | 状态 | 提交 / 证据 |
+| --- | --- | --- |
+| R1 订阅边界 | ✅ 完成 | `perf(P0.1)`：24 处 `useStore()` → `useStorePick(...keys)`；`selectors.test.ts`（5 例）证明 pick 只访问声明键、无关字段变化时浅稳定、受保护组件与高频字段零交集 |
+| R2 单 agent 逐事件 setState | ✅ 完成 | `perf(P0.2)`：text_delta rAF 批处理进 `agentStreamText`，控制事件先 flush 再处理；`agentStream.test.ts`（3 例）；UI 直接读累积文本 |
+| R3 多 agent 750ms 全量轮询 | ✅ 完成 | `perf(P0.3)`：SSE delta/turn 成为主实时路径（rAF 批处理 + turn 边界精准重载），750ms→2s 兜底对账；running turn 卡片显示实时文本 |
+| R4 流式 Markdown 全量重解析 + 无 memo | ✅ 完成 | `perf(P0.4)`：`StreamingBubble` Markdown 源经 `useThrottledValue`（250ms，保证最终值）；`Bubble` 改 `React.memo` 并把 `busy` 提为 prop（流式期间已完成气泡不再重渲染）；`useThrottledValue.test.ts`（2 例） |
+| R5 列表虚拟化 | ⏭ 未做（下一步） | 风险最高（滚动/读屏），按 non_negotiable「先基线再改」原则单列后续里程碑；当前长会话 DOM 仍无上界 |
+| R6 一次性 timer 卸载清理 | ⏭ 未做（低优先） | confirm 复位计时器；影响轻微，随 R5 一起处理 |
+
+门禁（修复后）：`bun test` **229 pass / 0 fail**（73 文件，+10 新测试）；`tsc` exit=0；biome lint 0 问题；desktop build ✓。
+
+### 待用户真机确认（§1 手动步骤）
+- [ ] 流式期间仅消息区 commit；Settings/Providers/MCP 零 commit（R1）
+- [ ] 单/多 agent 流式：单帧 ≤1 次 store flush（R2/R3）
+- [ ] 多 agent 讨论文字实时出现，不再 750ms 一跳（R3）
+- [ ] 长消息流式期间无主线程长任务（R4）
+
+### 后续（未在本轮 P0 内）
+- R5 列表窗口化 / 虚拟化（长会话 DOM 上界）——建议下一里程碑，先加渲染计数/滚动回归测试再实现
+- R6 confirm timer 卸载清理
