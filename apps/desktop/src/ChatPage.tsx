@@ -634,9 +634,9 @@ function SimpleComposer() {
 
 function SingleAgentSession() {
   const {
-    sessions, currentSessionId, sessionMessages, agentEvents, pendingApprovals,
+    sessions, currentSessionId, sessionMessages, agentEvents, agentStreamText, pendingApprovals,
     agentRunning, agentError, sendAgentPrompt, decideAgentApproval, cancelAgentRun, rewindSessionTo, workspacePathResults, searchWorkspacePaths, addWorkspaceRef, usageSummaries,
-  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "agentEvents", "pendingApprovals", "agentRunning", "agentError", "sendAgentPrompt", "decideAgentApproval", "cancelAgentRun", "rewindSessionTo", "workspacePathResults", "searchWorkspacePaths", "addWorkspaceRef", "usageSummaries");
+  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "agentEvents", "agentStreamText", "pendingApprovals", "agentRunning", "agentError", "sendAgentPrompt", "decideAgentApproval", "cancelAgentRun", "rewindSessionTo", "workspacePathResults", "searchWorkspacePaths", "addWorkspaceRef", "usageSummaries");
   const t = useT();
   const [draft, setDraft] = useState("");
   const [sandbox, setSandbox] = useState<"read-only" | "workspace-write">("read-only");
@@ -644,7 +644,7 @@ function SingleAgentSession() {
   const agentSnapshot = session?.agents[0]?.snapshot;
   const agentUsage = usageSummaries.find((item) => item.agentId === session?.agents[0]?.agentId);
   const usageText = (value: number | null | undefined) => value == null ? t("usage_unavailable") : value.toLocaleString();
-  const streamingText = agentEvents.filter((event) => event.type === "text_delta").map((event) => event.type === "text_delta" ? event.text : "").join("");
+  const streamingText = agentStreamText;
   const submit = async () => {
     const prompt = draft.trim();
     if (!prompt || agentRunning) return;

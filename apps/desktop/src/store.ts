@@ -129,6 +129,8 @@ export type Store = {
   currentSessionId: string | null;
   sessionMessages: SessionMessage[];
   agentEvents: RuntimeEvent[];
+  /** 累积的流式文本；text_delta 经 rAF 批处理写入，UI 直接读取，不再每帧 filter/join */
+  agentStreamText: string;
   pendingApprovals: PendingApproval[];
   agentRunning: boolean;
   agentError: string | null;
@@ -385,7 +387,7 @@ export const useStore = create<Store>((set, get) => {
     sessions: [],
     currentSessionId: null,
     sessionMessages: [],
-    agentEvents: [],
+    agentEvents: [], agentStreamText: "",
     pendingApprovals: [],
     usageSummaries: [],
     agentRunning: false,
@@ -553,14 +555,14 @@ export const useStore = create<Store>((set, get) => {
       }));
       await get().loadSessions();
       if (archived && get().currentSessionId === id) {
-        set({ currentSessionId: null, sessionMessages: [], agentEvents: [], pendingApprovals: [] });
+        set({ currentSessionId: null, sessionMessages: [], agentEvents: [], agentStreamText: "", pendingApprovals: [] });
       }
     },
     removeSession: async (id) => {
       await requireOk(await sidecarFetch(hs(), `/sessions/${id}`, { method: "DELETE" }));
       await get().loadSessions();
       if (get().currentSessionId === id) {
-        set({ currentSessionId: null, sessionMessages: [], agentEvents: [], pendingApprovals: [], multiTasks: [], currentMultiTask: null });
+        set({ currentSessionId: null, sessionMessages: [], agentEvents: [], agentStreamText: "", pendingApprovals: [], multiTasks: [], currentMultiTask: null });
       }
     },
     rewindSessionTo: async (messageId) => {
@@ -574,7 +576,7 @@ export const useStore = create<Store>((set, get) => {
     },
     selectAgentSession: async (id) => {
       const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${id}/messages`));
-      set({ currentSessionId: id, currentRoomId: null, messages: [], sessionMessages, agentEvents: [], pendingApprovals: [], agentError: null, multiTasks: [], currentMultiTask: null, multiError: null, usageSummaries: [] });
+      set({ currentSessionId: id, currentRoomId: null, messages: [], sessionMessages, agentEvents: [], agentStreamText: "", pendingApprovals: [], agentError: null, multiTasks: [], currentMultiTask: null, multiError: null, usageSummaries: [] });
       await get().loadCurrentUsage();
       if (get().sessions.find((session) => session.id === id)?.mode === "multi_agent") await get().loadMultiTasks();
     },
@@ -594,7 +596,7 @@ export const useStore = create<Store>((set, get) => {
       set((state) => ({
         agentRunning: true,
         activeAgentRunId: null,
-        agentEvents: [],
+        agentEvents: [], agentStreamText: "",
         pendingApprovals: [],
         agentError: null,
         sessionMessages: [...state.sessionMessages, optimisticMessage],
@@ -615,33 +617,66 @@ export const useStore = create<Store>((set, get) => {
         const reader = response.body!.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const blocks = buffer.split("\n\n");
-          buffer = blocks.pop() ?? "";
-          for (const block of blocks) {
-            const data = block.split("\n").find((line) => line.startsWith("data:"))?.slice(5).trim();
-            if (!data) continue;
-            const event = JSON.parse(data) as RuntimeEvent | { status: string; error?: string };
-            if ("type" in event) {
-              set((state) => ({ agentEvents: [...state.agentEvents, event] }));
-              if (event.type === "extension" && event.name === "run_started" && event.payload && typeof event.payload === "object" && "runId" in event.payload) {
-                set({ activeAgentRunId: String((event.payload as { runId: unknown }).runId) });
+        // 高频 text_delta 累积进缓冲，每帧 flush 一次；控制事件在处理前先 flush，保证顺序
+        let pendingText = "";
+        let rafHandle: number | null = null;
+        const flushText = () => {
+          rafHandle = null;
+          if (!pendingText) return;
+          const chunk = pendingText;
+          pendingText = "";
+          set((state) => ({ agentStreamText: state.agentStreamText + chunk }));
+        };
+        const scheduleFlush = () => {
+          if (rafHandle === null) rafHandle = requestAnimationFrame(flushText);
+        };
+        const flushNow = () => {
+          if (rafHandle !== null) {
+            cancelAnimationFrame(rafHandle);
+            rafHandle = null;
+          }
+          flushText();
+        };
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const blocks = buffer.split("\n\n");
+            buffer = blocks.pop() ?? "";
+            for (const block of blocks) {
+              const data = block.split("\n").find((line) => line.startsWith("data:"))?.slice(5).trim();
+              if (!data) continue;
+              const event = JSON.parse(data) as RuntimeEvent | { status: string; error?: string };
+              if ("type" in event) {
+                if (event.type === "text_delta") {
+                  pendingText += event.text;
+                  scheduleFlush();
+                  continue;
+                }
+                // 控制事件：先落定文本再入事件数组，保证呈现顺序
+                flushNow();
+                set((state) => ({ agentEvents: [...state.agentEvents, event] }));
+                if (event.type === "extension" && event.name === "run_started" && event.payload && typeof event.payload === "object" && "runId" in event.payload) {
+                  set({ activeAgentRunId: String((event.payload as { runId: unknown }).runId) });
+                }
+                if (event.type === "approval_required") {
+                  const pendingApprovals = await requireOk<PendingApproval[]>(await sidecarFetch(hs(), "/agent/approvals"));
+                  set({ pendingApprovals });
+                }
+              } else if (event.status === "failed") {
+                flushNow();
+                runError = event.error ?? "agent_run_failed";
+                set({ agentError: runError });
+              } else if (event.status === "cancelled") {
+                flushNow();
+                runError = tr(get().lang, "task_cancelled_notice");
+                set({ agentError: runError });
               }
-              if (event.type === "approval_required") {
-                const pendingApprovals = await requireOk<PendingApproval[]>(await sidecarFetch(hs(), "/agent/approvals"));
-                set({ pendingApprovals });
-              }
-            } else if (event.status === "failed") {
-              runError = event.error ?? "agent_run_failed";
-              set({ agentError: runError });
-            } else if (event.status === "cancelled") {
-              runError = tr(get().lang, "task_cancelled_notice");
-              set({ agentError: runError });
             }
           }
+        } finally {
+          flushNow(); // 收尾保证最后一段文本不丢
         }
         if (!runError) set({ draftAttachments: [], draftWorkspaceRefs: [], workspacePathResults: [] });
       } catch (error) {
