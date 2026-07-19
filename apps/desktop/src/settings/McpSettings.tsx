@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import type { McpScope, McpServerInput, McpTransport } from "@socrates/core";
 import PixelIcon from "../PixelIcon";
-import { useStore, useT } from "../store";
+import { useT } from "../store";
+import { MCP_SETTINGS_KEYS, useStorePick } from "../selectors";
 import { parseSecretLines } from "./mcpForm";
 
 const stateClass: Record<string, string> = {
@@ -19,7 +20,7 @@ export default function McpSettings() {
   const {
     mcpServers, mcpTools, activeWorkspace, loadMcpServers, saveMcpServer, setMcpEnabled,
     testMcpServer, removeMcpServer, loadMcpTools, setMcpToolPolicy,
-  } = useStore();
+  } = useStorePick(...MCP_SETTINGS_KEYS);
   const t = useT();
   const [editingId, setEditingId] = useState<string | undefined>();
   const [name, setName] = useState("");

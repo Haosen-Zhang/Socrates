@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { DEFAULT_CONFIG, type AppConfig, type ProxyConfig } from "@socrates/core";
-import { useStore, useT } from "./store";
+import { useT } from "./store";
+import { SETTINGS_CONFIG_KEYS, SETTINGS_GENERAL_KEYS, useStorePick } from "./selectors";
 import { LANGS } from "./i18n";
 import PixelIcon from "./PixelIcon";
 import ProvidersPage from "./ProvidersPage";
@@ -73,7 +74,7 @@ function SectionShell({ title, desc, children }: { title: string; desc: string; 
 }
 
 function GeneralSection() {
-  const { config, lang, setLang, updateConfig } = useStore();
+  const { config, lang, setLang, updateConfig } = useStorePick(...SETTINGS_GENERAL_KEYS);
   const t = useT();
   return (
     <SectionShell title={t("nav_general")} desc={t("general_desc")}>
@@ -124,7 +125,7 @@ function GeneralSection() {
 }
 
 function NetworkSection() {
-  const { config, updateConfig } = useStore();
+  const { config, updateConfig } = useStorePick(...SETTINGS_CONFIG_KEYS);
   const t = useT();
   // 网络字段多，采用暂存 + 「保存」显式提交，而非逐字段即时写盘
   const [draft, setDraft] = useState<ProxyConfig>(config?.proxy ?? DEFAULT_PROXY);
@@ -211,7 +212,7 @@ function NetworkSection() {
 }
 
 function AppearanceSection() {
-  const { config, updateConfig } = useStore();
+  const { config, updateConfig } = useStorePick(...SETTINGS_CONFIG_KEYS);
   const t = useT();
   const appearance: AppConfig["appearance"] = config?.appearance ?? DEFAULT_CONFIG.appearance;
   // 拖动时只更新数字预览，松手（pointerup/keyup）才应用并落盘——避免整个界面跟着滑块抖动

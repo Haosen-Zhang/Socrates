@@ -5,7 +5,8 @@ import { agentLabel, type Agent, type ConversationMode, type ReasoningEffort, ty
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
 import { toggleRoomAgentSelection } from "./roomSelection";
-import { useStore, useT, type MultiPlan, type StreamingTurn } from "./store";
+import { useT, type MultiPlan, type StreamingTurn } from "./store";
+import { useStorePick } from "./selectors";
 import { sfx } from "./fx";
 import { shouldSubmitComposerEnter } from "./composerIme";
 import WorkspaceChip from "./workspace/WorkspaceChip";
@@ -82,7 +83,7 @@ function MsgActions({
   busy?: boolean;
   onRewind: (messageId: string) => void;
 }) {
-  const { lang } = useStore();
+  const { lang } = useStorePick("lang");
   const t = useT();
   const [copied, setCopied] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -131,7 +132,7 @@ function MsgActions({
 }
 
 function Bubble({ m }: { m: StoredMessage }) {
-  const { streaming, activeTaskId, rewindTo } = useStore();
+  const { streaming, activeTaskId, rewindTo } = useStorePick("streaming", "activeTaskId", "rewindTo");
   const busy = !!streaming || !!activeTaskId;
   if (m.role === "user") {
     return (
@@ -202,7 +203,7 @@ const DATE_LOCALE: Record<string, string> = { "zh-CN": "zh-CN", "zh-TW": "zh-TW"
 
 /** 历史任务面板：时间、模式、状态、token 合计；点击定位到时间线中的回放位置 */
 function TaskHistoryPanel({ onJump }: { onJump: (taskId: string) => void }) {
-  const { tasks, lang } = useStore();
+  const { tasks, lang } = useStorePick("tasks", "lang");
   const t = useT();
   if (tasks.length === 0) {
     return <p className="border-b border-neutral-200 bg-white px-4 py-2 text-xs text-neutral-500">{t("no_tasks")}</p>;
@@ -244,7 +245,7 @@ function TaskHistoryPanel({ onJump }: { onJump: (taskId: string) => void }) {
 
 /** 运行中任务的控制条：取消；turn 失败时给出 重试/跳过/终止 三选 */
 function TaskControlBar() {
-  const { activeTaskId, failedTurn, streaming, cancelTask, decideTurn } = useStore();
+  const { activeTaskId, failedTurn, streaming, cancelTask, decideTurn } = useStorePick("activeTaskId", "failedTurn", "streaming", "cancelTask", "decideTurn");
   const t = useT();
   if (!activeTaskId) return null;
   if (failedTurn) {
@@ -353,7 +354,7 @@ function ComposerTextarea({
 }
 
 function TaskComposer({ agents }: { agents: Agent[] }) {
-  const { streaming, roomSending, activeTaskId, sendTask } = useStore();
+  const { streaming, roomSending, activeTaskId, sendTask } = useStorePick("streaming", "roomSending", "activeTaskId", "sendTask");
   const t = useT();
   const busy = !!streaming || roomSending || !!activeTaskId;
   const [prompt, setPrompt] = useState("");
@@ -591,7 +592,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
 }
 
 function SimpleComposer() {
-  const { streaming, roomSending, sendMessage } = useStore();
+  const { streaming, roomSending, sendMessage } = useStorePick("streaming", "roomSending", "sendMessage");
   const t = useT();
   const [draft, setDraft] = useState("");
   const doSubmit = async () => {
@@ -635,7 +636,7 @@ function SingleAgentSession() {
   const {
     sessions, currentSessionId, sessionMessages, agentEvents, pendingApprovals,
     agentRunning, agentError, sendAgentPrompt, decideAgentApproval, cancelAgentRun, rewindSessionTo, workspacePathResults, searchWorkspacePaths, addWorkspaceRef, usageSummaries,
-  } = useStore();
+  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "agentEvents", "pendingApprovals", "agentRunning", "agentError", "sendAgentPrompt", "decideAgentApproval", "cancelAgentRun", "rewindSessionTo", "workspacePathResults", "searchWorkspacePaths", "addWorkspaceRef", "usageSummaries");
   const t = useT();
   const [draft, setDraft] = useState("");
   const [sandbox, setSandbox] = useState<"read-only" | "workspace-write">("read-only");
@@ -740,7 +741,7 @@ function SingleAgentSession() {
 }
 
 function MultiPlanCard({ plan }: { plan: MultiPlan }) {
-  const { currentMultiTask, decideMultiPlan } = useStore();
+  const { currentMultiTask, decideMultiPlan } = useStorePick("currentMultiTask", "decideMultiPlan");
   const t = useT();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(() => JSON.stringify(plan.content, null, 2));
@@ -784,7 +785,7 @@ function MultiAgentSession() {
   const {
     sessions, currentSessionId, sessionMessages, currentMultiTask, multiRunning, multiError,
     sendMultiTask, loadMultiTask, decideMultiApproval, cancelMultiTask, pauseMultiTask, resumeMultiTask, retryMultiTask, rewindSessionTo,
-  } = useStore();
+  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "currentMultiTask", "multiRunning", "multiError", "sendMultiTask", "loadMultiTask", "decideMultiApproval", "cancelMultiTask", "pauseMultiTask", "resumeMultiTask", "retryMultiTask", "rewindSessionTo");
   const t = useT();
   const session = sessions.find((item) => item.id === currentSessionId);
   const participants: Array<{ id: string; nickname?: unknown; avatar?: unknown; modelId?: unknown; [key: string]: unknown }> = session?.agents.map((item) => ({ id: item.agentId, ...item.snapshot })) ?? [];
@@ -852,7 +853,7 @@ function MultiAgentSession() {
 }
 
 function NewRoomDialog({ onClose }: { onClose: () => void }) {
-  const { agents, createRoom, createAgentSession, createMultiAgentSession, activeWorkspace } = useStore();
+  const { agents, createRoom, createAgentSession, createMultiAgentSession, activeWorkspace } = useStorePick("agents", "createRoom", "createAgentSession", "createMultiAgentSession", "activeWorkspace");
   const t = useT();
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
@@ -1029,7 +1030,7 @@ function SidebarEntityMenu({
   const {
     rooms, sessions, workspaces,
     archiveRoom, removeRoom, archiveSession, removeSession, archiveWorkspace, removeWorkspace,
-  } = useStore();
+  } = useStorePick("rooms", "sessions", "workspaces", "archiveRoom", "removeRoom", "archiveSession", "removeSession", "archiveWorkspace", "removeWorkspace");
   const t = useT();
   const [confirming, setConfirming] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -1122,7 +1123,7 @@ function SidebarEntityMenu({
 }
 
 function RenameDialog({ target, onClose }: { target: RenameTarget; onClose: () => void }) {
-  const { renameRoom, renameSession, renameWorkspace } = useStore();
+  const { renameRoom, renameSession, renameWorkspace } = useStorePick("renameRoom", "renameSession", "renameWorkspace");
   const t = useT();
   const dialog = useAnimatedDialogClose(onClose);
   const [value, setValue] = useState(target.value);
@@ -1164,7 +1165,7 @@ function RoomMembersDialog({
   memberIds: string[];
   onClose: () => void;
 }) {
-  const { agents, addRoomAgent } = useStore();
+  const { agents, addRoomAgent } = useStorePick("agents", "addRoomAgent");
   const t = useT();
   const dialog = useAnimatedDialogClose(onClose);
   const members = memberIds.map((id) => agents.find((agent) => agent.id === id)).filter((agent): agent is Agent => !!agent);
@@ -1226,7 +1227,7 @@ function RoomMembersDialog({
 
 export default function ChatPage() {
   const { rooms, agents, sessions, workspaces, activeWorkspace, currentRoomId, currentSessionId, messages, streaming, chatError, tasks, usageSummaries, selectRoom, selectAgentSession, setActiveWorkspace, clearChatError } =
-    useStore();
+    useStorePick("rooms", "agents", "sessions", "workspaces", "activeWorkspace", "currentRoomId", "currentSessionId", "messages", "streaming", "chatError", "tasks", "usageSummaries", "selectRoom", "selectAgentSession", "setActiveWorkspace", "clearChatError");
   const t = useT();
   const [creating, setCreating] = useState(false);
   const [showTasks, setShowTasks] = useState(false);

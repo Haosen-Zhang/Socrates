@@ -104,7 +104,7 @@ export type TaskForm = {
   debate?: DebateRoleForm;
 };
 
-type Store = {
+export type Store = {
   status: ConnStatus;
   handshake: Handshake | null;
   view: "chat" | "settings";

@@ -2,6 +2,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useState } from "react";
 import { useStore, useT } from "../store";
+import { ATTACHMENT_TRAY_KEYS, useStorePick } from "../selectors";
 import PixelIcon from "../PixelIcon";
 
 export function AttachmentImage({ id, alt, className = "h-12 w-12" }: { id: string; alt: string; className?: string }) {
@@ -26,7 +27,7 @@ export function AttachmentImage({ id, alt, className = "h-12 w-12" }: { id: stri
 }
 
 export default function AttachmentTray() {
-  const { activeWorkspace, workspaces, sessions, currentSessionId, draftAttachments, draftWorkspaceRefs, importWorkspaceAttachment, importClipboardAttachment, removeDraftAttachment, removeDraftWorkspaceRef } = useStore();
+  const { activeWorkspace, workspaces, sessions, currentSessionId, draftAttachments, draftWorkspaceRefs, importWorkspaceAttachment, importClipboardAttachment, removeDraftAttachment, removeDraftWorkspaceRef } = useStorePick(...ATTACHMENT_TRAY_KEYS);
   const boundId = sessions.find((session) => session.id === currentSessionId)?.workspaceId;
   const workspace = (boundId ? workspaces.find((item) => item.id === boundId) : null) ?? activeWorkspace;
   const [error, setError] = useState<string | null>(null);

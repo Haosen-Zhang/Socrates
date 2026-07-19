@@ -1,5 +1,6 @@
 import { useEffect } from "react";
-import { useStore, useT } from "./store";
+import { useT } from "./store";
+import { APP_KEYS, useStorePick } from "./selectors";
 import { setSfxEnabled, sfx } from "./fx";
 import GlobalFxLayer from "./fx/GlobalFxLayer";
 import { shouldPlayHoverFor } from "./fx/interactiveEntry";
@@ -14,7 +15,7 @@ const BADGE_CLS: Record<string, string> = {
 };
 
 function App() {
-  const { status, view, setView, config, connect } = useStore();
+  const { status, view, setView, config, connect } = useStorePick(...APP_KEYS);
   const t = useT();
   useEffect(() => {
     void connect();

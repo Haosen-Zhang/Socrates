@@ -11,7 +11,8 @@ import {
 } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import { validateAvatarUpload } from "./agentAvatarUpload";
-import { useStore, useT, type AgentForm } from "./store";
+import { useT, type AgentForm } from "./store";
+import { AGENTS_SECTION_KEYS, useStorePick } from "./selectors";
 import { sfx } from "./fx";
 
 function newForm(agents: Agent[]): AgentForm {
@@ -31,7 +32,7 @@ function newForm(agents: Agent[]): AgentForm {
 }
 
 export default function AgentsSection() {
-  const { agents, providers, modelLists, loadModels, saveAgent, removeAgent } = useStore();
+  const { agents, providers, modelLists, loadModels, saveAgent, removeAgent } = useStorePick(...AGENTS_SECTION_KEYS);
   const t = useT();
   const [form, setForm] = useState<AgentForm>(() => newForm(agents));
   const [editingId, setEditingId] = useState<string | null>(null);

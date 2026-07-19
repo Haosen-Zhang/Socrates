@@ -9,12 +9,15 @@ export const LANGS: Array<{ value: Lang; label: string }> = [
 
 const LANG_STORAGE_KEY = "socrates.lang";
 
+// localStorage 守卫：store 模块在 bun:test（无 DOM）下也可导入
 export function loadLang(): Lang {
+  if (typeof localStorage === "undefined") return "zh-CN";
   const v = localStorage.getItem(LANG_STORAGE_KEY);
   return v === "zh-TW" || v === "en" ? v : "zh-CN";
 }
 
 export function persistLang(lang: Lang): void {
+  if (typeof localStorage === "undefined") return;
   localStorage.setItem(LANG_STORAGE_KEY, lang);
 }
 
