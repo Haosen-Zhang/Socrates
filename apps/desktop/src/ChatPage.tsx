@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useThrottledValue } from "./useThrottledValue";
 import { agentLabel, type Agent, type ConversationMode, type ReasoningEffort, type SessionMessage, type StoredMessage, type TaskSummary } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
 import { toggleRoomAgentSelection } from "./roomSelection";
-import { useStore, useT, type MultiPlan, type StreamingTurn } from "./store";
+import { useT, type MultiPlan, type StreamingTurn } from "./store";
+import { useStorePick } from "./selectors";
 import { sfx } from "./fx";
 import { shouldSubmitComposerEnter } from "./composerIme";
 import WorkspaceChip from "./workspace/WorkspaceChip";
@@ -82,7 +84,7 @@ function MsgActions({
   busy?: boolean;
   onRewind: (messageId: string) => void;
 }) {
-  const { lang } = useStore();
+  const { lang } = useStorePick("lang");
   const t = useT();
   const [copied, setCopied] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -130,9 +132,8 @@ function MsgActions({
   );
 }
 
-function Bubble({ m }: { m: StoredMessage }) {
-  const { streaming, activeTaskId, rewindTo } = useStore();
-  const busy = !!streaming || !!activeTaskId;
+// memo：已完成气泡在流式期间不重渲染（busy 全程为 true 保持稳定，内容不变即跳过）
+const Bubble = memo(function Bubble({ m, busy, onRewind }: { m: StoredMessage; busy: boolean; onRewind: (id: string) => void }) {
   if (m.role === "user") {
     return (
       // 任务的用户消息作为回放跳转锚点
@@ -140,7 +141,7 @@ function Bubble({ m }: { m: StoredMessage }) {
         <div className="max-w-[70%] rounded-lg bg-neutral-900 px-3 py-2 text-sm whitespace-pre-wrap text-white">
           {m.content}
         </div>
-        <MsgActions m={m} align="right" busy={busy} onRewind={(messageId) => void rewindTo(messageId)} />
+        <MsgActions m={m} align="right" busy={busy} onRewind={onRewind} />
       </div>
     );
   }
@@ -156,11 +157,11 @@ function Bubble({ m }: { m: StoredMessage }) {
         >
           <Markdown remarkPlugins={[remarkGfm]}>{m.content}</Markdown>
         </div>
-        <MsgActions m={m} align="left" busy={busy} onRewind={(messageId) => void rewindTo(messageId)} />
+        <MsgActions m={m} align="left" busy={busy} onRewind={onRewind} />
       </div>
     </div>
   );
-}
+});
 
 function RoundDivider({ round }: { round: number }) {
   const t = useT();
@@ -174,6 +175,8 @@ function RoundDivider({ round }: { round: number }) {
 }
 
 function StreamingBubble({ s }: { s: StreamingTurn }) {
+  // 节流 Markdown 源：流式期间不对每帧增量全量重解析（最终值仍会落定）
+  const throttledText = useThrottledValue(s.text, 250);
   return (
     <div className="anim-msg flex justify-start">
       <div className={s.phase === "summary" ? "w-full max-w-[85%]" : "max-w-[70%]"}>
@@ -183,7 +186,7 @@ function StreamingBubble({ s }: { s: StreamingTurn }) {
             s.phase === "summary" ? "border-2 border-amber-300 bg-amber-50" : "border border-neutral-200 bg-white"
           }`}
         >
-          <Markdown remarkPlugins={[remarkGfm]}>{s.text}</Markdown>
+          <Markdown remarkPlugins={[remarkGfm]}>{throttledText}</Markdown>
           <span className="animate-pulse">▍</span>
         </div>
       </div>
@@ -202,7 +205,7 @@ const DATE_LOCALE: Record<string, string> = { "zh-CN": "zh-CN", "zh-TW": "zh-TW"
 
 /** 历史任务面板：时间、模式、状态、token 合计；点击定位到时间线中的回放位置 */
 function TaskHistoryPanel({ onJump }: { onJump: (taskId: string) => void }) {
-  const { tasks, lang } = useStore();
+  const { tasks, lang } = useStorePick("tasks", "lang");
   const t = useT();
   if (tasks.length === 0) {
     return <p className="border-b border-neutral-200 bg-white px-4 py-2 text-xs text-neutral-500">{t("no_tasks")}</p>;
@@ -244,7 +247,7 @@ function TaskHistoryPanel({ onJump }: { onJump: (taskId: string) => void }) {
 
 /** 运行中任务的控制条：取消；turn 失败时给出 重试/跳过/终止 三选 */
 function TaskControlBar() {
-  const { activeTaskId, failedTurn, streaming, cancelTask, decideTurn } = useStore();
+  const { activeTaskId, failedTurn, streaming, cancelTask, decideTurn } = useStorePick("activeTaskId", "failedTurn", "streaming", "cancelTask", "decideTurn");
   const t = useT();
   if (!activeTaskId) return null;
   if (failedTurn) {
@@ -353,7 +356,7 @@ function ComposerTextarea({
 }
 
 function TaskComposer({ agents }: { agents: Agent[] }) {
-  const { streaming, roomSending, activeTaskId, sendTask } = useStore();
+  const { streaming, roomSending, activeTaskId, sendTask } = useStorePick("streaming", "roomSending", "activeTaskId", "sendTask");
   const t = useT();
   const busy = !!streaming || roomSending || !!activeTaskId;
   const [prompt, setPrompt] = useState("");
@@ -591,7 +594,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
 }
 
 function SimpleComposer() {
-  const { streaming, roomSending, sendMessage } = useStore();
+  const { streaming, roomSending, sendMessage } = useStorePick("streaming", "roomSending", "sendMessage");
   const t = useT();
   const [draft, setDraft] = useState("");
   const doSubmit = async () => {
@@ -633,9 +636,9 @@ function SimpleComposer() {
 
 function SingleAgentSession() {
   const {
-    sessions, currentSessionId, sessionMessages, agentEvents, pendingApprovals,
+    sessions, currentSessionId, sessionMessages, agentEvents, agentStreamText, pendingApprovals,
     agentRunning, agentError, sendAgentPrompt, decideAgentApproval, cancelAgentRun, rewindSessionTo, workspacePathResults, searchWorkspacePaths, addWorkspaceRef, usageSummaries,
-  } = useStore();
+  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "agentEvents", "agentStreamText", "pendingApprovals", "agentRunning", "agentError", "sendAgentPrompt", "decideAgentApproval", "cancelAgentRun", "rewindSessionTo", "workspacePathResults", "searchWorkspacePaths", "addWorkspaceRef", "usageSummaries");
   const t = useT();
   const [draft, setDraft] = useState("");
   const [sandbox, setSandbox] = useState<"read-only" | "workspace-write">("read-only");
@@ -643,7 +646,7 @@ function SingleAgentSession() {
   const agentSnapshot = session?.agents[0]?.snapshot;
   const agentUsage = usageSummaries.find((item) => item.agentId === session?.agents[0]?.agentId);
   const usageText = (value: number | null | undefined) => value == null ? t("usage_unavailable") : value.toLocaleString();
-  const streamingText = agentEvents.filter((event) => event.type === "text_delta").map((event) => event.type === "text_delta" ? event.text : "").join("");
+  const streamingText = agentStreamText;
   const submit = async () => {
     const prompt = draft.trim();
     if (!prompt || agentRunning) return;
@@ -740,7 +743,7 @@ function SingleAgentSession() {
 }
 
 function MultiPlanCard({ plan }: { plan: MultiPlan }) {
-  const { currentMultiTask, decideMultiPlan } = useStore();
+  const { currentMultiTask, decideMultiPlan } = useStorePick("currentMultiTask", "decideMultiPlan");
   const t = useT();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(() => JSON.stringify(plan.content, null, 2));
@@ -782,9 +785,9 @@ function MultiPlanCard({ plan }: { plan: MultiPlan }) {
 
 function MultiAgentSession() {
   const {
-    sessions, currentSessionId, sessionMessages, currentMultiTask, multiRunning, multiError,
+    sessions, currentSessionId, sessionMessages, currentMultiTask, multiRunning, multiError, multiStreamAgentId, multiStreamText,
     sendMultiTask, loadMultiTask, decideMultiApproval, cancelMultiTask, pauseMultiTask, resumeMultiTask, retryMultiTask, rewindSessionTo,
-  } = useStore();
+  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "currentMultiTask", "multiRunning", "multiError", "multiStreamAgentId", "multiStreamText", "sendMultiTask", "loadMultiTask", "decideMultiApproval", "cancelMultiTask", "pauseMultiTask", "resumeMultiTask", "retryMultiTask", "rewindSessionTo");
   const t = useT();
   const session = sessions.find((item) => item.id === currentSessionId);
   const participants: Array<{ id: string; nickname?: unknown; avatar?: unknown; modelId?: unknown; [key: string]: unknown }> = session?.agents.map((item) => ({ id: item.agentId, ...item.snapshot })) ?? [];
@@ -801,9 +804,11 @@ function MultiAgentSession() {
     setOrder(ids); setSynthesizerId(ids[ids.length - 1] ?? ""); setExecutionAgentId(ids[0] ?? "");
     setEffortByAgent(Object.fromEntries(participants.flatMap((item) => typeof item.reasoningEffort === "string" ? [[item.id, item.reasoningEffort as ReasoningEffort]] : [])));
   }, [currentSessionId]);
+  // 主实时路径是 SSE delta / turn 事件（见 store.sendMultiTask）；此定时器仅为无 SSE 流阶段
+  // （如 executing）的兜底对账，2s 一次，不再是 750ms 的主轮询。
   useEffect(() => {
     if (!currentMultiTask || ["awaiting_plan_approval", "failed", "cancelled", "completed", "paused"].includes(currentMultiTask.state)) return;
-    const timer = window.setInterval(() => void loadMultiTask(currentMultiTask.id), 750);
+    const timer = window.setInterval(() => void loadMultiTask(currentMultiTask.id), 2000);
     return () => window.clearInterval(timer);
   }, [currentMultiTask?.id, currentMultiTask?.state, loadMultiTask]);
   const move = (id: string, delta: number) => setOrder((current) => moveAgentId(current, id, delta));
@@ -825,7 +830,15 @@ function MultiAgentSession() {
           <div className={`md-body pixel-card p-3 text-sm ${message.role === "user" ? "bg-violet-50" : "bg-white"}`}><Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown></div>
         </div><MsgActions m={message} align={message.role === "user" ? "right" : "left"} busy={multiRunning} onRewind={(messageId) => void rewindSessionTo(messageId)} /></div>;
       })}
-      {currentMultiTask?.turns.filter((turn) => turn.status === "running").map((turn) => <div key={turn.id} className="pixel-card animate-pulse p-3 text-sm">{String(turn.snapshot.nickname ?? turn.agentId)} {t("multi_thinking")}</div>)}
+      {currentMultiTask?.turns.filter((turn) => turn.status === "running").map((turn) => {
+        const live = multiStreamAgentId === turn.agentId ? multiStreamText : "";
+        return (
+          <div key={turn.id} className={`pixel-card p-3 text-sm ${live ? "" : "animate-pulse"}`}>
+            <div className="mb-1 text-xs text-neutral-500">{String(turn.snapshot.nickname ?? turn.agentId)} {live ? "" : t("multi_thinking")}</div>
+            {live && <div className="md-body whitespace-pre-wrap">{live}<span className="animate-pulse">▋</span></div>}
+          </div>
+        );
+      })}
       {currentMultiTask && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{participants.map((agent) => {
         const usage = currentMultiTask.usageSummaries.find((item) => item.agentId === agent.id);
         const fmt = (value: number | null) => value === null ? t("usage_unavailable") : value.toLocaleString();
@@ -852,7 +865,7 @@ function MultiAgentSession() {
 }
 
 function NewRoomDialog({ onClose }: { onClose: () => void }) {
-  const { agents, createRoom, createAgentSession, createMultiAgentSession, activeWorkspace } = useStore();
+  const { agents, createRoom, createAgentSession, createMultiAgentSession, activeWorkspace } = useStorePick("agents", "createRoom", "createAgentSession", "createMultiAgentSession", "activeWorkspace");
   const t = useT();
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
@@ -1029,7 +1042,7 @@ function SidebarEntityMenu({
   const {
     rooms, sessions, workspaces,
     archiveRoom, removeRoom, archiveSession, removeSession, archiveWorkspace, removeWorkspace,
-  } = useStore();
+  } = useStorePick("rooms", "sessions", "workspaces", "archiveRoom", "removeRoom", "archiveSession", "removeSession", "archiveWorkspace", "removeWorkspace");
   const t = useT();
   const [confirming, setConfirming] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -1122,7 +1135,7 @@ function SidebarEntityMenu({
 }
 
 function RenameDialog({ target, onClose }: { target: RenameTarget; onClose: () => void }) {
-  const { renameRoom, renameSession, renameWorkspace } = useStore();
+  const { renameRoom, renameSession, renameWorkspace } = useStorePick("renameRoom", "renameSession", "renameWorkspace");
   const t = useT();
   const dialog = useAnimatedDialogClose(onClose);
   const [value, setValue] = useState(target.value);
@@ -1164,7 +1177,7 @@ function RoomMembersDialog({
   memberIds: string[];
   onClose: () => void;
 }) {
-  const { agents, addRoomAgent } = useStore();
+  const { agents, addRoomAgent } = useStorePick("agents", "addRoomAgent");
   const t = useT();
   const dialog = useAnimatedDialogClose(onClose);
   const members = memberIds.map((id) => agents.find((agent) => agent.id === id)).filter((agent): agent is Agent => !!agent);
@@ -1225,8 +1238,9 @@ function RoomMembersDialog({
 }
 
 export default function ChatPage() {
-  const { rooms, agents, sessions, workspaces, activeWorkspace, currentRoomId, currentSessionId, messages, streaming, chatError, tasks, usageSummaries, selectRoom, selectAgentSession, setActiveWorkspace, clearChatError } =
-    useStore();
+  const { rooms, agents, sessions, workspaces, activeWorkspace, currentRoomId, currentSessionId, messages, streaming, activeTaskId, rewindTo, chatError, tasks, usageSummaries, selectRoom, selectAgentSession, setActiveWorkspace, clearChatError } =
+    useStorePick("rooms", "agents", "sessions", "workspaces", "activeWorkspace", "currentRoomId", "currentSessionId", "messages", "streaming", "activeTaskId", "rewindTo", "chatError", "tasks", "usageSummaries", "selectRoom", "selectAgentSession", "setActiveWorkspace", "clearChatError");
+  const bubbleBusy = !!streaming || !!activeTaskId;
   const t = useT();
   const [creating, setCreating] = useState(false);
   const [showTasks, setShowTasks] = useState(false);
@@ -1449,7 +1463,7 @@ export default function ChatPage() {
                 item.kind === "divider" ? (
                   <RoundDivider key={item.key} round={item.round} />
                 ) : (
-                  <Bubble key={item.m.id} m={item.m} />
+                  <Bubble key={item.m.id} m={item.m} busy={bubbleBusy} onRewind={(id) => void rewindTo(id)} />
                 ),
               )}
               {streaming && streamingDivider && <RoundDivider round={streaming.round!} />}

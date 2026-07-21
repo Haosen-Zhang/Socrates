@@ -1,10 +1,11 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useRef, useState } from "react";
-import { useStore, useT } from "../store";
+import { useT } from "../store";
+import { WORKSPACE_CHIP_KEYS, useStorePick } from "../selectors";
 import PixelIcon from "../PixelIcon";
 
 export default function WorkspaceChip({ workspaceId, locked = false }: { workspaceId?: string | null; locked?: boolean }) {
-  const { activeWorkspace, workspaces, selectWorkspacePath, setActiveWorkspace, activeTaskId, agentRunning } = useStore();
+  const { activeWorkspace, workspaces, selectWorkspacePath, setActiveWorkspace, activeTaskId, agentRunning } = useStorePick(...WORKSPACE_CHIP_KEYS);
   const workspace = workspaceId ? workspaces.find((item) => item.id === workspaceId) ?? null : activeWorkspace;
   const [error, setError] = useState<string | null>(null);
   const [openMenu, setOpenMenu] = useState(false);

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Provider } from "@socrates/core";
-import { useStore, useT, type ProviderForm, type TestResult } from "./store";
+import { useT, type ProviderForm, type TestResult } from "./store";
+import { PROVIDER_CARD_KEYS, PROVIDERS_PAGE_KEYS, useStorePick } from "./selectors";
 import { sfx } from "./fx";
 
 const EMPTY: ProviderForm = {
@@ -37,7 +38,7 @@ function ProviderCard({
   provider: Provider;
   onEdit: (p: Provider) => void;
 }) {
-  const { agents, testResults, modelLists, testProvider, removeProvider, loadModels } = useStore();
+  const { agents, testResults, modelLists, testProvider, removeProvider, loadModels } = useStorePick(...PROVIDER_CARD_KEYS);
   const t = useT();
   const [confirming, setConfirming] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -121,7 +122,7 @@ function ProviderCard({
 }
 
 export default function ProvidersPage() {
-  const { providers, saveProvider } = useStore();
+  const { providers, saveProvider } = useStorePick(...PROVIDERS_PAGE_KEYS);
   const t = useT();
   const [form, setForm] = useState<ProviderForm>(EMPTY);
   const [editingId, setEditingId] = useState<string | null>(null);
