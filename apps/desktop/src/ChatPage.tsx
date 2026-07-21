@@ -2,6 +2,8 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useThrottledValue } from "./useThrottledValue";
+import { DEFAULT_WINDOW_SIZE, expandWindow, windowTail } from "./listWindow";
+import { useTransientFlag } from "./useTransientFlag";
 import { agentLabel, type Agent, type ConversationMode, type ReasoningEffort, type SessionMessage, type StoredMessage, type TaskSummary } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
@@ -86,8 +88,8 @@ function MsgActions({
 }) {
   const { lang } = useStorePick("lang");
   const t = useT();
-  const [copied, setCopied] = useState(false);
-  const [confirming, setConfirming] = useState(false);
+  const [copied, markCopied] = useTransientFlag(1500);
+  const [confirming, markConfirming] = useTransientFlag(3000);
   const btn = "hover:text-neutral-700 hover:underline";
 
   return (
@@ -103,10 +105,7 @@ function MsgActions({
         className={btn}
         onClick={() => {
           void copyText(m.content).then((ok) => {
-            if (ok) {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
-            }
+            if (ok) markCopied();
           });
         }}
       >
@@ -118,8 +117,7 @@ function MsgActions({
           title={t("msg_rewind_confirm")}
           onClick={() => {
             if (!confirming) {
-              setConfirming(true);
-              setTimeout(() => setConfirming(false), 3000);
+              markConfirming();
               return;
             }
             onRewind(m.id);
@@ -639,6 +637,10 @@ function SingleAgentSession() {
     sessions, currentSessionId, sessionMessages, agentEvents, agentStreamText, pendingApprovals,
     agentRunning, agentError, sendAgentPrompt, decideAgentApproval, cancelAgentRun, rewindSessionTo, workspacePathResults, searchWorkspacePaths, addWorkspaceRef, usageSummaries,
   } = useStorePick("sessions", "currentSessionId", "sessionMessages", "agentEvents", "agentStreamText", "pendingApprovals", "agentRunning", "agentError", "sendAgentPrompt", "decideAgentApproval", "cancelAgentRun", "rewindSessionTo", "workspacePathResults", "searchWorkspacePaths", "addWorkspaceRef", "usageSummaries");
+  // 窗口化：长会话只渲染最近 N 条，更早的可展开
+  const [sessionLimit, setSessionLimit] = useState(DEFAULT_WINDOW_SIZE);
+  useEffect(() => setSessionLimit(DEFAULT_WINDOW_SIZE), [currentSessionId]);
+  const sessionWindow = windowTail(sessionMessages, sessionLimit);
   const t = useT();
   const [draft, setDraft] = useState("");
   const [sandbox, setSandbox] = useState<"read-only" | "workspace-write">("read-only");
@@ -682,7 +684,12 @@ function SingleAgentSession() {
           {sandbox === "read-only" ? t("runtime_native_read_only") : t("runtime_codex_experimental")}
         </div>
         {agentError && <div role="alert" className="border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">{agentError}</div>}
-        {sessionMessages.map((message) => (
+        {sessionWindow.hiddenCount > 0 && (
+          <button className="pixel-button mx-auto block px-3 py-1 text-xs" onClick={() => setSessionLimit((limit) => expandWindow(limit, sessionMessages.length))}>
+            {t("show_earlier", { n: sessionWindow.hiddenCount })}
+          </button>
+        )}
+        {sessionWindow.visible.map((message) => (
           <div key={message.id} className={`anim-msg group flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}>
             <div className={`pixel-card max-w-[78%] p-3 text-sm ${message.role === "user" ? "whitespace-pre-wrap bg-violet-50" : "md-body bg-white"}`}>
               {message.role === "user" ? message.content : <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>}
@@ -788,6 +795,10 @@ function MultiAgentSession() {
     sessions, currentSessionId, sessionMessages, currentMultiTask, multiRunning, multiError, multiStreamAgentId, multiStreamText,
     sendMultiTask, loadMultiTask, decideMultiApproval, cancelMultiTask, pauseMultiTask, resumeMultiTask, retryMultiTask, rewindSessionTo,
   } = useStorePick("sessions", "currentSessionId", "sessionMessages", "currentMultiTask", "multiRunning", "multiError", "multiStreamAgentId", "multiStreamText", "sendMultiTask", "loadMultiTask", "decideMultiApproval", "cancelMultiTask", "pauseMultiTask", "resumeMultiTask", "retryMultiTask", "rewindSessionTo");
+  // 窗口化：长会话只渲染最近 N 条，更早的可展开
+  const [sessionLimit, setSessionLimit] = useState(DEFAULT_WINDOW_SIZE);
+  useEffect(() => setSessionLimit(DEFAULT_WINDOW_SIZE), [currentSessionId]);
+  const sessionWindow = windowTail(sessionMessages, sessionLimit);
   const t = useT();
   const session = sessions.find((item) => item.id === currentSessionId);
   const participants: Array<{ id: string; nickname?: unknown; avatar?: unknown; modelId?: unknown; [key: string]: unknown }> = session?.agents.map((item) => ({ id: item.agentId, ...item.snapshot })) ?? [];
@@ -823,7 +834,12 @@ function MultiAgentSession() {
       {multiError && <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{multiError}</div>}
       {currentMultiTask?.state === "paused" && currentMultiTask.outcomeUnknown && <div role="alert" className="border border-amber-400 bg-amber-50 p-3 text-xs text-amber-900">{t("multi_outcome_unknown")}</div>}
       {currentMultiTask?.state === "paused" && currentMultiTask.requiresExecutionReview && <div role="alert" className="border border-amber-400 bg-amber-50 p-3 text-xs text-amber-900">{t("multi_execution_review")}</div>}
-      {sessionMessages.map((message) => {
+      {sessionWindow.hiddenCount > 0 && (
+          <button className="pixel-button mx-auto block px-3 py-1 text-xs" onClick={() => setSessionLimit((limit) => expandWindow(limit, sessionMessages.length))}>
+            {t("show_earlier", { n: sessionWindow.hiddenCount })}
+          </button>
+        )}
+        {sessionWindow.visible.map((message) => {
         const author = participants.find((item) => item.id === message.authorId);
         return <div key={message.id} className={`anim-msg group flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}><div className={`max-w-[82%] ${message.role === "user" ? "" : "flex gap-3"}`}>
           {message.role !== "user" && <AgentAvatar src={String(author?.avatar ?? "")} label={String(author?.nickname ?? "Agent")} size={34} />}
@@ -1380,10 +1396,14 @@ export default function ChatPage() {
   );
 
   // 时间线：轮次变化处插分隔线
+  // 窗口化：只渲染最近 N 条，更早的折叠（DOM 上界；展开后行为与原先一致）
+  const [chatLimit, setChatLimit] = useState(DEFAULT_WINDOW_SIZE);
+  useEffect(() => setChatLimit(DEFAULT_WINDOW_SIZE), [currentRoomId]);
+  const chatWindow = windowTail(messages, chatLimit);
   const timeline: Array<{ kind: "divider"; round: number; key: string } | { kind: "message"; m: StoredMessage }> = [];
   let lastRound: number | undefined;
   let lastTask: string | undefined;
-  for (const m of messages) {
+  for (const m of chatWindow.visible) {
     if (m.taskId !== lastTask) lastRound = undefined; // 新任务重新计轮
     if (m.round !== undefined && m.round !== lastRound) {
       timeline.push({ kind: "divider", round: m.round, key: `${m.taskId}-${m.round}` });
@@ -1459,6 +1479,14 @@ export default function ChatPage() {
             </div>
             {showTasks && <TaskHistoryPanel onJump={jumpToTask} />}
             <div key={currentRoomId} className="anim-view flex-1 space-y-3 overflow-y-auto p-4">
+              {chatWindow.hiddenCount > 0 && (
+                <button
+                  className="pixel-button mx-auto block px-3 py-1 text-xs"
+                  onClick={() => setChatLimit((limit) => expandWindow(limit, messages.length))}
+                >
+                  {t("show_earlier", { n: chatWindow.hiddenCount })}
+                </button>
+              )}
               {timeline.map((item) =>
                 item.kind === "divider" ? (
                   <RoundDivider key={item.key} round={item.round} />

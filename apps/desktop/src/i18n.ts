@@ -300,6 +300,7 @@ const zhCN: Dict = {
   // 历史任务
   task_history: "历史任务 {n}",
   no_tasks: "还没有讨论任务。",
+  show_earlier: "显示更早的 {n} 条",
   status_running: "进行中",
   status_completed: "已完成",
   status_failed: "失败",
@@ -573,6 +574,7 @@ const zhTW: Dict = {
 
   task_history: "歷史任務 {n}",
   no_tasks: "還沒有討論任務。",
+  show_earlier: "顯示更早的 {n} 則",
   status_running: "進行中",
   status_completed: "已完成",
   status_failed: "失敗",
@@ -846,6 +848,7 @@ const en: Dict = {
 
   task_history: "Tasks {n}",
   no_tasks: "No tasks yet.",
+  show_earlier: "Show {n} earlier",
   status_running: "Running",
   status_completed: "Done",
   status_failed: "Failed",
