@@ -18,6 +18,8 @@ export function sessionRoutes(sessions: SessionStore, events: EventStore, usage?
       return c.json(sessions.create({
         title: body.title,
         mode: body.mode as ConversationMode,
+        // kind 缺省时由 store 从 mode 推导；chat 的 workspaceId 也在 store 里强制置空
+        kind: body.kind === "chat" || body.kind === "cowork" ? body.kind : undefined,
         workspaceId: typeof body.workspaceId === "string" ? body.workspaceId : null,
         agents: body.agents as Array<{ agentId: string; snapshot: Record<string, unknown>; executionEligible: boolean }>,
       }), 201);

@@ -1,3 +1,4 @@
+import { roomCreatePayload, roomDraftBlocker, type RoomDraft } from "./roomSelection";
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { loadLang, persistLang, tr, type Lang } from "./i18n";
@@ -136,8 +137,6 @@ export type Store = {
   agentError: string | null;
   activeAgentRunId: string | null;
   loadSessions: () => Promise<void>;
-  createAgentSession: (title: string, agentId: string) => Promise<void>;
-  createMultiAgentSession: (title: string, agentIds: string[]) => Promise<void>;
   selectAgentSession: (id: string) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<void>;
   archiveSession: (id: string, archived: boolean) => Promise<void>;
@@ -219,7 +218,8 @@ export type Store = {
   cancelTask: () => Promise<void>;
   decideTurn: (action: "retry" | "skip" | "abort") => Promise<void>;
   loadRooms: () => Promise<void>;
-  createRoom: (name: string, agentIds: string[]) => Promise<void>;
+  /** 建房唯一入口（C4）：kind 决定走 rooms 还是 sessions，工作区只来自草稿 */
+  createRoomFromDraft: (draft: RoomDraft) => Promise<void>;
   renameRoom: (id: string, name: string) => Promise<void>;
   addRoomAgent: (roomId: string, agentId: string) => Promise<void>;
   removeRoom: (id: string) => Promise<void>;
@@ -515,36 +515,6 @@ export const useStore = create<Store>((set, get) => {
     },
     loadSessions: async () => {
       set({ sessions: await requireOk<ConversationSession[]>(await sidecarFetch(hs(), "/sessions")) });
-    },
-    createAgentSession: async (title, agentId) => {
-      const agent = get().agents.find((item) => item.id === agentId);
-      const workspace = get().activeWorkspace;
-      if (!agent || !workspace) throw new Error("agent_and_workspace_required");
-      const session = await requireOk<ConversationSession>(await sidecarFetch(hs(), "/sessions", {
-        method: "POST",
-        body: JSON.stringify({
-          title,
-          mode: "single_agent",
-          workspaceId: workspace.id,
-          agents: [{ agentId, snapshot: agent, executionEligible: true }],
-        }),
-      }));
-      await get().loadSessions();
-      await get().selectAgentSession(session.id);
-    },
-    createMultiAgentSession: async (title, agentIds) => {
-      const workspace = get().activeWorkspace;
-      const agents = agentIds.map((id) => get().agents.find((item) => item.id === id));
-      if (!workspace || agents.some((agent) => !agent)) throw new Error("agents_and_workspace_required");
-      const session = await requireOk<ConversationSession>(await sidecarFetch(hs(), "/sessions", {
-        method: "POST",
-        body: JSON.stringify({
-          title, mode: "multi_agent", workspaceId: workspace.id,
-          agents: agents.map((agent) => ({ agentId: agent!.id, snapshot: agent, executionEligible: true })),
-        }),
-      }));
-      await get().loadSessions();
-      await get().selectAgentSession(session.id);
     },
     renameSession: async (id, title) => {
       await requireOk<ConversationSession>(await sidecarFetch(hs(), `/sessions/${id}`, {
@@ -1004,15 +974,35 @@ export const useStore = create<Store>((set, get) => {
     loadRooms: async () => {
       set({ rooms: await (await sidecarFetch(hs(), "/rooms")).json() });
     },
-    createRoom: async (name, agentIds) => {
-      const room = await requireOk<Room>(
-        await sidecarFetch(hs(), "/rooms", {
+    createRoomFromDraft: async (draft) => {
+      const blocker = roomDraftBlocker(draft);
+      if (blocker) throw new Error(blocker);
+      const payload = roomCreatePayload(draft);
+      const title = draft.title;
+      if (payload.kind === "chat") {
+        // Chat 走 rooms；workspaceId 显式为 null，不再继承 activeWorkspace
+        const room = await requireOk<Room>(await sidecarFetch(hs(), "/rooms", {
           method: "POST",
-          body: JSON.stringify({ name, agentIds, workspaceId: get().activeWorkspace?.id ?? null }),
+          body: JSON.stringify({ name: title, agentIds: payload.agentIds, workspaceId: null }),
+        }));
+        await get().loadRooms();
+        await get().selectRoom(room.id);
+        return;
+      }
+      const agents = payload.agentIds.map((id) => get().agents.find((item) => item.id === id));
+      if (agents.some((agent) => !agent)) throw new Error("unknown_agent");
+      const session = await requireOk<ConversationSession>(await sidecarFetch(hs(), "/sessions", {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          kind: payload.kind,
+          mode: payload.mode,
+          workspaceId: payload.workspaceId,
+          agents: agents.map((agent) => ({ agentId: agent!.id, snapshot: agent, executionEligible: true })),
         }),
-      );
-      await get().loadRooms();
-      await get().selectRoom(room.id);
+      }));
+      await get().loadSessions();
+      await get().selectAgentSession(session.id);
     },
     renameRoom: async (id, name) => {
       await requireOk<Room>(await sidecarFetch(hs(), `/rooms/${id}`, {

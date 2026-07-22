@@ -4,10 +4,10 @@ import remarkGfm from "remark-gfm";
 import { useThrottledValue } from "./useThrottledValue";
 import { DEFAULT_WINDOW_SIZE, expandWindow, windowTail } from "./listWindow";
 import { useTransientFlag } from "./useTransientFlag";
-import { agentLabel, type Agent, type ConversationMode, type ReasoningEffort, type SessionMessage, type StoredMessage, type TaskSummary } from "@socrates/core";
+import { agentLabel, type Agent, type RoomKind, type ReasoningEffort, type SessionMessage, type StoredMessage, type TaskSummary } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
-import { toggleRoomAgentSelection } from "./roomSelection";
+import { roomDraftBlocker, toggleRoomAgentSelection } from "./roomSelection";
 import { useT, type MultiPlan, type StreamingTurn } from "./store";
 import { useStorePick } from "./selectors";
 import { sfx } from "./fx";
@@ -881,12 +881,14 @@ function MultiAgentSession() {
 }
 
 function NewRoomDialog({ onClose }: { onClose: () => void }) {
-  const { agents, createRoom, createAgentSession, createMultiAgentSession, activeWorkspace } = useStorePick("agents", "createRoom", "createAgentSession", "createMultiAgentSession", "activeWorkspace");
+  const { agents, workspaces, createRoomFromDraft } = useStorePick("agents", "workspaces", "createRoomFromDraft");
   const t = useT();
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<ConversationMode>("chat");
+  const [kind, setKind] = useState<RoomKind>("chat");
+  // Co-work 的工作区必须在这里明确选，不从全局 activeWorkspace 继承
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const dialog = useAnimatedDialogClose(onClose);
 
   const toggle = (id: string) => {
@@ -905,10 +907,12 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const title = roomTitleOrFallback(name, t("room_untitled"));
-      if (mode === "single_agent") await createAgentSession(title, selected[0]!);
-      else if (mode === "multi_agent") await createMultiAgentSession(title, selected);
-      else await createRoom(title, selected);
+      await createRoomFromDraft({
+        kind,
+        title: roomTitleOrFallback(name, t("room_untitled")),
+        agentIds: selected,
+        workspaceId: kind === "cowork" ? workspaceId : null,
+      });
       dialog.close();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -958,26 +962,43 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
           />
         </label>
 
-        <div className="mt-5 grid grid-cols-3 gap-2" role="radiogroup" aria-label={t("conversation_mode")}>
-          {(["chat", "single_agent", "multi_agent"] as const).map((value) => (
+        <div className="mt-5 grid grid-cols-2 gap-2" role="radiogroup" aria-label={t("room_kind")}>
+          {(["chat", "cowork"] as const).map((value) => (
             <button
               key={value}
               type="button"
               role="radio"
-              aria-checked={mode === value}
-              className={`pixel-mode-card p-3 text-left ${mode === value ? "is-selected" : ""}`}
+              aria-checked={kind === value}
+              className={`pixel-mode-card p-3 text-left ${kind === value ? "is-selected" : ""}`}
               onClick={() => {
-                setMode(value);
-                setSelected([]);
+                setKind(value);
                 setError(null);
               }}
             >
-              <span className="block text-sm font-bold">{t(`mode_${value}`)}</span>
-              <span className="mt-1 block text-[11px] text-neutral-500">{t(`mode_${value}_desc`)}</span>
+              <span className="block text-sm font-bold">{t(`room_kind_${value}`)}</span>
+              <span className="mt-1 block text-[11px] text-neutral-500">{t(`room_kind_${value}_desc`)}</span>
             </button>
           ))}
         </div>
-        {mode !== "chat" && !activeWorkspace && <p className="mt-2 text-xs text-amber-700">{t("workspace_required_hint")}</p>}
+        {kind === "cowork" && (
+          <label className="mt-3 block text-sm font-bold">
+            {t("room_workspace")}
+            <select
+              className="pixel-input mt-1 w-full px-3 py-2 text-sm"
+              value={workspaceId ?? ""}
+              onChange={(event) => {
+                setWorkspaceId(event.target.value || null);
+                setError(null);
+              }}
+            >
+              <option value="">{t("room_workspace_placeholder")}</option>
+              {workspaces.map((workspace) => (
+                <option key={workspace.id} value={workspace.id}>{workspace.label || workspace.displayPath}</option>
+              ))}
+            </select>
+            {!workspaceId && <span className="mt-1 block text-xs text-amber-700">{t("workspace_required_hint")}</span>}
+          </label>
+        )}
 
         <div className="mb-2 mt-5 flex items-center justify-between">
           <h3 className="text-sm font-bold">{t("choose_agents")}</h3>
@@ -995,10 +1016,7 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
                   type="button"
                   className={`pixel-room-agent-card flex min-w-0 items-center gap-3 p-3 text-left ${isSelected ? "is-selected" : ""}`}
                   aria-pressed={isSelected}
-                  onClick={() => {
-                    if (mode === "single_agent" && !isSelected) setSelected([agent.id]);
-                    else toggle(agent.id);
-                  }}
+                  onClick={() => toggle(agent.id)}
                 >
                   <AgentAvatar src={agent.avatar} label={agent.nickname} size={52} />
                   <span className="min-w-0 flex-1">
@@ -1028,7 +1046,7 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
             <button
               className="pixel-button pixel-button--primary px-5 py-2 text-sm"
               type="submit"
-              disabled={(mode === "multi_agent" ? selected.length < 2 : mode === "single_agent" ? selected.length !== 1 : selected.length < 1) || (mode !== "chat" && !activeWorkspace)}
+              disabled={roomDraftBlocker({ kind, title: name, agentIds: selected, workspaceId }) !== null}
             >
               {t("create_room")}
             </button>

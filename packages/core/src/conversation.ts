@@ -27,6 +27,8 @@ export interface ConversationSession {
   id: string;
   title: string;
   mode: ConversationMode;
+  /** 新房间模型（C1）；mode 保留为运行时形态，kind 决定导航归属 */
+  kind: import("./room-kind").RoomKind;
   workspaceId: string | null;
   archived: boolean;
   status: string;

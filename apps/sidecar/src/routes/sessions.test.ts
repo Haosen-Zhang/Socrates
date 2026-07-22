@@ -11,7 +11,7 @@ describe("session routes", () => {
     const sessions = new SessionStore(db);
     const events = new EventStore(db);
     const app = new Hono().route("/sessions", sessionRoutes(sessions, events));
-    const response = await app.request("/sessions", { method: "POST", body: JSON.stringify({ title: "Chat", mode: "chat", agents: [] }) });
+    const response = await app.request("/sessions", { method: "POST", body: JSON.stringify({ title: "Chat", mode: "chat", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] }) });
     expect(response.status).toBe(201);
     const session = await response.json();
     events.append({ eventId: "e1", sessionId: session.id, type: "first", payload: {} });
@@ -24,7 +24,7 @@ describe("session routes", () => {
     const db = openDb(":memory:");
     const sessions = new SessionStore(db);
     const app = new Hono().route("/sessions", sessionRoutes(sessions, new EventStore(db)));
-    const created = await (await app.request("/sessions", { method: "POST", body: JSON.stringify({ title: "Draft", mode: "chat", agents: [] }) })).json() as { id: string };
+    const created = await (await app.request("/sessions", { method: "POST", body: JSON.stringify({ title: "Draft", mode: "chat", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] }) })).json() as { id: string };
     const renamed = await app.request(`/sessions/${created.id}`, { method: "PUT", body: JSON.stringify({ title: "Renamed" }) });
     expect(renamed.status).toBe(200);
     expect((await renamed.json()).title).toBe("Renamed");
