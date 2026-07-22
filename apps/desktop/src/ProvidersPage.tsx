@@ -3,6 +3,7 @@ import type { Provider } from "@socrates/core";
 import { useT, type ProviderForm, type TestResult } from "./store";
 import { PROVIDER_CARD_KEYS, PROVIDERS_PAGE_KEYS, useStorePick } from "./selectors";
 import { sfx } from "./fx";
+import { useTransientFlag } from "./useTransientFlag";
 
 const EMPTY: ProviderForm = {
   name: "",
@@ -40,7 +41,7 @@ function ProviderCard({
 }) {
   const { agents, testResults, modelLists, testProvider, removeProvider, loadModels } = useStorePick(...PROVIDER_CARD_KEYS);
   const t = useT();
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, markConfirming] = useTransientFlag(3000);
   const [refreshing, setRefreshing] = useState(false);
 
   // 「已启用」= 被 Agent 实际使用的模型 + 默认模型
@@ -92,8 +93,7 @@ function ProviderCard({
             className="pixel-button pixel-button--danger px-2 py-1 text-xs"
             onClick={() => {
               if (!confirming) {
-                setConfirming(true);
-                setTimeout(() => setConfirming(false), 3000);
+                markConfirming();
                 return;
               }
               sfx.delete();

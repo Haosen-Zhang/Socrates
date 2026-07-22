@@ -55,8 +55,8 @@
 | R2 单 agent 逐事件 setState | ✅ 完成 | `perf(P0.2)`：text_delta rAF 批处理进 `agentStreamText`，控制事件先 flush 再处理；`agentStream.test.ts`（3 例）；UI 直接读累积文本 |
 | R3 多 agent 750ms 全量轮询 | ✅ 完成 | `perf(P0.3)`：SSE delta/turn 成为主实时路径（rAF 批处理 + turn 边界精准重载），750ms→2s 兜底对账；running turn 卡片显示实时文本 |
 | R4 流式 Markdown 全量重解析 + 无 memo | ✅ 完成 | `perf(P0.4)`：`StreamingBubble` Markdown 源经 `useThrottledValue`（250ms，保证最终值）；`Bubble` 改 `React.memo` 并把 `busy` 提为 prop（流式期间已完成气泡不再重渲染）；`useThrottledValue.test.ts`（2 例） |
-| R5 列表虚拟化 | ⏭ 未做（下一步） | 风险最高（滚动/读屏），按 non_negotiable「先基线再改」原则单列后续里程碑；当前长会话 DOM 仍无上界 |
-| R6 一次性 timer 卸载清理 | ⏭ 未做（低优先） | confirm 复位计时器；影响轻微，随 R5 一起处理 |
+| R5 长列表无 DOM 上界 | ✅ 完成 | `perf(P0.5)`：三处列表（群聊 timeline、单/多 agent sessionMessages）窗口化——只渲染最近 80 条，更早的折叠为「显示更早」按钮（+80/次）。选窗口化而非虚拟化：时间线含变高元素（Markdown/代码块/审批卡），虚拟化需精确测高否则破坏滚动与读屏；窗口化零依赖、展开后行为与原先一致。`listWindow.test.ts`（5 例）证明**不丢数据**（visible+hidden 可还原完整列表）、最新项始终可见、limit≤0 退化为全渲染 |
+| R6 一次性 timer 卸载清理 | ✅ 完成 | `perf(P0.5)`：「已复制」「确认删除」计时器抽成 `useTransientFlag`，卸载时 clearTimeout。侧栏菜单的 confirm 无定时器（随菜单关闭消失），非此问题 |
 
 门禁（修复后）：`bun test` **229 pass / 0 fail**（73 文件，+10 新测试）；`tsc` exit=0；biome lint 0 问题；desktop build ✓。
 
@@ -66,6 +66,5 @@
 - [ ] 多 agent 讨论文字实时出现，不再 750ms 一跳（R3）
 - [ ] 长消息流式期间无主线程长任务（R4）
 
-### 后续（未在本轮 P0 内）
-- R5 列表窗口化 / 虚拟化（长会话 DOM 上界）——建议下一里程碑，先加渲染计数/滚动回归测试再实现
-- R6 confirm timer 卸载清理
+### 后续
+R1–R6 全部闭合。若未来时间线元素高度趋于稳定，可再评估真正的虚拟化以进一步降低内存；当前窗口化已给出 DOM 上界，优先级低。
