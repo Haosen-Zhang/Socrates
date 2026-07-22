@@ -23,6 +23,8 @@ export type AppConfig = {
   closeBehavior: "background" | "quit";
   /** 8-bit 界面音效 */
   soundEnabled: boolean;
+  /** 侧栏 UI 偏好（收起状态与宽度），重启后恢复 */
+  sidebar: { collapsed: boolean; width: number };
   proxy: ProxyConfig;
   appearance: { fontSize: number; fontFamily: string; uiTheme: UiTheme };
 };
@@ -32,6 +34,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   theme: "light",
   closeBehavior: "background",
   soundEnabled: true,
+  sidebar: { collapsed: false, width: 256 },
   proxy: {
     mode: "off",
     type: "http",
@@ -68,6 +71,14 @@ export function normalizeConfig(raw: unknown): AppConfig {
     theme: pick(THEMES, r.theme, DEFAULT_CONFIG.theme),
     closeBehavior: pick(CLOSE, r.closeBehavior, DEFAULT_CONFIG.closeBehavior),
     soundEnabled: typeof r.soundEnabled === "boolean" ? r.soundEnabled : DEFAULT_CONFIG.soundEnabled,
+    sidebar: (() => {
+      const sb = (r.sidebar ?? {}) as Record<string, unknown>;
+      const width = Number(sb.width);
+      return {
+        collapsed: sb.collapsed === true,
+        width: Number.isFinite(width) && width >= 180 && width <= 480 ? width : DEFAULT_CONFIG.sidebar.width,
+      };
+    })(),
     proxy: {
       mode: pick(PROXY, proxy.mode, DEFAULT_CONFIG.proxy.mode),
       type: pick(PROXY_TYPE, proxy.type, DEFAULT_CONFIG.proxy.type),
@@ -125,6 +136,7 @@ export function mergeConfig(base: AppConfig, patch: Partial<AppConfig>): AppConf
     ...base,
     ...patch,
     proxy: { ...base.proxy, ...(patch.proxy ?? {}) },
+    sidebar: { ...base.sidebar, ...(patch.sidebar ?? {}) },
     appearance: { ...base.appearance, ...(patch.appearance ?? {}) },
   });
 }

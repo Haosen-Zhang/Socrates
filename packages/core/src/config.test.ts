@@ -66,3 +66,24 @@ describe("mergeConfig", () => {
     expect(themed.proxy.mode).toBe("auto"); // earlier patch preserved
   });
 });
+
+describe("sidebar prefs (C3)", () => {
+  it("defaults to expanded with a sane width", () => {
+    expect(DEFAULT_CONFIG.sidebar).toEqual({ collapsed: false, width: 256 });
+  });
+
+  it("persists a collapsed sidebar and clamps out-of-range widths", () => {
+    expect(normalizeConfig({ sidebar: { collapsed: true, width: 300 } }).sidebar).toEqual({
+      collapsed: true,
+      width: 300,
+    });
+    expect(normalizeConfig({ sidebar: { width: 9999 } }).sidebar.width).toBe(DEFAULT_CONFIG.sidebar.width);
+    expect(normalizeConfig({ sidebar: { width: 10 } }).sidebar.width).toBe(DEFAULT_CONFIG.sidebar.width);
+    expect(normalizeConfig({ sidebar: { collapsed: "yes" } }).sidebar.collapsed).toBeFalse();
+  });
+
+  it("merging a partial sidebar patch keeps the sibling field", () => {
+    const merged = mergeConfig(DEFAULT_CONFIG, { sidebar: { collapsed: true } as never });
+    expect(merged.sidebar).toEqual({ collapsed: true, width: 256 });
+  });
+});
