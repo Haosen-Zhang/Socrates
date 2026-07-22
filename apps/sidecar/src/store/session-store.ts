@@ -1,10 +1,14 @@
 import type { Database } from "bun:sqlite";
-import { validateConversation, type ConversationMode, type ConversationSession, type MessagePart, type SessionAgentSnapshot, type SessionMessage } from "@socrates/core";
+import { validateConversation, type ConversationMode, type ConversationSession, type MessagePart, type SessionAgentSnapshot, type SessionMessage,
+  validateRoomShape,
+  type RoomKind,
+} from "@socrates/core";
 
 type SessionRow = {
   id: string;
   title: string;
   mode: ConversationMode;
+  kind: RoomKind | null;
   workspace_id: string | null;
   archived: number;
   status: string;
@@ -24,21 +28,29 @@ export class SessionStore {
     id?: string;
     title: string;
     mode: ConversationMode;
+    /** 新模型：chat | cowork。省略时由 legacy mode 推导，兼容旧调用方。 */
+    kind?: RoomKind;
     workspaceId?: string | null;
     legacyRoomId?: string | null;
     agents: Array<{ agentId: string; snapshot: Record<string, unknown>; executionEligible: boolean }>;
   }): ConversationSession {
-    const errors = validateConversation({ mode: input.mode, agentIds: input.agents.map((agent) => agent.agentId) });
+    const agentIds = input.agents.map((agent) => agent.agentId);
+    const errors = validateConversation({ mode: input.mode, agentIds });
     if (errors.length) throw new Error(errors[0]);
-    if (new Set(input.agents.map((agent) => agent.agentId)).size !== input.agents.length) throw new Error("duplicate_session_agent");
+    if (new Set(agentIds).size !== agentIds.length) throw new Error("duplicate_session_agent");
+    // 房间形状由 core 统一裁决：chat 不得绑定 workspace，cowork 必须绑定
+    const kind: RoomKind = input.kind ?? (input.mode === "chat" ? "chat" : "cowork");
+    const workspaceId = kind === "chat" ? null : input.workspaceId ?? null;
+    const shapeErrors = validateRoomShape({ kind, workspaceId, agentIds });
+    if (shapeErrors.length) throw new Error(shapeErrors[0]);
     const id = input.id ?? crypto.randomUUID();
     const now = new Date().toISOString();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.query(`
-        INSERT INTO sessions (id, title, mode, workspace_id, archived, status, legacy_room_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 0, 'idle', ?, ?, ?)
-      `).run(id, input.title.trim() || "Untitled", input.mode, input.workspaceId ?? null, input.legacyRoomId ?? null, now, now);
+        INSERT INTO sessions (id, title, mode, kind, workspace_id, archived, status, legacy_room_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 0, 'idle', ?, ?, ?)
+      `).run(id, input.title.trim() || "Untitled", input.mode, kind, workspaceId, input.legacyRoomId ?? null, now, now);
       const insertAgent = this.db.query(`
         INSERT INTO session_agents (session_id, agent_id, snapshot_json, position, execution_eligible)
         VALUES (?, ?, ?, ?, ?)
@@ -71,6 +83,7 @@ export class SessionStore {
       id: row.id,
       title: row.title,
       mode: row.mode,
+      kind: row.kind ?? (row.mode === "chat" ? "chat" : "cowork"),
       workspaceId: row.workspace_id,
       archived: row.archived === 1,
       status: row.status,

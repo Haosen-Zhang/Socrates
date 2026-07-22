@@ -4,12 +4,16 @@ import { SessionStore } from "./session-store";
 
 describe("SessionStore", () => {
   it("creates all three modes with immutable agent snapshots", () => {
-    const store = new SessionStore(openDb(":memory:"));
-    expect(store.create({ title: "Chat", mode: "chat", agents: [] }).mode).toBe("chat");
-    expect(store.create({ title: "Solo", mode: "single_agent", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: true }] }).mode).toBe("single_agent");
+    const db = openDb(":memory:");
+    const store = new SessionStore(db);
+    db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run("w1", "/tmp/w1", "/tmp/w1", "hash1", "w1", "now", "now");
+    expect(store.create({ title: "Chat", mode: "chat", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] }).mode).toBe("chat");
+    expect(store.create({ title: "Solo", mode: "single_agent", workspaceId: "w1", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: true }] }).mode).toBe("single_agent");
     const multi = store.create({
       title: "Team",
       mode: "multi_agent",
+      workspaceId: "w1",
       agents: [
         { agentId: "a", snapshot: { nickname: "A" }, executionEligible: true },
         { agentId: "b", snapshot: { nickname: "B" }, executionEligible: false },
@@ -30,7 +34,7 @@ describe("SessionStore", () => {
   it("binds a workspace only while the session is inactive", () => {
     const db = openDb(":memory:");
     const store = new SessionStore(db);
-    const session = store.create({ title: "Chat", mode: "chat", agents: [] });
+    const session = store.create({ title: "Chat", mode: "chat", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
     db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("w", "/tmp/w", "/tmp/w", "hash", "w", "now", "now");
     expect(store.bindWorkspace(session.id, "w").workspaceId).toBe("w");
@@ -40,7 +44,7 @@ describe("SessionStore", () => {
 
   it("renames and archives an inactive conversation", () => {
     const store = new SessionStore(openDb(":memory:"));
-    const session = store.create({ title: "Before", mode: "chat", agents: [] });
+    const session = store.create({ title: "Before", mode: "chat", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
     expect(store.rename(session.id, "After").title).toBe("After");
     expect(store.archive(session.id, true).archived).toBe(true);
     expect(store.list().map((item) => item.id)).toEqual([session.id]);
@@ -49,7 +53,7 @@ describe("SessionStore", () => {
   it("rewinds persisted context but never relies on reversing external workspace effects", () => {
     const db = openDb(":memory:");
     const store = new SessionStore(db);
-    const session = store.create({ title: "Chat", mode: "chat", agents: [] });
+    const session = store.create({ title: "Chat", mode: "chat", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
     const insert = db.query("INSERT INTO session_messages (id, session_id, role, author_id, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
     insert.run("first", session.id, "user", null, "first turn", "completed", "2026-01-01T00:00:00.000Z");
     insert.run("second", session.id, "assistant", null, "later turn", "completed", "2026-01-01T00:00:01.000Z");
@@ -62,7 +66,7 @@ describe("SessionStore", () => {
   it("removes local conversation records only when the session is inactive", () => {
     const db = openDb(":memory:");
     const store = new SessionStore(db);
-    const session = store.create({ title: "Disposable", mode: "chat", agents: [] });
+    const session = store.create({ title: "Disposable", mode: "chat", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
     store.remove(session.id);
     expect(store.get(session.id)).toBeNull();
   });
