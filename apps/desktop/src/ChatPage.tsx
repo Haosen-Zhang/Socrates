@@ -4,10 +4,14 @@ import remarkGfm from "remark-gfm";
 import { useThrottledValue } from "./useThrottledValue";
 import { DEFAULT_WINDOW_SIZE, expandWindow, windowTail } from "./listWindow";
 import { useTransientFlag } from "./useTransientFlag";
-import { agentLabel, type Agent, type RoomKind, type ReasoningEffort, type SessionMessage, type StoredMessage, type TaskSummary } from "@socrates/core";
+import { agentLabel, type Agent, type AppMode,
+  type WorkspaceRecord,
+  type RoomKind, type ReasoningEffort, type SessionMessage, type StoredMessage, type TaskSummary } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
 import { roomDraftBlocker, toggleRoomAgentSelection } from "./roomSelection";
+import ModeSegmented from "./sidebar/ModeSegmented";
+import { chatRooms, coworkGroups, searchSidebar, type SidebarRoom } from "./sidebar/sidebarLists";
 import { useT, type MultiPlan, type StreamingTurn } from "./store";
 import { useStorePick } from "./selectors";
 import { sfx } from "./fx";
@@ -1059,6 +1063,8 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
 
 /** Side-bar entities all share the same predictable rename/archive/remove menu. */
 type SidebarEntityKind = "room" | "session" | "workspace";
+/** 侧栏统一行：rooms 与 sessions 折算成同一形状，source 决定打开哪条路径 */
+type SidebarEntry = SidebarRoom & { source: "room" | "session" };
 type MenuState = { kind: SidebarEntityKind; id: string; x: number; y: number };
 type RenameTarget = { kind: SidebarEntityKind; id: string; value: string };
 
@@ -1272,8 +1278,8 @@ function RoomMembersDialog({
 }
 
 export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => void }) {
-  const { rooms, agents, sessions, workspaces, activeWorkspace, currentRoomId, currentSessionId, messages, streaming, activeTaskId, rewindTo, chatError, tasks, usageSummaries, selectRoom, selectAgentSession, setActiveWorkspace, clearChatError } =
-    useStorePick("rooms", "agents", "sessions", "workspaces", "activeWorkspace", "currentRoomId", "currentSessionId", "messages", "streaming", "activeTaskId", "rewindTo", "chatError", "tasks", "usageSummaries", "selectRoom", "selectAgentSession", "setActiveWorkspace", "clearChatError");
+  const { rooms, agents, sessions, workspaces, activeWorkspace, currentRoomId, currentSessionId, config, updateConfig, messages, streaming, activeTaskId, rewindTo, chatError, tasks, usageSummaries, selectRoom, selectAgentSession, setActiveWorkspace, clearChatError } =
+    useStorePick("rooms", "agents", "sessions", "workspaces", "activeWorkspace", "currentRoomId", "currentSessionId", "config", "updateConfig", "messages", "streaming", "activeTaskId", "rewindTo", "chatError", "tasks", "usageSummaries", "selectRoom", "selectAgentSession", "setActiveWorkspace", "clearChatError");
   const bubbleBusy = !!streaming || !!activeTaskId;
   const t = useT();
   const [creating, setCreating] = useState(false);
@@ -1283,76 +1289,79 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
   const [sidebarError, setSidebarError] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
+  const [query, setQuery] = useState("");
+  const [foldedGroups, setFoldedGroups] = useState<string[]>([]);
+  const collapsed = config?.sidebar.collapsed ?? false;
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // 侧栏统一视图：rooms（Chat）与 sessions（Co-work）折算成同一种行，
+  // source 决定点击走 selectRoom 还是 selectAgentSession。
+  const entries = useMemo<SidebarEntry[]>(() => [
+    ...rooms.map((room) => ({ id: room.id, name: room.name, kind: "chat" as const, workspaceId: null, archived: room.archived, source: "room" as const })),
+    ...sessions.map((session) => ({ id: session.id, name: session.title, kind: session.kind, workspaceId: session.workspaceId, archived: session.archived, source: "session" as const })),
+  ], [rooms, sessions]);
+
+  // 顶层模式跟随当前选中的房间，而不是另存一份会不同步的副本
+  const currentEntry = entries.find((entry) => entry.id === (currentSessionId ?? currentRoomId));
+  const [modeOverride, setModeOverride] = useState<AppMode | null>(null);
+  const mode: AppMode = modeOverride ?? currentEntry?.kind ?? "chat";
+  useEffect(() => setModeOverride(null), [currentRoomId, currentSessionId]);
+
+  const memberNamesByRoom = useMemo(() => {
+    const named = (ids: string[]) => ids.map((id) => agents.find((agent) => agent.id === id)?.nickname ?? "");
+    return Object.fromEntries([
+      ...rooms.map((room) => [room.id, named(room.agentIds)] as const),
+      ...sessions.map((session) => [session.id, named(session.agents.map((agent) => agent.agentId))] as const),
+    ]);
+  }, [rooms, sessions, agents]);
+
+  const openEntry = (entry: SidebarEntry) =>
+    void (entry.source === "room" ? selectRoom(entry.id) : selectAgentSession(entry.id));
+
+  const searchHits = searchSidebar(query, mode, {
+    rooms: entries,
+    workspaces: workspaces.map((workspace) => ({ ...workspace, path: workspace.canonicalPath })),
+    memberNamesByRoom,
+  });
 
   const archivedRooms = rooms.filter((r) => r.archived);
   const archivedSessions = sessions.filter((session) => session.archived);
   const archivedWorkspaces = workspaces.filter((workspace) => workspace.archived);
 
-  const roomRow = (r: (typeof rooms)[number]) => (
-    <div
-      key={r.id}
-      className={`pixel-room-row group flex cursor-pointer items-center gap-2 px-2 py-2 text-sm ${
-        r.id === currentRoomId ? "is-active" : ""
-      } ${r.archived ? "opacity-60" : ""}`}
-      onClick={() => void selectRoom(r.id)}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        setMenu({ kind: "room", id: r.id, x: e.clientX, y: e.clientY });
-      }}
-    >
-      <span className="flex -space-x-2">
-        {r.agentIds.slice(0, 2).map((id) => {
-          const agent = agents.find((item) => item.id === id);
-          return agent ? <AgentAvatar key={id} src={agent.avatar} label={agent.nickname} size={24} lively={false} /> : null;
-        })}
-      </span>
-      <span className="min-w-0 flex-1 truncate font-medium">{r.name}</span>
-      {/* macOS WKWebView 不可靠派发 contextmenu，用常驻 ⋯ 按钮作主入口，右键作补充 */}
-      <button
-        title={t("room_menu")}
-        className={`pixel-room-more ml-1 shrink-0 px-1 text-sm opacity-0 group-hover:opacity-100 ${menu?.kind === "room" && menu.id === r.id ? "opacity-100" : ""}`}
-        onClick={(e) => {
-          e.stopPropagation();
-          const rect = e.currentTarget.getBoundingClientRect();
-          setMenu({ kind: "room", id: r.id, x: rect.right - 176, y: rect.bottom + 4 });
+  const entryRow = (entry: SidebarEntry) => {
+    const active = entry.id === (entry.source === "room" ? currentRoomId : currentSessionId);
+    const menuKind: SidebarEntityKind = entry.source;
+    return (
+      <div
+        key={`${entry.source}-${entry.id}`}
+        className={`pixel-room-row group flex cursor-pointer items-center gap-2 px-2 py-2 text-sm ${active ? "is-active" : ""} ${entry.archived ? "opacity-60" : ""}`}
+        onClick={() => openEntry(entry)}
+        title={collapsed ? entry.name : undefined}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setMenu({ kind: menuKind, id: entry.id, x: event.clientX, y: event.clientY });
         }}
       >
-        ⋯
-      </button>
-      <span
-        className="ml-1 shrink-0 text-[10px] text-neutral-400"
-      >
-        {t("room_members", { n: r.agentIds.length })}
-      </span>
-    </div>
-  );
-
-  const sessionRow = (session: (typeof sessions)[number]) => (
-    <div
-      key={session.id}
-      className={`pixel-room-row group flex cursor-pointer items-center gap-2 px-2 py-2 text-sm ${session.id === currentSessionId ? "is-active" : ""} ${session.archived ? "opacity-60" : ""}`}
-      onClick={() => void selectAgentSession(session.id)}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        setMenu({ kind: "session", id: session.id, x: event.clientX, y: event.clientY });
-      }}
-    >
-      <PixelIcon name={session.mode === "multi_agent" ? "robot" : "chat"} size={18} />
-      <span className="min-w-0 flex-1"><span className="block truncate font-medium">{session.title}</span><span className="block text-[9px] uppercase tracking-wider text-neutral-400">{session.mode.replace("_", " ")}</span></span>
-      <button
-        title={t("room_menu")}
-        className={`pixel-room-more shrink-0 px-1 text-sm opacity-0 group-hover:opacity-100 ${menu?.kind === "session" && menu.id === session.id ? "opacity-100" : ""}`}
-        onClick={(event) => {
-          event.stopPropagation();
-          const rect = event.currentTarget.getBoundingClientRect();
-          setMenu({ kind: "session", id: session.id, x: rect.right - 176, y: rect.bottom + 4 });
-        }}
-      >
-        ⋯
-      </button>
-    </div>
-  );
+        <PixelIcon name={entry.kind === "cowork" ? "robot" : "chat"} size={18} />
+        {!collapsed && (
+          <>
+            <span className="min-w-0 flex-1 truncate font-medium">{entry.name}</span>
+            <button
+              title={t("room_menu")}
+              className={`pixel-room-more shrink-0 px-1 text-sm opacity-0 group-hover:opacity-100 ${menu?.id === entry.id ? "opacity-100" : ""}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                const rect = event.currentTarget.getBoundingClientRect();
+                setMenu({ kind: menuKind, id: entry.id, x: rect.right - 176, y: rect.bottom + 4 });
+              }}
+            >
+              ⋯
+            </button>
+          </>
+        )}
+      </div>
+    );
+  };
 
   const createInWorkspace = async (workspaceId: string | null) => {
     try {
@@ -1363,32 +1372,36 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
     }
   };
 
-  const projectGroup = (workspaceId: string | null, label: string, archived = false) => {
-    const groupSessions = sessions.filter((session) => session.workspaceId === workspaceId && session.archived === archived);
-    const groupRooms = rooms.filter((room) => room.workspaceId === workspaceId && room.archived === archived);
-    const workspace = workspaceId ? workspaces.find((item) => item.id === workspaceId) : null;
-    if (!workspace && workspaceId) return null;
-    if (!workspace && groupSessions.length + groupRooms.length === 0 && archived) return null;
+  /** Co-work 的工作区分组；展开与选中互不影响（展开状态由 collapsedGroups 单独持有）。 */
+  const workspaceGroup = (group: { workspace: WorkspaceRecord; rooms: SidebarRoom[] }) => {
+    const { workspace } = group;
+    const folded = foldedGroups.includes(workspace.id);
     return (
-      <section key={workspaceId ?? "none"} className={`pixel-project-group ${archived ? "is-archived" : ""} ${(activeWorkspace?.id ?? null) === workspaceId ? "is-current" : ""}`}>
+      <section key={workspace.id} className={`pixel-project-group ${activeWorkspace?.id === workspace.id ? "is-current" : ""}`}>
         <div className="pixel-project-heading group flex items-center gap-1 px-1 py-1.5">
           <button
             className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs font-bold"
-            title={workspace?.canonicalPath ?? t("project_none")}
-            onClick={() => void setActiveWorkspace(workspaceId).catch((error: unknown) => setSidebarError(error instanceof Error ? error.message : String(error)))}
+            title={workspace.canonicalPath}
+            aria-expanded={!folded}
+            onClick={() => setFoldedGroups((current) => current.includes(workspace.id) ? current.filter((id) => id !== workspace.id) : [...current, workspace.id])}
           >
-            <PixelIcon name={workspace ? "folder" : "chat"} size={18} />
-            <span className="truncate">{label}</span>
-            {groupSessions.length + groupRooms.length > 0 && <span className="text-[10px] font-normal text-neutral-400">{groupSessions.length + groupRooms.length}</span>}
+            <PixelIcon name="folder" size={18} />
+            {!collapsed && (
+              <>
+                <span className="truncate">{workspace.label}</span>
+                {group.rooms.length > 0 && <span className="text-[10px] font-normal text-neutral-400">{group.rooms.length}</span>}
+              </>
+            )}
           </button>
-          {!archived && <button className="pixel-project-action" title={t("new_room")} aria-label={t("new_room")} onClick={() => void createInWorkspace(workspaceId)}><PixelIcon name="plus" size={15} /></button>}
-          {workspace && <button className="pixel-project-action" title={t("room_menu")} aria-label={t("room_menu")} onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setMenu({ kind: "workspace", id: workspace.id, x: rect.right - 176, y: rect.bottom + 4 }); }}>⋯</button>}
+          {!collapsed && <button className="pixel-project-action" title={t("new_room")} aria-label={t("new_room")} onClick={() => void createInWorkspace(workspace.id)}><PixelIcon name="plus" size={15} /></button>}
+          {!collapsed && <button className="pixel-project-action" title={t("room_menu")} aria-label={t("room_menu")} onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setMenu({ kind: "workspace", id: workspace.id, x: rect.right - 176, y: rect.bottom + 4 }); }}>⋯</button>}
         </div>
-        {(groupSessions.length + groupRooms.length > 0 || !archived) && <div className="space-y-1 px-1 pb-2">
-          {groupSessions.map(sessionRow)}
-          {groupRooms.map(roomRow)}
-          {groupSessions.length + groupRooms.length === 0 && <p className="px-2 py-1 text-[10px] text-neutral-400">{t("project_empty")}</p>}
-        </div>}
+        {!folded && (
+          <div className="space-y-1 px-1 pb-2">
+            {(group.rooms as SidebarEntry[]).map(entryRow)}
+            {group.rooms.length === 0 && !collapsed && <p className="px-2 py-1 text-[10px] text-neutral-400">{t("project_empty")}</p>}
+          </div>
+        )}
       </section>
     );
   };
@@ -1435,35 +1448,104 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
 
   return (
     <div className="flex h-[calc(100dvh-var(--app-header-height))]">
-      <aside className="pixel-room-sidebar flex w-64 shrink-0 flex-col p-3">
-        <button
-          className="pixel-new-room-button flex w-full items-center justify-center gap-2 px-3 py-2.5 text-sm font-bold"
-          onClick={() => setCreating(true)}
-        >
-          <PixelIcon name="plus" size={20} />
-          {t("new_room")}
-        </button>
-        <div className="mt-2"><WorkspaceChip /></div>
+      <aside className={`pixel-room-sidebar flex shrink-0 flex-col p-3 ${collapsed ? "w-14" : "w-64"}`}>
+        <div className="flex items-center gap-2">
+          {!collapsed && (
+            <button
+              className="pixel-new-room-button flex min-w-0 flex-1 items-center justify-center gap-2 px-3 py-2.5 text-sm font-bold"
+              onClick={() => setCreating(true)}
+            >
+              <PixelIcon name="plus" size={20} />
+              {t("new_room")}
+            </button>
+          )}
+          <button
+            className="pixel-button h-9 w-9 shrink-0"
+            aria-label={t(collapsed ? "sidebar_expand" : "sidebar_collapse")}
+            title={t(collapsed ? "sidebar_expand" : "sidebar_collapse")}
+            aria-expanded={!collapsed}
+            onClick={() => void updateConfig({ sidebar: { ...config!.sidebar, collapsed: !collapsed } })}
+          >
+            {collapsed ? "»" : "«"}
+          </button>
+        </div>
+        {collapsed && (
+          <button className="pixel-button mt-2 h-9 w-9 self-center" aria-label={t("new_room")} title={t("new_room")} onClick={() => setCreating(true)}>
+            <PixelIcon name="plus" size={18} />
+          </button>
+        )}
+
+        <div className="mt-3">
+          <ModeSegmented
+            mode={mode}
+            onChange={setModeOverride}
+            collapsed={collapsed}
+            labels={{ chat: t("room_kind_chat"), cowork: t("room_kind_cowork") }}
+          />
+        </div>
+
+        {!collapsed && (
+          <input
+            type="search"
+            className="pixel-input mt-2 w-full px-2 py-1.5 text-xs"
+            placeholder={t("sidebar_search_placeholder")}
+            aria-label={t("sidebar_search_placeholder")}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        )}
+        {!collapsed && mode === "cowork" && <div className="mt-2"><WorkspaceChip /></div>}
         {sidebarError && <div role="alert" className="mt-2 border border-red-300 bg-red-50 px-2 py-1 text-[10px] text-red-700">{sidebarError}</div>}
+
         <div className="pixel-room-list mt-3 flex-1 overflow-y-auto pr-1">
-          <div className="mb-2 px-1 text-[10px] font-bold uppercase tracking-wider text-neutral-500">{t("project_conversations")}</div>
-          {workspaces.filter((workspace) => !workspace.archived).map((workspace) => projectGroup(workspace.id, workspace.label))}
-          {projectGroup(null, t("chat_section"))}
+          {query.trim() ? (
+            searchHits.length === 0 ? (
+              <p className="px-2 py-1 text-[10px] text-neutral-400">{t("sidebar_search_empty")}</p>
+            ) : (
+              <div className="space-y-1 px-1">
+                {searchHits.map((hit) =>
+                  hit.kind === "room" ? (
+                    entryRow(hit.room as SidebarEntry)
+                  ) : (
+                    <button
+                      key={`ws-${hit.workspaceId}`}
+                      className="pixel-room-row flex w-full items-center gap-2 px-2 py-2 text-left text-sm"
+                      onClick={() => void setActiveWorkspace(hit.workspaceId).catch((error: unknown) => setSidebarError(error instanceof Error ? error.message : String(error)))}
+                    >
+                      <PixelIcon name="folder" size={18} />
+                      <span className="truncate">{hit.label}</span>
+                    </button>
+                  ),
+                )}
+              </div>
+            )
+          ) : mode === "chat" ? (
+            <div className="space-y-1 px-1">
+              {chatRooms(entries).length === 0 && <p className="px-2 py-1 text-[10px] text-neutral-400">{t("project_empty")}</p>}
+              {(chatRooms(entries) as SidebarEntry[]).map(entryRow)}
+            </div>
+          ) : (
+            coworkGroups(entries, workspaces).map((group) => workspaceGroup({ ...group, workspace: workspaces.find((item) => item.id === group.workspace.id)! }))
+          )}
         </div>
         <div className="pixel-archive-dock mt-3 pt-3">
-          {showArchived && archivedRooms.length + archivedSessions.length + archivedWorkspaces.length > 0 && (
-            <div className="pixel-archive-panel mb-2 max-h-56 overflow-y-auto p-2">
-              {archivedWorkspaces.map((workspace) => projectGroup(workspace.id, workspace.label, true))}
-              {projectGroup(null, t("chat_section"), true)}
+          {!collapsed && showArchived && archivedRooms.length + archivedSessions.length + archivedWorkspaces.length > 0 && (
+            <div className="pixel-archive-panel mb-2 max-h-56 space-y-1 overflow-y-auto p-2">
+              {(entries.filter((entry) => entry.archived) as SidebarEntry[]).map(entryRow)}
             </div>
           )}
           <button
             className="pixel-archive-button flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
             onClick={() => setShowArchived((v) => !v)}
+            title={t("archived_section", { n: archivedRooms.length + archivedSessions.length + archivedWorkspaces.length })}
           >
             <PixelIcon name="archive" size={20} />
-            <span className="min-w-0 flex-1">{t("archived_section", { n: archivedRooms.length + archivedSessions.length + archivedWorkspaces.length })}</span>
-            <span>{showArchived ? "▾" : "▸"}</span>
+            {!collapsed && (
+              <>
+                <span className="min-w-0 flex-1">{t("archived_section", { n: archivedRooms.length + archivedSessions.length + archivedWorkspaces.length })}</span>
+                <span>{showArchived ? "▾" : "▸"}</span>
+              </>
+            )}
           </button>
           {/* Settings 固定在左下角；打开的是 overlay，不改变当前房间导航状态 */}
           <button
@@ -1472,7 +1554,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
             title={`${t("settings_title")} (⌘,)`}
           >
             <PixelIcon name="gear" size={20} />
-            <span className="min-w-0 flex-1">{t("settings_title")}</span>
+            {!collapsed && <span className="min-w-0 flex-1">{t("settings_title")}</span>}
           </button>
         </div>
       </aside>
