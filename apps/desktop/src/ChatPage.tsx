@@ -1253,7 +1253,7 @@ function RoomMembersDialog({
   );
 }
 
-export default function ChatPage() {
+export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { rooms, agents, sessions, workspaces, activeWorkspace, currentRoomId, currentSessionId, messages, streaming, activeTaskId, rewindTo, chatError, tasks, usageSummaries, selectRoom, selectAgentSession, setActiveWorkspace, clearChatError } =
     useStorePick("rooms", "agents", "sessions", "workspaces", "activeWorkspace", "currentRoomId", "currentSessionId", "messages", "streaming", "activeTaskId", "rewindTo", "chatError", "tasks", "usageSummaries", "selectRoom", "selectAgentSession", "setActiveWorkspace", "clearChatError");
   const bubbleBusy = !!streaming || !!activeTaskId;
@@ -1446,6 +1446,15 @@ export default function ChatPage() {
             <PixelIcon name="archive" size={20} />
             <span className="min-w-0 flex-1">{t("archived_section", { n: archivedRooms.length + archivedSessions.length + archivedWorkspaces.length })}</span>
             <span>{showArchived ? "▾" : "▸"}</span>
+          </button>
+          {/* Settings 固定在左下角；打开的是 overlay，不改变当前房间导航状态 */}
+          <button
+            className="pixel-archive-button mt-2 flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
+            onClick={onOpenSettings}
+            title={`${t("settings_title")} (⌘,)`}
+          >
+            <PixelIcon name="gear" size={20} />
+            <span className="min-w-0 flex-1">{t("settings_title")}</span>
           </button>
         </div>
       </aside>

@@ -1,12 +1,18 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useT } from "./store";
 import { APP_KEYS, useStorePick } from "./selectors";
 import { setSfxEnabled, sfx } from "./fx";
 import GlobalFxLayer from "./fx/GlobalFxLayer";
 import { shouldPlayHoverFor } from "./fx/interactiveEntry";
-import PixelIcon from "./PixelIcon";
 import ChatPage from "./ChatPage";
-import Settings from "./Settings";
+import SettingsOverlayHost from "./settings/SettingsOverlayHost";
+import {
+  INITIAL_SETTINGS_OVERLAY,
+  closeSettings,
+  isSettingsShortcut,
+  openSettings,
+  type SettingsSection,
+} from "./settings/settingsOverlay";
 
 const BADGE_CLS: Record<string, string> = {
   connecting: "text-amber-700",
@@ -15,8 +21,14 @@ const BADGE_CLS: Record<string, string> = {
 };
 
 function App() {
-  const { status, view, setView, config, connect } = useStorePick(...APP_KEYS);
+  const { status, config, connect } = useStorePick(...APP_KEYS);
   const t = useT();
+  // Settings 是 overlay，不占用导航 target——关闭后回到原房间
+  const [settings, setSettings] = useState(INITIAL_SETTINGS_OVERLAY);
+  const showSettings = useCallback((section?: SettingsSection) => {
+    setSettings((current) => openSettings(current, section));
+  }, []);
+  const hideSettings = useCallback(() => setSettings(closeSettings), []);
   useEffect(() => {
     void connect();
   }, [connect]);
@@ -55,17 +67,35 @@ function App() {
     };
   }, []);
 
-  const tab = (v: "chat" | "settings", label: string, icon: string) => (
-    <button
-      className={`flex min-h-9 items-center gap-1.5 rounded px-3 py-1 text-sm ${
-        view === v ? "bg-neutral-900 text-white" : "text-neutral-600 hover:bg-neutral-100"
-      }`}
-      onClick={() => setView(v)}
-    >
-      <PixelIcon name={icon} size={20} />
-      {label}
-    </button>
-  );
+  // ⌘, / Ctrl+,：始终聚焦同一个实例（openSettings 保证单例）
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isSettingsShortcut(event)) return;
+      event.preventDefault();
+      showSettings();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showSettings]);
+
+  // 原生菜单 Socrates > Settings…；listener 随组件卸载注销，重挂载不会重复注册
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) => listen("menu://settings", () => showSettings()))
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {
+        // 非 Tauri 环境（如浏览器预览）没有原生菜单，忽略
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [showSettings]);
 
   return (
     <main className="pixel-app text-neutral-900">
@@ -73,8 +103,6 @@ function App() {
       <header className="pixel-header flex h-[var(--app-header-height)] items-center justify-between bg-white px-4 py-2.5">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold">Socrates</h1>
-          {tab("chat", t("tab_chat"), "chat")}
-          {tab("settings", t("tab_settings"), "gear")}
         </div>
         <span className={`text-sm font-medium ${BADGE_CLS[status]}`}>{t(status)}</span>
       </header>
@@ -83,10 +111,9 @@ function App() {
           {status === "connecting" ? t("waiting_sidecar") : t("sidecar_failed")}
         </p>
       ) : (
-        <div key={view} className="anim-view">
-          {view === "chat" ? <ChatPage /> : <Settings />}
-        </div>
+        <ChatPage onOpenSettings={showSettings} />
       )}
+      <SettingsOverlayHost open={settings.open} focusNonce={settings.focusNonce} onClose={hideSettings} />
     </main>
   );
 }

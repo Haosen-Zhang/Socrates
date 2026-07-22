@@ -1,7 +1,8 @@
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use tauri::{Manager, RunEvent, State};
+use tauri::menu::{AboutMetadata, Menu, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+use tauri::{Emitter, Manager, RunEvent, State};
 
 const HANDSHAKE_PROTOCOL: &str = "socrates-sidecar/1";
 
@@ -69,6 +70,40 @@ fn spawn_sidecar(app: tauri::AppHandle) {
     });
 }
 
+
+/// 原生应用菜单：`Socrates > Settings…`（⌘,）发出 `menu://settings`，
+/// 前端据此聚焦**同一个** Settings overlay 实例，不新建窗口。
+/// 非 macOS 平台保留系统默认菜单，快捷键仍由前端的 Ctrl+, 覆盖。
+fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let settings = MenuItemBuilder::with_id("settings", "Settings…")
+        .accelerator("CmdOrCtrl+,")
+        .build(app)?;
+    let app_menu = SubmenuBuilder::new(app, "Socrates")
+        .item(&PredefinedMenuItem::about(app, Some("About Socrates"), Some(AboutMetadata::default()))?)
+        .separator()
+        .item(&settings)
+        .separator()
+        .item(&PredefinedMenuItem::services(app, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::hide(app, None)?)
+        .item(&PredefinedMenuItem::hide_others(app, None)?)
+        .item(&PredefinedMenuItem::show_all(app, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::quit(app, None)?)
+        .build()?;
+    // 保留编辑菜单，否则 WebView 里的复制/粘贴快捷键在 macOS 上会失效
+    let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .item(&PredefinedMenuItem::undo(app, None)?)
+        .item(&PredefinedMenuItem::redo(app, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::cut(app, None)?)
+        .item(&PredefinedMenuItem::copy(app, None)?)
+        .item(&PredefinedMenuItem::paste(app, None)?)
+        .item(&PredefinedMenuItem::select_all(app, None)?)
+        .build()?;
+    Menu::with_items(app, &[&app_menu, &edit_menu])
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -77,8 +112,18 @@ pub fn run() {
         .manage(SidecarState::default())
         .invoke_handler(tauri::generate_handler![sidecar_handshake])
         .setup(|app| {
-            spawn_sidecar(app.handle().clone());
+            let handle = app.handle().clone();
+            #[cfg(target_os = "macos")]
+            {
+                app.set_menu(build_menu(&handle)?)?;
+            }
+            spawn_sidecar(handle);
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == "settings" {
+                let _ = app.emit("menu://settings", ());
+            }
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
