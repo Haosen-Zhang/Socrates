@@ -4,6 +4,8 @@ export * from "./chat";
 export * from "./config";
 export * from "./orchestration";
 export * from "./conversation";
+export * from "./room-kind";
+export * from "./navigation";
 export * from "./model-capabilities";
 export * from "./usage";
 export * from "./events";
