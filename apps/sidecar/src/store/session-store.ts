@@ -3,6 +3,7 @@ import { validateConversation, type ConversationMode, type ConversationSession, 
   validateRoomShape,
   type RoomKind,
   normalizeCollaborationSettings,
+  DEFAULT_COLLABORATION_SETTINGS,
   validateCollaborationSettings,
   type RoomCollaborationSettings,
 } from "@socrates/core";
@@ -47,14 +48,25 @@ export class SessionStore {
     const workspaceId = kind === "chat" ? null : input.workspaceId ?? null;
     const shapeErrors = validateRoomShape({ kind, workspaceId, agentIds });
     if (shapeErrors.length) throw new Error(shapeErrors[0]);
+    // 不得把房间绑到已归档的工作区——否则它在侧栏里无处安放（归档树里也不显示）
+    if (workspaceId) {
+      const workspace = this.db.query<{ archived: number }, [string]>("SELECT archived FROM workspaces WHERE id = ?").get(workspaceId);
+      if (!workspace) throw new Error("workspace_not_found");
+      if (workspace.archived === 1) throw new Error("workspace_archived");
+    }
     const id = input.id ?? crypto.randomUUID();
     const now = new Date().toISOString();
+    // cowork 房间落一份默认协作设置：多成员默认轮流讨论，单成员默认不讨论——
+    // 这样 UI 显示的默认与运行时一致，而不是留空让两边各自推断。
+    const collaborationJson = kind === "cowork"
+      ? JSON.stringify({ ...DEFAULT_COLLABORATION_SETTINGS, discussionMode: agentIds.length >= 2 ? "round_robin" : "off" })
+      : null;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.query(`
-        INSERT INTO sessions (id, title, mode, kind, workspace_id, archived, status, legacy_room_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 0, 'idle', ?, ?, ?)
-      `).run(id, input.title.trim() || "Untitled", input.mode, kind, workspaceId, input.legacyRoomId ?? null, now, now);
+        INSERT INTO sessions (id, title, mode, kind, workspace_id, collaboration_json, archived, status, legacy_room_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 0, 'idle', ?, ?, ?)
+      `).run(id, input.title.trim() || "Untitled", input.mode, kind, workspaceId, collaborationJson, input.legacyRoomId ?? null, now, now);
       const insertAgent = this.db.query(`
         INSERT INTO session_agents (session_id, agent_id, snapshot_json, position, execution_eligible)
         VALUES (?, ?, ?, ?, ?)
@@ -130,6 +142,11 @@ export class SessionStore {
     if (!session) throw new Error("session_not_found");
     if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) {
       throw new Error("active_session_workspace_locked");
+    }
+    if (workspaceId) {
+      const workspace = this.db.query<{ archived: number }, [string]>("SELECT archived FROM workspaces WHERE id = ?").get(workspaceId);
+      if (!workspace) throw new Error("workspace_not_found");
+      if (workspace.archived === 1) throw new Error("workspace_archived");
     }
     this.db.query("UPDATE sessions SET workspace_id = ?, updated_at = ? WHERE id = ?")
       .run(workspaceId, new Date().toISOString(), sessionId);

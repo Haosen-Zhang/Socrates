@@ -31,6 +31,15 @@ describe("SessionStore", () => {
     ] })).toThrow("duplicate_session_agent");
   });
 
+  it("refuses to bind a co-work room to an archived workspace", () => {
+    const db = openDb(":memory:");
+    const store = new SessionStore(db);
+    db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, archived, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)")
+      .run("wa", "/tmp/wa", "/tmp/wa", "hasha", "wa", "now", "now");
+    expect(() => store.create({ title: "Cowork", mode: "single_agent", workspaceId: "wa", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: true }] }))
+      .toThrow("workspace_archived");
+  });
+
   it("binds a workspace only while the session is inactive", () => {
     const db = openDb(":memory:");
     const store = new SessionStore(db);

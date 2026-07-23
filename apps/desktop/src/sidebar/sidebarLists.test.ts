@@ -55,6 +55,15 @@ describe("mode filtering keeps the two lists disjoint", () => {
     expect(groups.map((g) => g.workspace.id)).toEqual(["w1", "w2"]);
     expect(groups.flatMap((g) => g.rooms).some((r) => r.id === "k3")).toBeFalse();
   });
+
+  it("an archived workspace still shows while it holds a live room (never orphan a room)", () => {
+    const archivedWs = wsRec("wz", "Archived", "/z", true);
+    const roomsWithOrphan = [...rooms, cowork("kz", "活着的房间", "wz")];
+    const groups = coworkGroups(roomsWithOrphan, [...workspaces, archivedWs]);
+    expect(groups.find((g) => g.workspace.id === "wz")?.rooms.map((r) => r.id)).toEqual(["kz"]);
+    // 一旦房间也归档，这个归档工作区就重新隐藏
+    expect(coworkGroups([...rooms, cowork("kz", "归档的", "wz", true)], [...workspaces, archivedWs]).some((g) => g.workspace.id === "wz")).toBeFalse();
+  });
 });
 
 describe("search is scoped by top-level mode", () => {

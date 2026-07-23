@@ -836,6 +836,10 @@ function MultiAgentSession() {
     </header>
     <div className="flex-1 space-y-4 overflow-y-auto p-4">
       {multiError && <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{multiError}</div>}
+      {/* 执行是脱离 SSE 的后台任务，失败原因不会走 task_failed 事件——直接读 terminalReason 展示 */}
+      {!multiError && currentMultiTask?.state === "failed" && currentMultiTask.terminalReason && (
+        <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{t("multi_failed_reason", { reason: currentMultiTask.terminalReason })}</div>
+      )}
       {currentMultiTask?.state === "paused" && currentMultiTask.outcomeUnknown && <div role="alert" className="border border-amber-400 bg-amber-50 p-3 text-xs text-amber-900">{t("multi_outcome_unknown")}</div>}
       {currentMultiTask?.state === "paused" && currentMultiTask.requiresExecutionReview && <div role="alert" className="border border-amber-400 bg-amber-50 p-3 text-xs text-amber-900">{t("multi_execution_review")}</div>}
       {sessionWindow.hiddenCount > 0 && (
@@ -996,7 +1000,7 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
               }}
             >
               <option value="">{t("room_workspace_placeholder")}</option>
-              {workspaces.map((workspace) => (
+              {workspaces.filter((workspace) => !workspace.archived).map((workspace) => (
                 <option key={workspace.id} value={workspace.id}>{workspace.label || workspace.displayPath}</option>
               ))}
             </select>
@@ -1346,6 +1350,22 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
           <button className="pixel-button h-8 w-8" aria-label={t("close")} onClick={() => { sfx.close(); dialog.close(); }}>×</button>
         </div>
 
+        {/* 讨论模式：关闭时跳过讨论，直接生成计划（快速提问不再空跑一轮） */}
+        <label className="block text-sm font-bold">{t("discussion_mode")}</label>
+        <div className="mb-4 mt-1 grid grid-cols-2 gap-2">
+          {(["round_robin", "off"] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              className={`pixel-mode-card p-3 text-left ${draft.discussionMode === value ? "is-selected" : ""}`}
+              onClick={() => patch({ discussionMode: value })}
+            >
+              <span className="block text-sm font-bold">{t(`discussion_mode_${value}`)}</span>
+              <span className="mt-1 block text-[11px] text-neutral-500">{t(`discussion_mode_${value}_desc`)}</span>
+            </button>
+          ))}
+        </div>
+
         {/* 协作方式：单执行者 vs Boss 统筹（Boss 会真实接管计划整合） */}
         <label className="block text-sm font-bold">{t("collab_mode")}</label>
         <div className="mt-1 grid grid-cols-2 gap-2">
@@ -1396,7 +1416,7 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
         {/* 尚未接入运行时的维度：如实标注，不做成假开关 */}
         <div className="mt-5 rounded border-2 border-dashed border-neutral-300 p-3 opacity-70">
           <div className="text-[11px] font-bold uppercase tracking-wider text-neutral-500">{t("not_wired_yet")}</div>
-          <p className="mt-1 text-xs text-neutral-500">{t("cowork_not_wired_desc")}</p>
+          <p className="mt-1 text-xs text-neutral-500">{t("supervision_not_wired_desc")}</p>
         </div>
 
         {error && <p className="mt-3 text-sm text-red-700">{t(error)}</p>}
