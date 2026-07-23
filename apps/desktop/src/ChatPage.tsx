@@ -4,8 +4,8 @@ import remarkGfm from "remark-gfm";
 import { useThrottledValue } from "./useThrottledValue";
 import { DEFAULT_WINDOW_SIZE, expandWindow, windowTail } from "./listWindow";
 import { useTransientFlag } from "./useTransientFlag";
-import { agentLabel, type Agent, type AppMode,
-  type WorkspaceRecord,
+import { agentLabel, normalizeCollaborationSettings, validateCollaborationSettings, type Agent, type AppMode,
+  type ConversationSession, type RoomCollaborationSettings, type WorkspaceRecord,
   type RoomKind, type ReasoningEffort, type SessionMessage, type StoredMessage, type TaskSummary } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
@@ -1072,11 +1072,13 @@ function SidebarEntityMenu({
   menu,
   onClose,
   onRename,
+  onCollab,
   onError,
 }: {
   menu: MenuState;
   onClose: () => void;
   onRename: (target: RenameTarget) => void;
+  onCollab: (sessionId: string) => void;
   onError: (message: string) => void;
 }) {
   const {
@@ -1140,6 +1142,17 @@ function SidebarEntityMenu({
       >
         {t("rename")}
       </button>
+      {menu.kind === "session" && "kind" in entity && entity.kind === "cowork" && (
+        <button
+          className={item}
+          onClick={() => {
+            onCollab(menu.id);
+            onClose();
+          }}
+        >
+          {t("cowork_settings_title")}
+        </button>
+      )}
       <button
         className={item}
         onClick={() => {
@@ -1277,6 +1290,125 @@ function RoomMembersDialog({
   );
 }
 
+/**
+ * Co-work 房间协作设置（C5）。
+ *
+ * 只把**运行时真实生效**的项做成开关：Boss 统筹（Boss 整合计划、默认不执行）与
+ * 审批方式（人工 / 执行者自检 / 指定审核者，后两者会真跑一次审核 Agent）。
+ * 讨论与监督暂未接入运行时，显式标注「尚未接入」而不是造假开关。
+ * 跨字段合法性用 core 的 validateCollaborationSettings 统一裁决，前后端同一份判断。
+ */
+function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationSession; onClose: () => void }) {
+  const { agents, updateCollaboration } = useStorePick("agents", "updateCollaboration");
+  const t = useT();
+  const dialog = useAnimatedDialogClose(onClose);
+  const [draft, setDraft] = useState<RoomCollaborationSettings>(() => normalizeCollaborationSettings(session.collaboration));
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const memberIds = session.agents.map((agent) => agent.agentId);
+  const nameOf = (id: string) => agents.find((agent) => agent.id === id)?.nickname ?? id;
+  const shape = { kind: session.kind, workspaceId: session.workspaceId, agentIds: memberIds };
+  const problems = validateCollaborationSettings(shape, draft);
+  const patch = (over: Partial<RoomCollaborationSettings>) => { setDraft((current) => ({ ...current, ...over })); setError(null); };
+
+  const bossOn = draft.collaborationMode === "agent_directed_multi_agent";
+
+  const save = async () => {
+    if (problems.length) { setError(problems[0]); return; }
+    setSaving(true);
+    try {
+      await updateCollaboration(session.id, draft);
+      dialog.close();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const memberSelect = (value: string | null, onPick: (id: string | null) => void, placeholder: string) => (
+    <select className="pixel-input mt-1 w-full px-3 py-2 text-sm" value={value ?? ""} onChange={(event) => onPick(event.target.value || null)}>
+      <option value="">{placeholder}</option>
+      {memberIds.map((id) => <option key={id} value={id}>{nameOf(id)}</option>)}
+    </select>
+  );
+
+  return (
+    <div className={`pixel-dialog-backdrop ${dialog.closing ? "is-closing" : ""}`} role="presentation" onMouseDown={dialog.close}>
+      <section className="pixel-dialog max-h-[calc(100vh-40px)] w-[min(600px,calc(100vw-48px))] overflow-y-auto p-5" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="mb-4 flex items-start justify-between">
+          <div>
+            <div className="pixel-kicker">CO-WORK POLICY</div>
+            <h3 className="text-lg font-bold">{t("cowork_settings_title")}</h3>
+            <p className="mt-1 text-xs text-neutral-500">{session.title}</p>
+          </div>
+          <button className="pixel-button h-8 w-8" aria-label={t("close")} onClick={() => { sfx.close(); dialog.close(); }}>×</button>
+        </div>
+
+        {/* 协作方式：单执行者 vs Boss 统筹（Boss 会真实接管计划整合） */}
+        <label className="block text-sm font-bold">{t("collab_mode")}</label>
+        <div className="mt-1 grid grid-cols-2 gap-2">
+          {(["single_executor", "agent_directed_multi_agent"] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              className={`pixel-mode-card p-3 text-left ${draft.collaborationMode === value ? "is-selected" : ""}`}
+              onClick={() => patch(value === "agent_directed_multi_agent"
+                ? { collaborationMode: value, boss: { ...draft.boss, enabled: true } }
+                : { collaborationMode: value, boss: { enabled: false, bossAgentId: null, allowBossExecution: false } })}
+            >
+              <span className="block text-sm font-bold">{t(`collab_mode_${value}`)}</span>
+              <span className="mt-1 block text-[11px] text-neutral-500">{t(`collab_mode_${value}_desc`)}</span>
+            </button>
+          ))}
+        </div>
+
+        {bossOn && (
+          <div className="pixel-card mt-3 space-y-3 p-3">
+            <label className="block text-sm font-bold">{t("boss_agent")}
+              {memberSelect(draft.boss.bossAgentId, (id) => patch({ boss: { ...draft.boss, bossAgentId: id } }), t("boss_agent_placeholder"))}
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={draft.boss.allowBossExecution} onChange={(event) => patch({ boss: { ...draft.boss, allowBossExecution: event.target.checked } })} />
+              {t("boss_allow_execution")}
+            </label>
+            <p className="text-[11px] text-neutral-500">{t("boss_hint")}</p>
+          </div>
+        )}
+
+        {/* 审批方式：后两者真跑一次审核 Agent */}
+        <label className="mt-5 block text-sm font-bold">{t("approval_mode")}</label>
+        <div className="mt-1 space-y-1">
+          {(["human", "executor_self_check", "designated_reviewer"] as const).map((value) => (
+            <label key={value} className="flex items-start gap-2 text-sm">
+              <input type="radio" name="approval" className="mt-1" checked={draft.approvalMode === value} onChange={() => patch({ approvalMode: value })} />
+              <span><span className="font-medium">{t(`approval_mode_${value}`)}</span><span className="block text-[11px] text-neutral-500">{t(`approval_mode_${value}_desc`)}</span></span>
+            </label>
+          ))}
+        </div>
+        {draft.approvalMode === "designated_reviewer" && (
+          <label className="mt-2 block text-sm font-bold">{t("designated_reviewer")}
+            {memberSelect(draft.designatedReviewerId, (id) => patch({ designatedReviewerId: id }), t("reviewer_placeholder"))}
+          </label>
+        )}
+
+        {/* 尚未接入运行时的维度：如实标注，不做成假开关 */}
+        <div className="mt-5 rounded border-2 border-dashed border-neutral-300 p-3 opacity-70">
+          <div className="text-[11px] font-bold uppercase tracking-wider text-neutral-500">{t("not_wired_yet")}</div>
+          <p className="mt-1 text-xs text-neutral-500">{t("cowork_not_wired_desc")}</p>
+        </div>
+
+        {error && <p className="mt-3 text-sm text-red-700">{t(error)}</p>}
+        <div className="mt-5 flex justify-end gap-2">
+          <button className="pixel-button px-3 py-2 text-sm" type="button" onClick={dialog.close}>{t("cancel")}</button>
+          <button className="pixel-button pixel-button--primary px-4 py-2 text-sm" type="button" disabled={saving || problems.length > 0} onClick={save}>{t("save")}</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { rooms, agents, sessions, workspaces, activeWorkspace, currentRoomId, currentSessionId, config, updateConfig, messages, streaming, activeTaskId, rewindTo, chatError, tasks, usageSummaries, selectRoom, selectAgentSession, setActiveWorkspace, clearChatError } =
     useStorePick("rooms", "agents", "sessions", "workspaces", "activeWorkspace", "currentRoomId", "currentSessionId", "config", "updateConfig", "messages", "streaming", "activeTaskId", "rewindTo", "chatError", "tasks", "usageSummaries", "selectRoom", "selectAgentSession", "setActiveWorkspace", "clearChatError");
@@ -1289,6 +1421,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
   const [sidebarError, setSidebarError] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
+  const [collabSessionId, setCollabSessionId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [foldedGroups, setFoldedGroups] = useState<string[]>([]);
   const collapsed = config?.sidebar.collapsed ?? false;
@@ -1585,7 +1718,11 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
       </aside>
       {creating && <NewRoomDialog onClose={() => setCreating(false)} />}
       {renameTarget && <RenameDialog target={renameTarget} onClose={() => setRenameTarget(null)} />}
-      {menu && <SidebarEntityMenu menu={menu} onClose={() => setMenu(null)} onRename={setRenameTarget} onError={setSidebarError} />}
+      {menu && <SidebarEntityMenu menu={menu} onClose={() => setMenu(null)} onRename={setRenameTarget} onCollab={setCollabSessionId} onError={setSidebarError} />}
+      {collabSessionId && (() => {
+        const target = sessions.find((session) => session.id === collabSessionId);
+        return target ? <CoworkRoomSettingsDialog session={target} onClose={() => setCollabSessionId(null)} /> : null;
+      })()}
       {showMembers && currentRoom && (
         <RoomMembersDialog roomId={currentRoom.id} memberIds={currentRoom.agentIds} onClose={() => setShowMembers(false)} />
       )}
