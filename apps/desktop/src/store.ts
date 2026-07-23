@@ -14,6 +14,7 @@ import {
   type TestOutcome,
   type WorkspaceRecord,
   type ConversationSession,
+  type RoomCollaborationSettings,
   type SessionMessage,
   type RuntimeEvent,
   type ApprovalDecision,
@@ -139,6 +140,7 @@ export type Store = {
   loadSessions: () => Promise<void>;
   selectAgentSession: (id: string) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<void>;
+  updateCollaboration: (id: string, collaboration: RoomCollaborationSettings) => Promise<void>;
   archiveSession: (id: string, archived: boolean) => Promise<void>;
   removeSession: (id: string) => Promise<void>;
   rewindSessionTo: (messageId: string) => Promise<void>;
@@ -520,6 +522,13 @@ export const useStore = create<Store>((set, get) => {
       await requireOk<ConversationSession>(await sidecarFetch(hs(), `/sessions/${id}`, {
         method: "PUT",
         body: JSON.stringify({ title }),
+      }));
+      await get().loadSessions();
+    },
+    updateCollaboration: async (id, collaboration) => {
+      await requireOk<ConversationSession>(await sidecarFetch(hs(), `/sessions/${id}/collaboration`, {
+        method: "PUT",
+        body: JSON.stringify({ collaboration }),
       }));
       await get().loadSessions();
     },
