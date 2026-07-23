@@ -85,9 +85,15 @@ export class MultiAgentCoordinator {
         this.store.transition(taskId, { type: "prepared_multi" });
         await this.stateEvent(taskId, task.sessionId, "discussing", emit);
       }
+      const collabRow = this.db.query<{ collaboration_json: string | null }, [string]>("SELECT collaboration_json FROM sessions WHERE id = ?").get(task.sessionId);
+      const collab = normalizeCollaborationSettings(collabRow?.collaboration_json ? JSON.parse(collabRow.collaboration_json) : null);
       const completed: Array<{ agentId: string; agentName: string; round: number; content: string }> = [];
       let ordinal = 0;
-      for (let round = 1; round <= task.config.maxRounds; round += 1) {
+      // 只有**显式**存了 discussionMode="off" 才跳过讨论；未配置过的会话保持历史行为（总是讨论）。
+      // （默认值是 "off"，不能拿它当"已关闭"，否则新房间会莫名其妙不讨论。）
+      const discussionOff = !!collabRow?.collaboration_json && collab.discussionMode === "off";
+      const discussionRounds = discussionOff ? 0 : task.config.maxRounds;
+      for (let round = 1; round <= discussionRounds; round += 1) {
         for (const agentId of task.config.speakingOrder) {
           if (controller.signal.aborted) throw new Error("multi_task_cancelled");
           const prior = this.store.completedTurnAtPosition({ taskId, phase: "discussing", round, participantIndex: ordinal });
@@ -154,7 +160,6 @@ export class MultiAgentCoordinator {
         this.store.transition(taskId, { type: "discussion_complete" });
         await this.stateEvent(taskId, task.sessionId, "synthesizing", emit);
       }
-      const collab = this.collaborationFor(task.sessionId);
       this.assertBossExecutionAllowed(task.config, collab);
       // Boss 整合：Boss 开启时由 Boss 产出计划（替代原 synthesizerId）
       const synthesizerId = this.effectiveSynthesizerId(task.config, collab);

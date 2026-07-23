@@ -19,19 +19,24 @@ export function chatRooms(rooms: SidebarRoom[]): SidebarRoom[] {
   return rooms.filter((room) => room.kind === "chat" && !room.archived);
 }
 
-/** Co-work 模式：工作区树，每个工作区下挂它自己绑定的 cowork 房间。 */
+/**
+ * Co-work 模式：工作区树，每个工作区下挂它自己绑定的 cowork 房间。
+ *
+ * 归档的工作区默认隐藏，但**只要还挂着未归档的房间就仍要显示**——否则那些房间
+ * 会彻底从界面消失、既进不去也删不掉（曾经的 orphan bug）。
+ */
 export function coworkGroups(
   rooms: SidebarRoom[],
   workspaces: Array<NavWorkspace & { label: string }>,
 ): WorkspaceGroup[] {
   return workspaces
-    .filter((workspace) => !workspace.archived)
     .map((workspace) => ({
       workspace,
       rooms: rooms.filter(
         (room) => room.kind === "cowork" && !room.archived && room.workspaceId === workspace.id,
       ),
-    }));
+    }))
+    .filter((group) => !group.workspace.archived || group.rooms.length > 0);
 }
 
 export type SearchHit =

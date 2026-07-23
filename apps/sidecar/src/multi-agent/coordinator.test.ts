@@ -102,8 +102,9 @@ describe("MultiAgentCoordinator", () => {
   });
 
   const PLAN = JSON.stringify({ objective: "build", summary: "safe", steps: [{ id: "1", title: "edit", description: "change", files: ["src/a.ts"], commands: [], risks: [], verification: ["bun test"] }], evidence: [] });
+  // 这些用例都要走讨论，显式开 round_robin（否则默认 "off" 会跳过讨论）
   const setCollab = (db: ReturnType<typeof setup>["db"], collab: Record<string, unknown>) =>
-    db.query("UPDATE sessions SET collaboration_json = ? WHERE id = 's'").run(JSON.stringify(collab));
+    db.query("UPDATE sessions SET collaboration_json = ? WHERE id = 's'").run(JSON.stringify({ discussionMode: "round_robin", ...collab }));
 
   it("Boss 开启时由 Boss 产出计划，即便配置里的 synthesizer 是别人", async () => {
     const { db, store, coordinator } = setup(["A view", "B view", PLAN]);
@@ -150,5 +151,25 @@ describe("MultiAgentCoordinator", () => {
     // 自动改了一版：现在应有第 2 版计划
     expect(store.getPlan(task.id)?.version).toBe(2);
     expect(store.getPlan(task.id)?.content.objective).toBe("build v2");
+  });
+
+  it("discussionMode=off 时跳过讨论，直接由综合者从 prompt 生成计划", async () => {
+    // 只喂一条输出（综合计划）——若讨论没被跳过，这里会因缺讨论输出而失败
+    const { db, store, coordinator } = setup([PLAN]);
+    db.query("UPDATE sessions SET collaboration_json = ? WHERE id = 's'").run(JSON.stringify({ discussionMode: "off" }));
+    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 3, synthesizerId: "b", executionAgentId: "a" } });
+    await coordinator.run(task.id, () => {});
+    expect(store.get(task.id)?.state).toBe("awaiting_plan_approval");
+    // 没有任何讨论轮次落库
+    expect(store.listTurns(task.id).filter((turn) => turn.phase === "discussing")).toHaveLength(0);
+    expect(store.getPlan(task.id)?.content.objective).toBe("build");
+  });
+
+  it("未配置协作设置的会话保持历史行为：仍然讨论", async () => {
+    // collaboration_json 为空 —— 默认值 discussionMode=off 不能被当作"已关闭"
+    const { store, coordinator } = setup(["A view", "B view", PLAN]);
+    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });
+    await coordinator.run(task.id, () => {});
+    expect(store.listTurns(task.id).filter((turn) => turn.phase === "discussing").length).toBeGreaterThan(0);
   });
 });
