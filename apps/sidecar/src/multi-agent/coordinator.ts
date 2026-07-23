@@ -3,8 +3,10 @@ import {
   buildDiscussionMessages,
   buildTurnSystem,
   validateStructuredPlan,
+  normalizeCollaborationSettings,
   type ModelGateway,
   type OrchestrationAgent,
+  type RoomCollaborationSettings,
   type StructuredPlan,
   type TokenUsage,
 } from "@socrates/core";
@@ -18,6 +20,7 @@ export type MultiAgentEvent =
   | { type: "delta"; taskId: string; agentId: string; text: string }
   | { type: "turn_completed"; taskId: string; agentId: string; nickname: string; model: string; round: number; phase: "discussing" | "synthesizing"; content: string; usage?: TokenUsage; replayed?: boolean }
   | { type: "plan_ready"; taskId: string; plan: unknown }
+  | { type: "reviewer_verdict"; taskId: string; reviewerId: string; nickname: string; verdict: "approve" | "request_changes"; notes: string; requestedRevision: boolean }
   | { type: "agent_fallback_selected"; taskId: string; originalAgentId: string; fallbackAgentId: string; nickname: string; model: string; round: number }
   | { type: "task_failed" | "task_cancelled"; taskId: string; message?: string };
 
@@ -36,6 +39,22 @@ function parsePlan(text: string): StructuredPlan | null {
 const PLAN_SYSTEM = `You synthesize a coding discussion into one reviewable execution plan. Return JSON only with this exact shape:
 {"objective":"...","summary":"...","steps":[{"id":"1","title":"...","description":"...","files":["relative/path"],"commands":["command"],"risks":["..."],"verification":["..."]}],"evidence":[{"refId":"opaque-id","snapshotHash":"sha256"}]}
 Never execute tools. Paths must be workspace-relative. An empty evidence array is valid.`;
+
+const REVIEW_SYSTEM = `You are the designated reviewer for an execution plan. Judge whether it is safe and complete enough to execute. Return JSON only:
+{"verdict":"approve"|"request_changes","notes":"one paragraph; if request_changes, say exactly what to fix"}
+Approve a sound plan. Request changes only for real gaps (missing steps, unsafe commands, wrong files). Never execute tools.`;
+
+/** 宽松解析 reviewer 裁决；解析不出时按 approve 处理，避免因格式问题卡死流程（人工仍会最终确认）。 */
+function parseVerdict(text: string): { verdict: "approve" | "request_changes"; notes: string } {
+  const stripped = text.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
+  try {
+    const value = JSON.parse(stripped) as Record<string, unknown>;
+    const verdict = value.verdict === "request_changes" ? "request_changes" : "approve";
+    return { verdict, notes: typeof value.notes === "string" ? value.notes : "" };
+  } catch {
+    return { verdict: "approve", notes: text.slice(0, 500) };
+  }
+}
 
 export class MultiAgentCoordinator {
   private readonly controllers = new Map<string, AbortController>();
@@ -135,8 +154,30 @@ export class MultiAgentCoordinator {
         this.store.transition(taskId, { type: "discussion_complete" });
         await this.stateEvent(taskId, task.sessionId, "synthesizing", emit);
       }
-      const plan = await this.synthesize(taskId, task.config.synthesizerId, ordinal, completed, null, controller.signal, emit);
+      const collab = this.collaborationFor(task.sessionId);
+      this.assertBossExecutionAllowed(task.config, collab);
+      // Boss 整合：Boss 开启时由 Boss 产出计划（替代原 synthesizerId）
+      const synthesizerId = this.effectiveSynthesizerId(task.config, collab);
+      let plan = await this.synthesize(taskId, synthesizerId, ordinal, completed, null, controller.signal, emit);
       this.store.transition(taskId, { type: "plan_ready" });
+
+      // 指定 Reviewer / Executor 自检：真实跑一次审核 Agent，request_changes 自动改一版后交人工确认
+      const reviewerId = this.effectiveReviewerId(task.config, collab);
+      if (reviewerId) {
+        const verdict = await this.reviewPlan(taskId, reviewerId, plan, ordinal, controller.signal, emit);
+        const reviewer = this.resolveAgent(reviewerId, this.snapshots(task.sessionId).find((s) => s.agentId === reviewerId)!.snapshot);
+        const requestedRevision = verdict.verdict === "request_changes";
+        await emit({ type: "reviewer_verdict", taskId, reviewerId, nickname: reviewer.nickname, verdict: verdict.verdict, notes: verdict.notes, requestedRevision });
+        if (requestedRevision) {
+          // ponytail: 只自动改一轮，避免 reviewer↔synthesizer 死循环；要多轮再加
+          this.store.transition(taskId, { type: "request_replan" });
+          this.store.transition(taskId, { type: "synthesize_revision" });
+          const revisionTurns = completed.concat([{ agentId: reviewerId, agentName: reviewer.nickname, round: task.config.maxRounds + 1, content: `Reviewer requested changes: ${verdict.notes}` }]);
+          plan = await this.synthesize(taskId, synthesizerId, ordinal + completed.length + 4, revisionTurns, plan.version, controller.signal, emit);
+          this.store.transition(taskId, { type: "plan_ready" });
+        }
+      }
+
       await this.stateEvent(taskId, task.sessionId, "awaiting_plan_approval", emit);
       await emit({ type: "plan_ready", taskId, plan });
     } catch (error) {
@@ -218,7 +259,8 @@ export class MultiAgentCoordinator {
         content: row.content,
       }));
       turns.push({ agentId: "user", agentName: "User revision", round: task.config.maxRounds + 1, content: instruction });
-      const plan = await this.synthesize(taskId, task.config.synthesizerId, (task.discussionCutoff ?? turns.length) + parent.version * 2, turns, parent.version, controller.signal, emit);
+      const synthesizerId = this.effectiveSynthesizerId(task.config, this.collaborationFor(task.sessionId));
+      const plan = await this.synthesize(taskId, synthesizerId, (task.discussionCutoff ?? turns.length) + parent.version * 2, turns, parent.version, controller.signal, emit);
       this.store.transition(taskId, { type: "plan_ready" });
       await this.stateEvent(taskId, task.sessionId, "awaiting_plan_approval", emit);
       await emit({ type: "plan_ready", taskId, plan });
@@ -304,6 +346,58 @@ export class MultiAgentCoordinator {
       this.db.query("INSERT INTO session_messages (id, session_id, role, author_id, content, status, created_at) VALUES (?, ?, 'assistant', ?, ?, 'completed', ?)").run(id, sessionId, agentId, content, now);
       this.db.query("INSERT INTO message_parts (id, message_id, ordinal, type, text) VALUES (?, ?, 0, 'text', ?)").run(crypto.randomUUID(), id, content);
     })();
+  }
+
+  private collaborationFor(sessionId: string): RoomCollaborationSettings {
+    const row = this.db.query<{ collaboration_json: string | null }, [string]>("SELECT collaboration_json FROM sessions WHERE id = ?").get(sessionId);
+    return normalizeCollaborationSettings(row?.collaboration_json ? JSON.parse(row.collaboration_json) : null);
+  }
+
+  /** Boss 开启即由 Boss 整合出计划；否则用配置里的 synthesizer。 */
+  private effectiveSynthesizerId(config: MultiTaskConfig, collab: RoomCollaborationSettings): string {
+    return collab.boss.enabled && collab.boss.bossAgentId ? collab.boss.bossAgentId : config.synthesizerId;
+  }
+
+  /** 审批模式决定谁来审计划：自检→执行者，指定审核→指定人，人工→无（回到人工审批）。 */
+  private effectiveReviewerId(config: MultiTaskConfig, collab: RoomCollaborationSettings): string | null {
+    if (collab.approvalMode === "executor_self_check") return config.executionAgentId;
+    if (collab.approvalMode === "designated_reviewer") return collab.designatedReviewerId;
+    return null;
+  }
+
+  /** Boss 默认不执行：未显式允许时，Boss 不得同时是执行者。 */
+  private assertBossExecutionAllowed(config: MultiTaskConfig, collab: RoomCollaborationSettings): void {
+    if (collab.boss.enabled && !collab.boss.allowBossExecution && config.executionAgentId === collab.boss.bossAgentId) {
+      throw new Error("boss_must_not_execute");
+    }
+  }
+
+  /** 审核一版计划，返回裁决。与讨论/综合共用一套幂等的 turn 机制，resume 可回放。 */
+  private async reviewPlan(
+    taskId: string,
+    reviewerId: string,
+    plan: { content: StructuredPlan },
+    ordinal: number,
+    signal: AbortSignal,
+    emit: (event: MultiAgentEvent) => void | Promise<void>,
+  ): Promise<{ verdict: "approve" | "request_changes"; notes: string }> {
+    const task = this.store.get(taskId)!;
+    const participant = this.snapshots(task.sessionId).find((item) => item.agentId === reviewerId);
+    if (!participant) throw new Error("multi_reviewer_snapshot_missing");
+    const index = ordinal + 3;
+    const prior = this.store.completedLogicalTurn({ taskId, phase: "reviewing", round: 0, participantIndex: index, agentId: reviewerId });
+    if (prior) return parseVerdict(prior.content);
+    const agent = { ...this.resolveAgent(reviewerId, participant.snapshot), reasoningEffort: task.config.effortByAgent?.[reviewerId] as OrchestrationAgent["reasoningEffort"] ?? undefined };
+    const stableKey = `${task.id}:${task.attemptNo}:reviewing:0:${index}`;
+    const turn = this.store.beginTurn({ taskId, stableKey, phase: "reviewing", round: 0, participantIndex: index, agentId: reviewerId, snapshot: participant.snapshot });
+    if (turn.status === "completed" && turn.content) return parseVerdict(turn.content);
+    if (turn.status !== "running" || turn.outcomeCertainty === "unknown") throw new Error("multi_turn_outcome_unknown");
+    await emit({ type: "turn_started", taskId, agentId: reviewerId, nickname: agent.nickname, model: agent.modelId, round: 0, phase: "synthesizing" });
+    const messages = buildDiscussionMessages(`${task.prompt}\n\nPlan under review:\n${JSON.stringify(plan.content)}`, []);
+    const result = await this.callAgent(agent, REVIEW_SYSTEM, messages, signal, async (text) => emit({ type: "delta", taskId, agentId: reviewerId, text }));
+    if (result.error) { this.store.failTurn(turn.id, result.error, result.receivedDelta || result.error === "provider_outcome_unknown" ? "unknown" : "known"); throw new Error(result.error); }
+    this.store.completeTurn(turn.id, result.content, result.usage);
+    return parseVerdict(result.content);
   }
 
   private async stateEvent(taskId: string, sessionId: string, state: string, emit: (event: MultiAgentEvent) => void | Promise<void>) {
