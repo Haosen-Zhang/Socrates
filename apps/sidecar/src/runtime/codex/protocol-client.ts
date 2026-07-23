@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import type { ProtocolMessage } from "../child-supervisor";
 import { JsonlChildSupervisor } from "../child-supervisor";
 import {
-  CODEX_CLI_VERSION,
+  isCompatibleCodexVersion,
   type CodexApprovalDecision,
   type CodexApprovalRequest,
   type CodexSandboxMode,
@@ -23,7 +23,15 @@ export function validateCodexRuntimeOptions(input: { sandbox: string; approvalsR
 export async function assertPinnedCodexVersion(binaryPath: string): Promise<void> {
   const { stdout } = await execFileAsync(binaryPath, ["--version"], { timeout: 5_000 });
   const match = /codex-cli\s+([^\s]+)/u.exec(stdout);
-  if (!match || match[1] !== CODEX_CLI_VERSION) throw new Error(`codex_version_mismatch:${match?.[1] ?? "unknown"}`);
+  const version = match?.[1] ?? null;
+  if (isCompatibleCodexVersion(version)) return;
+  // 逃生开关：codex 随 ChatGPT.app 自动升级 alpha 版，精确 pin 会反复卡住用户。
+  // 用户确认自担风险（协议可能变）后可放行；仍打印告警，不静默。
+  if (process.env.SOCRATES_CODEX_ALLOW_VERSION_MISMATCH === "1") {
+    console.warn(`[codex] 放行未验证版本 ${version ?? "unknown"}（SOCRATES_CODEX_ALLOW_VERSION_MISMATCH=1）；协议若有变动可能出错。`);
+    return;
+  }
+  throw new Error(`codex_version_mismatch:${version ?? "unknown"}`);
 }
 
 export async function createPinnedCodexClient(binaryPath: string, approvalHandler: ApprovalHandler): Promise<CodexProtocolClient> {
