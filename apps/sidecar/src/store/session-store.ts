@@ -2,6 +2,9 @@ import type { Database } from "bun:sqlite";
 import { validateConversation, type ConversationMode, type ConversationSession, type MessagePart, type SessionAgentSnapshot, type SessionMessage,
   validateRoomShape,
   type RoomKind,
+  normalizeCollaborationSettings,
+  validateCollaborationSettings,
+  type RoomCollaborationSettings,
 } from "@socrates/core";
 
 type SessionRow = {
@@ -9,6 +12,7 @@ type SessionRow = {
   title: string;
   mode: ConversationMode;
   kind: RoomKind | null;
+  collaboration_json: string | null;
   workspace_id: string | null;
   archived: number;
   status: string;
@@ -84,6 +88,7 @@ export class SessionStore {
       title: row.title,
       mode: row.mode,
       kind: row.kind ?? (row.mode === "chat" ? "chat" : "cowork"),
+      collaboration: normalizeCollaborationSettings(row.collaboration_json ? JSON.parse(row.collaboration_json) : null),
       workspaceId: row.workspace_id,
       archived: row.archived === 1,
       status: row.status,
@@ -128,6 +133,21 @@ export class SessionStore {
     }
     this.db.query("UPDATE sessions SET workspace_id = ?, updated_at = ? WHERE id = ?")
       .run(workspaceId, new Date().toISOString(), sessionId);
+    return this.get(sessionId)!;
+  }
+
+  /** 更新协作设置；跨字段合法性由 core 统一裁决，非法直接拒绝（不静默回退） */
+  updateCollaboration(sessionId: string, settings: RoomCollaborationSettings): ConversationSession {
+    const session = this.get(sessionId);
+    if (!session) throw new Error("session_not_found");
+    const normalized = normalizeCollaborationSettings(settings);
+    const errors = validateCollaborationSettings(
+      { kind: session.kind, workspaceId: session.workspaceId, agentIds: session.agents.map((agent) => agent.agentId) },
+      normalized,
+    );
+    if (errors.length) throw new Error(errors[0]);
+    this.db.query("UPDATE sessions SET collaboration_json = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(normalized), new Date().toISOString(), sessionId);
     return this.get(sessionId)!;
   }
 

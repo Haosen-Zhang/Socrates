@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { ConversationMode } from "@socrates/core";
+import type { ConversationMode, RoomCollaborationSettings } from "@socrates/core";
 import type { SessionStore } from "../store/session-store";
 import type { EventStore } from "../store/event-store";
 import type { UsageCollector } from "../services/usage-collector";
@@ -49,6 +49,16 @@ export function sessionRoutes(sessions: SessionStore, events: EventStore, usage?
     } catch (error) {
       const message = error instanceof Error ? error.message : "workspace_bind_failed";
       return c.json({ error: message }, message === "session_not_found" ? 404 : 409);
+    }
+  });
+  app.put("/:id/collaboration", async (c) => {
+    const body = await c.req.json().catch(() => null) as { collaboration?: unknown } | null;
+    if (!body || typeof body.collaboration !== "object" || body.collaboration === null) return c.json({ error: "invalid_collaboration_input" }, 400);
+    try {
+      return c.json(sessions.updateCollaboration(c.req.param("id"), body.collaboration as RoomCollaborationSettings));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "collaboration_update_failed";
+      return c.json({ error: message }, message === "session_not_found" ? 404 : 400);
     }
   });
   app.put("/:id", async (c) => {
