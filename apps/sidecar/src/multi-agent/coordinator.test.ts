@@ -100,4 +100,55 @@ describe("MultiAgentCoordinator", () => {
     expect(events.find((event) => event.type === "agent_fallback_selected")).toMatchObject({ originalAgentId: "a", fallbackAgentId: "b", nickname: "B", model: "model-b" });
     expect(store.listTurns(task.id).filter((turn) => turn.status === "completed").map((turn) => turn.agentId)).toEqual(["b", "b", "b"]);
   });
+
+  const PLAN = JSON.stringify({ objective: "build", summary: "safe", steps: [{ id: "1", title: "edit", description: "change", files: ["src/a.ts"], commands: [], risks: [], verification: ["bun test"] }], evidence: [] });
+  const setCollab = (db: ReturnType<typeof setup>["db"], collab: Record<string, unknown>) =>
+    db.query("UPDATE sessions SET collaboration_json = ? WHERE id = 's'").run(JSON.stringify(collab));
+
+  it("Boss 开启时由 Boss 产出计划，即便配置里的 synthesizer 是别人", async () => {
+    const { db, store, coordinator } = setup(["A view", "B view", PLAN]);
+    setCollab(db, { collaborationMode: "agent_directed_multi_agent", boss: { enabled: true, bossAgentId: "a", allowBossExecution: false } });
+    // config.synthesizerId 是 "b"，但 Boss=a 应接管综合
+    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "b" } });
+    await coordinator.run(task.id, () => {});
+    expect(store.get(task.id)?.state).toBe("awaiting_plan_approval");
+    expect(store.getPlan(task.id)?.createdBy).toBe("a");
+  });
+
+  it("Boss 默认不执行：Boss 同时是执行者时直接判非法", async () => {
+    const { db, store, coordinator } = setup(["A view", "B view", PLAN]);
+    setCollab(db, { collaborationMode: "agent_directed_multi_agent", boss: { enabled: true, bossAgentId: "a", allowBossExecution: false } });
+    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a" } });
+    await coordinator.run(task.id, () => {});
+    expect(store.get(task.id)?.state).toBe("failed");
+    expect(store.get(task.id)?.terminalReason).toBe("boss_must_not_execute");
+  });
+
+  it("指定 Reviewer 批准计划：跑一次审核并附上裁决，随后交人工确认", async () => {
+    const approve = JSON.stringify({ verdict: "approve", notes: "looks good" });
+    const { db, store, coordinator } = setup(["A view", "B view", PLAN, approve]);
+    setCollab(db, { approvalMode: "designated_reviewer", designatedReviewerId: "b" });
+    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a" } });
+    const verdicts: Array<Record<string, unknown>> = [];
+    await coordinator.run(task.id, (event) => { if (event.type === "reviewer_verdict") verdicts.push(event as unknown as Record<string, unknown>); });
+    expect(store.get(task.id)?.state).toBe("awaiting_plan_approval");
+    expect(verdicts).toHaveLength(1);
+    expect(verdicts[0]).toMatchObject({ reviewerId: "b", verdict: "approve", requestedRevision: false });
+    expect(store.getPlan(task.id)?.version).toBe(1);
+  });
+
+  it("Reviewer 要求修改：自动重综合一版后停在人工审批", async () => {
+    const reject = JSON.stringify({ verdict: "request_changes", notes: "add a test step" });
+    const PLAN2 = JSON.stringify({ objective: "build v2", summary: "safer", steps: [{ id: "1", title: "test", description: "add test", files: ["src/a.ts"], commands: [], risks: [], verification: ["bun test"] }], evidence: [] });
+    const { db, store, coordinator } = setup(["A view", "B view", PLAN, reject, PLAN2]);
+    setCollab(db, { approvalMode: "designated_reviewer", designatedReviewerId: "b" });
+    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a" } });
+    const verdicts: Array<Record<string, unknown>> = [];
+    await coordinator.run(task.id, (event) => { if (event.type === "reviewer_verdict") verdicts.push(event as unknown as Record<string, unknown>); });
+    expect(verdicts[0]).toMatchObject({ verdict: "request_changes", requestedRevision: true });
+    expect(store.get(task.id)?.state).toBe("awaiting_plan_approval");
+    // 自动改了一版：现在应有第 2 版计划
+    expect(store.getPlan(task.id)?.version).toBe(2);
+    expect(store.getPlan(task.id)?.content.objective).toBe("build v2");
+  });
 });

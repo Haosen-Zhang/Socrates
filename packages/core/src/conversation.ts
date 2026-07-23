@@ -29,6 +29,8 @@ export interface ConversationSession {
   mode: ConversationMode;
   /** 新房间模型（C1）；mode 保留为运行时形态，kind 决定导航归属 */
   kind: import("./room-kind").RoomKind;
+  /** 协作治理设置（讨论/协作/Boss/审批/监督）；chat 恒为默认值 */
+  collaboration: import("./room-kind").RoomCollaborationSettings;
   workspaceId: string | null;
   archived: boolean;
   status: string;
