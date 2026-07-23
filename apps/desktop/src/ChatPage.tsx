@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { MD_COMPONENTS } from "./markdownLink";
 import { useThrottledValue } from "./useThrottledValue";
 import { DEFAULT_WINDOW_SIZE, expandWindow, windowTail } from "./listWindow";
 import { useTransientFlag } from "./useTransientFlag";
@@ -157,7 +158,7 @@ const Bubble = memo(function Bubble({ m, busy, onRewind }: { m: StoredMessage; b
             isSummary ? "border-2 border-amber-300 bg-amber-50" : "border border-neutral-200 bg-white"
           }`}
         >
-          <Markdown remarkPlugins={[remarkGfm]}>{m.content}</Markdown>
+          <Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{m.content}</Markdown>
         </div>
         <MsgActions m={m} align="left" busy={busy} onRewind={onRewind} />
       </div>
@@ -188,7 +189,7 @@ function StreamingBubble({ s }: { s: StreamingTurn }) {
             s.phase === "summary" ? "border-2 border-amber-300 bg-amber-50" : "border border-neutral-200 bg-white"
           }`}
         >
-          <Markdown remarkPlugins={[remarkGfm]}>{throttledText}</Markdown>
+          <Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{throttledText}</Markdown>
           <span className="animate-pulse">▍</span>
         </div>
       </div>
@@ -696,7 +697,7 @@ function SingleAgentSession() {
         {sessionWindow.visible.map((message) => (
           <div key={message.id} className={`anim-msg group flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}>
             <div className={`pixel-card max-w-[78%] p-3 text-sm ${message.role === "user" ? "whitespace-pre-wrap bg-violet-50" : "md-body bg-white"}`}>
-              {message.role === "user" ? message.content : <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>}
+              {message.role === "user" ? message.content : <Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{message.content}</Markdown>}
               {message.parts.filter((part) => part.type !== "text").length > 0 && <div className="mt-2 flex flex-wrap gap-2">
                 {message.parts.map((part, index) => part.type === "image"
                   ? <AttachmentImage key={`${part.attachmentId}-${index}`} id={part.attachmentId} alt={part.alt ?? "image"} className="max-h-64 w-auto max-w-full" />
@@ -852,7 +853,7 @@ function MultiAgentSession() {
         const author = participants.find((item) => item.id === message.authorId);
         return <div key={message.id} className={`anim-msg group flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}><div className={`max-w-[82%] ${message.role === "user" ? "" : "flex gap-3"}`}>
           {message.role !== "user" && <AgentAvatar src={String(author?.avatar ?? "")} label={String(author?.nickname ?? "Agent")} size={34} />}
-          <div className={`md-body pixel-card p-3 text-sm ${message.role === "user" ? "bg-violet-50" : "bg-white"}`}><Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown></div>
+          <div className={`md-body pixel-card p-3 text-sm ${message.role === "user" ? "bg-violet-50" : "bg-white"}`}><Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{message.content}</Markdown></div>
         </div><MsgActions m={message} align={message.role === "user" ? "right" : "left"} busy={multiRunning} onRewind={(messageId) => void rewindSessionTo(messageId)} /></div>;
       })}
       {currentMultiTask?.turns.filter((turn) => turn.status === "running").map((turn) => {
