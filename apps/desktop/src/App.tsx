@@ -100,16 +100,13 @@ function App() {
   return (
     <main className="pixel-app text-neutral-900">
       <GlobalFxLayer />
-      <header className="pixel-header flex h-[var(--app-header-height)] items-center justify-between bg-white px-4 py-2.5">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold">Socrates</h1>
-        </div>
-        <span className={`text-sm font-medium ${BADGE_CLS[status]}`}>{t(status)}</span>
-      </header>
       {status !== "connected" ? (
-        <p className="p-6 text-sm text-neutral-500">
-          {status === "connecting" ? t("waiting_sidecar") : t("sidecar_failed")}
-        </p>
+        <div className="flex h-[100dvh] flex-col items-center justify-center gap-3 text-center">
+          <span className={`text-sm font-medium ${BADGE_CLS[status]}`}>{t(status)}</span>
+          <p className="text-sm text-neutral-500">
+            {status === "connecting" ? t("waiting_sidecar") : t("sidecar_failed")}
+          </p>
+        </div>
       ) : (
         <ChatPage onOpenSettings={showSettings} />
       )}

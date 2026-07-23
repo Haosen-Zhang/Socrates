@@ -1458,9 +1458,9 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
 
   // 顶层模式跟随当前选中的房间，而不是另存一份会不同步的副本
   const currentEntry = entries.find((entry) => entry.id === (currentSessionId ?? currentRoomId));
-  const [modeOverride, setModeOverride] = useState<AppMode | null>(null);
-  const mode: AppMode = modeOverride ?? currentEntry?.kind ?? "chat";
-  useEffect(() => setModeOverride(null), [currentRoomId, currentSessionId]);
+  // mode 是真实状态：跟随导航到房间时切换，但删除/归档清空选中时**不**跟着弹回 chat
+  const [mode, setMode] = useState<AppMode>(currentEntry?.kind ?? "chat");
+  useEffect(() => { if (currentEntry) setMode(currentEntry.kind); }, [currentEntry?.id]);
 
   const memberNamesByRoom = useMemo(() => {
     const named = (ids: string[]) => ids.map((id) => agents.find((agent) => agent.id === id)?.nickname ?? "");
@@ -1602,7 +1602,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
     streaming?.round !== undefined && streaming.round !== lastRound && streaming.phase !== "summary";
 
   return (
-    <div className="flex h-[calc(100dvh-var(--app-header-height))]">
+    <div className="flex h-[100dvh]">
       <aside className={`pixel-room-sidebar flex shrink-0 flex-col p-3 ${collapsed ? "w-14" : "w-64"}`}>
         <div className="flex items-center gap-2">
           {!collapsed && (
@@ -1633,7 +1633,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
         <div className="mt-3">
           <ModeSegmented
             mode={mode}
-            onChange={setModeOverride}
+            onChange={setMode}
             collapsed={collapsed}
             labels={{ chat: t("room_kind_chat"), cowork: t("room_kind_cowork") }}
           />
@@ -1805,7 +1805,17 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
             {roomAgents.length > 1 ? <TaskComposer agents={roomAgents} /> : <SimpleComposer />}
           </>
         ) : (
-          <p className="p-6 text-sm text-neutral-500">{t("pick_room")}</p>
+          <div className="flex flex-1 flex-col items-center justify-center gap-5 p-8 text-center">
+            <span className="opacity-30"><PixelIcon name="chat" size={72} /></span>
+            <div className="space-y-1.5">
+              <p className="text-lg font-bold text-neutral-700">{t("pick_room_title")}</p>
+              <p className="text-sm text-neutral-500">{t("pick_room")}</p>
+            </div>
+            <button className="pixel-button pixel-button--primary flex items-center gap-2 px-4 py-2 text-sm" onClick={() => setCreating(true)}>
+              <PixelIcon name="plus" size={16} />
+              {t("new_room")}
+            </button>
+          </div>
         )}
       </section>
     </div>
