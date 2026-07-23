@@ -1532,6 +1532,31 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
           {!collapsed && showArchived && archivedRooms.length + archivedSessions.length + archivedWorkspaces.length > 0 && (
             <div className="pixel-archive-panel mb-2 max-h-56 space-y-1 overflow-y-auto p-2">
               {(entries.filter((entry) => entry.archived) as SidebarEntry[]).map(entryRow)}
+              {/* 归档的工作区自己成一行（可能没有房间）——否则它只加计数却不显示 */}
+              {archivedWorkspaces.map((workspace) => (
+                <div
+                  key={`ws-${workspace.id}`}
+                  className="pixel-room-row group flex items-center gap-2 px-2 py-2 text-sm opacity-60"
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setMenu({ kind: "workspace", id: workspace.id, x: event.clientX, y: event.clientY });
+                  }}
+                >
+                  <PixelIcon name="folder" size={18} />
+                  <span className="min-w-0 flex-1 truncate font-medium">{workspace.label}</span>
+                  <button
+                    title={t("room_menu")}
+                    className="pixel-room-more shrink-0 px-1 text-sm opacity-0 group-hover:opacity-100"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      setMenu({ kind: "workspace", id: workspace.id, x: rect.right - 176, y: rect.bottom + 4 });
+                    }}
+                  >
+                    ⋯
+                  </button>
+                </div>
+              ))}
             </div>
           )}
           <button
