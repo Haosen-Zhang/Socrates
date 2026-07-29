@@ -160,7 +160,7 @@ export class McpManager {
     await Promise.all([...this.active.keys()].map((id) => this.disconnect(id)));
   }
 
-  acquireOwner(input: { taskId: string; serverId: string; ownerKind: "native" | "codex"; ownerId: string; generation: number }): void {
+  acquireOwner(input: { taskId: string; serverId: string; ownerKind: "native" | "langgraph"; ownerId: string; generation: number }): void {
     const existing = this.db.query<{ owner_kind: string; owner_id: string; generation: number }, [string, string]>(
       "SELECT owner_kind, owner_id, generation FROM mcp_owner_leases WHERE task_id = ? AND server_id = ?",
     ).get(input.taskId, input.serverId);

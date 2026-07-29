@@ -275,7 +275,6 @@ export class LangGraphAgentRuntime implements AgentRuntime {
     };
 
     const callModelNode = async (state: typeof AgentGraphState.State): Promise<Partial<typeof AgentGraphState.State>> => {
-      const nextTurn = reduceTurnState(state.turnState, { type: "sample" });
       const modelResponse: BaseMessage[] = [];
       const pendingApprovals: Array<{ callId: string; name: string; input: unknown }> = [];
       let hasToolCalls = false;
@@ -314,7 +313,8 @@ export class LangGraphAgentRuntime implements AgentRuntime {
       const aiMsg = new AIMessage({ content: "", tool_calls: pendingApprovals.map(a => ({ id: a.callId, name: a.name, args: a.input as Record<string, unknown> })) });
       modelResponse.unshift(aiMsg);
 
-      const nextTurn2 = reduceTurnState(nextTurn, {
+      // Transition from sampling → processing_response (prepareContextNode already set 'sampling')
+      const nextTurn = reduceTurnState(state.turnState, {
         type: "model_response",
         hasToolCalls,
         needsApproval,
@@ -322,7 +322,7 @@ export class LangGraphAgentRuntime implements AgentRuntime {
 
       return {
         messages: modelResponse,
-        turnState: nextTurn2,
+        turnState: nextTurn,
         pendingApprovals,
         agentState: needsApproval
           ? reduceAgentState(state.agentState, { type: "awaiting_approval" })
@@ -331,8 +331,8 @@ export class LangGraphAgentRuntime implements AgentRuntime {
     };
 
     const executeToolsNode = async (state: typeof AgentGraphState.State): Promise<Partial<typeof AgentGraphState.State>> => {
+      // Transition: awaiting_tool_approval → executing_tools
       const nextTurn = reduceTurnState(state.turnState, { type: "approval_settled" });
-      const nextTurn2 = reduceTurnState(nextTurn, { type: "approval_settled" }); // → executing_tools
       const results: Array<{ callId: string; output: unknown; isError: boolean }> = [];
 
       for (const pending of state.pendingApprovals) {
@@ -363,7 +363,7 @@ export class LangGraphAgentRuntime implements AgentRuntime {
       return {
         toolResults: results,
         messages: toolMessages,
-        turnState: reduceTurnState(nextTurn2, { type: "tools_completed" }),
+        turnState: reduceTurnState(nextTurn, { type: "tools_completed" }),
         pendingApprovals: [],
         agentState: reduceAgentState(state.agentState, { type: "approval_resolved" }),
       };

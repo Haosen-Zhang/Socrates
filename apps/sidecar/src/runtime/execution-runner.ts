@@ -44,7 +44,7 @@ export class ExecutionRunner {
       if (!snapshot || snapshot.execution_eligible !== 1) throw new Error("execution_agent_not_eligible");
       const profile = JSON.parse(snapshot.snapshot_json) as Record<string, unknown>;
       const handle = await this.runtimes.open({
-        runtimeKind: "codex_app_server", agentSessionId: `${taskId}:${task.attemptNo}:execution`,
+        runtimeKind: "native_ai_sdk", agentSessionId: `${taskId}:${task.attemptNo}:execution`,
         sessionId: task.sessionId, agentId: task.executionAgentId!, workspaceId: session.workspace_id,
         runtimeOptions: { sandbox: "workspace-write", model: typeof profile.modelId === "string" ? profile.modelId : undefined },
       });

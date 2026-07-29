@@ -88,7 +88,7 @@ describe("McpManager", () => {
     expect(scheduled).toBe(0);
 
     manager.acquireOwner({ taskId: "task", serverId: server.id, ownerKind: "native", ownerId: "runtime", generation: 1 });
-    expect(() => manager.acquireOwner({ taskId: "task", serverId: server.id, ownerKind: "codex", ownerId: "codex", generation: 1 })).toThrow("mcp_owner_conflict");
+    expect(() => manager.acquireOwner({ taskId: "task", serverId: server.id, ownerKind: "langgraph", ownerId: "codex", generation: 1 })).toThrow("mcp_owner_conflict");
     manager.releaseOwner("task", server.id, "runtime");
   });
 

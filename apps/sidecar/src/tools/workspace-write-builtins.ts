@@ -5,9 +5,10 @@
  * 所有写操作需要审批（risk: high/destructive, freshHumanRequired）。
  */
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, normalize } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { ToolDefinition } from "@socrates/core";
+import { normalizeWorkspaceRelativePath } from "@socrates/core";
 import { WorkspacePathPolicy } from "../workspace/path-policy";
 
 const objectSchema = (properties: Record<string, { type: "string" | "number" | "integer" | "boolean" }>, required: string[]) => ({
@@ -17,11 +18,21 @@ const objectSchema = (properties: Record<string, { type: "string" | "number" | "
   additionalProperties: false as const,
 });
 
+/** Resolve a path for writing — the target file may not exist yet */
+function resolveForWrite(policy: WorkspacePathPolicy, input: string): { absolutePath: string; relativePath: string } {
+  const relativePath = normalizeWorkspaceRelativePath(input);
+  const lexical = join(policy.canonicalRoot, relativePath);
+  if (!lexical.startsWith(policy.canonicalRoot + "/") && lexical !== policy.canonicalRoot) {
+    throw new Error("workspace_path_escape");
+  }
+  return { absolutePath: normalize(lexical), relativePath };
+}
+
 export function createWorkspaceWriteBuiltins(policy: WorkspacePathPolicy): ToolDefinition[] {
   return [
     {
       name: "write_file",
-      description: "Create or overwrite a file in the workspace. Always shows diff before execution.",
+      description: "Create or overwrite a file in the workspace. Shows diff for existing files.",
       inputSchema: objectSchema(
         { path: { type: "string" }, content: { type: "string" } },
         ["path", "content"],
@@ -32,24 +43,27 @@ export function createWorkspaceWriteBuiltins(policy: WorkspacePathPolicy): ToolD
       generation: 1,
       async execute(input: unknown) {
         const { path, content } = input as { path: string; content: string };
-        const resolved = policy.resolveExisting(path);
-        if (existsSync(resolved.absolutePath)) {
-          const existingText = policy.readText(resolved.relativePath, 1024 * 1024).text;
-          const newLines = content.split("\n");
-          return {
-            action: "overwritten",
-            path: resolved.relativePath,
-            previousLines: existingText.split("\n").length,
-            newLines: newLines.length,
-            preview: newLines.slice(0, 10).join("\n") + (newLines.length > 10 ? "\n..." : ""),
-          };
+        const resolved = resolveForWrite(policy, path);
+        const existed = existsSync(resolved.absolutePath);
+        let previousLines = 0;
+
+        if (existed) {
+          try {
+            const existingText = policy.readText(resolved.relativePath, 1024 * 1024).text;
+            previousLines = existingText.split("\n").length;
+          } catch {
+            // Non-text file — overwrite anyway
+          }
         }
+
         mkdirSync(dirname(resolved.absolutePath), { recursive: true });
         writeFileSync(resolved.absolutePath, content, "utf-8");
+
         const newLines = content.split("\n");
         return {
-          action: "created",
+          action: existed ? "overwritten" : "created",
           path: resolved.relativePath,
+          previousLines,
           newLines: newLines.length,
           preview: newLines.slice(0, 10).join("\n") + (newLines.length > 10 ? "\n..." : ""),
         };
