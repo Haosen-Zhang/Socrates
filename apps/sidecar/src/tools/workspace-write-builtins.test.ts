@@ -55,10 +55,17 @@ describe("workspace-write builtins", () => {
     expect(result.stdout).toContain("hello test");
   });
 
+  it("run_shell rejects commands not in allowlist", async () => {
+    const shellTool = tools.find((t) => t.name === "run_shell")!;
+    await expect(
+      shellTool.execute!({ command: "/bin/bash", args: "" }, {} as any),
+    ).rejects.toThrow("shell_command_not_allowed");
+  });
+
   it("run_shell captures stderr on failure", async () => {
     const shellTool = tools.find((t) => t.name === "run_shell")!;
-    // Use a command that won't exist
-    const result = (await shellTool.execute!({ command: "nonexistent_cmd_xyz", args: "" }, {} as any)) as any;
+    // Use an allowed command with invalid args to trigger failure
+    const result = (await shellTool.execute!({ command: "ls", args: "/nonexistent_path_xyz" }, {} as any)) as any;
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toBeTruthy();
   });

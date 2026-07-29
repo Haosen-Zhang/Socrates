@@ -152,9 +152,12 @@ runtimes.register("native_ai_sdk", (input) => {
         stableKey: `${input.agentSessionId}:${callId}`, name, generation: 1, input: toolInput,
         workspaceIdentity: workspace.identityHash, policyVersion: 1, attemptId: input.agentSessionId,
       }, context, {
-        effect: "allow", risk: availableDefs.find(d => d.name === name)?.risk ?? "medium",
-        matchedRuleIds: ["native-read-only"], reasonCode: "native_read_only_tool",
-        freshHumanRequired: false, policyVersion: 1,
+        effect: (availableDefs.find(d => d.name === name)?.risk === "high" || availableDefs.find(d => d.name === name)?.risk === "destructive") ? "ask" : "allow",
+        risk: availableDefs.find(d => d.name === name)?.risk ?? "medium",
+        matchedRuleIds: ["runtime_tool"],
+        reasonCode: "runtime_tool_execution",
+        freshHumanRequired: false,
+        policyVersion: 1,
       });
       if (record.status === "succeeded" && record.output) return { output: record.output, isError: false };
       return { output: record.error ?? "tool_failed", isError: true };

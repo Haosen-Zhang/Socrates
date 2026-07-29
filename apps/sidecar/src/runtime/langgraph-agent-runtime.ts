@@ -222,7 +222,24 @@ export class LangGraphAgentRuntime implements AgentRuntime {
           // Track state from graph
           if (typed.runState) this.runState_ = typed.runState as RunState;
           if (typed.agentState) this.agentState_ = typed.agentState as AgentState;
-          if (typed.turnState) this.turnState_ = typed.turnState as TurnState;
+          if (typed.turnState) {
+            this.turnState_ = typed.turnState as TurnState;
+            // When entering awaiting_tool_approval, yield approval_required events
+            if (this.turnState_ === "awaiting_tool_approval" && typed.pendingApprovals) {
+              const approvals = typed.pendingApprovals as Array<{ callId: string; name: string; input: unknown }>;
+              for (const approval of approvals) {
+                yield this.makeEvent({
+                  type: "approval.required",
+                  toolCallId: approval.callId,
+                  name: approval.name,
+                  input: approval.input,
+                  runId,
+                  agentId: this.input.agentId,
+                  turnId,
+                });
+              }
+            }
+          }
         }
       }
 
@@ -434,24 +451,28 @@ export class LangGraphAgentRuntime implements AgentRuntime {
     error?: string;
   }): RuntimeEvent {
     this.sequence++;
-    return {
-      type: "extension",
-      name: event.type,
-      payload: {
-        runId: event.runId,
-        agentId: event.agentId,
-        turnId: event.turnId,
-        toolCallId: event.toolCallId,
-        eventId: `${event.runId}:${this.sequence}`,
-        sequence: this.sequence,
-        timestamp: new Date().toISOString(),
-        protocolVersion: "1",
-        text: event.text,
-        name: event.name,
-        input: event.input,
-        output: event.output,
-        error: event.error,
-      },
-    };
+    // Map to native RuntimeEvent types that SingleAgentRunner expects
+    switch (event.type) {
+      case "assistant.delta":
+        return { type: "text_delta", text: event.text ?? "" };
+      case "tool.proposed":
+        return { type: "tool_call", callId: event.toolCallId!, name: event.name!, input: event.input };
+      case "tool.completed":
+        return { type: "extension", name: "tool_result", payload: { callId: event.toolCallId, output: event.output } };
+      case "tool.failed":
+        return { type: "extension", name: "tool_result", payload: { callId: event.toolCallId, output: event.output, error: event.error } };
+      case "run.started":
+        return { type: "extension", name: "run_started", payload: { runId: event.runId } };
+      case "run.completed":
+        return { type: "status", status: "completed" };
+      case "run.failed":
+        return { type: "status", status: "failed", message: event.error };
+      case "run.cancelled":
+        return { type: "status", status: "interrupted", message: event.error };
+      case "approval.required":
+        return { type: "approval_required", requestId: event.toolCallId!, callId: event.toolCallId!, kind: event.name };
+      default:
+        return { type: "extension", name: event.type, payload: event };
+    }
   }
 }

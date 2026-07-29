@@ -9,7 +9,13 @@ import { dirname, join, normalize } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { ToolDefinition } from "@socrates/core";
 import { normalizeWorkspaceRelativePath } from "@socrates/core";
-import { WorkspacePathPolicy } from "../workspace/path-policy";
+import { WorkspacePathPolicy, isSecretWorkspacePath } from "../workspace/path-policy";
+
+const SHELL_ALLOWLIST = new Set([
+  "echo", "cat", "ls", "pwd", "head", "tail", "wc",
+  "grep", "find", "sort", "uniq", "git", "npm", "node",
+  "python", "python3", "bun", "tsc", "eslint", "prettier",
+]);
 
 const objectSchema = (properties: Record<string, { type: "string" | "number" | "integer" | "boolean" }>, required: string[]) => ({
   type: "object" as const,
@@ -21,6 +27,7 @@ const objectSchema = (properties: Record<string, { type: "string" | "number" | "
 /** Resolve a path for writing — the target file may not exist yet */
 function resolveForWrite(policy: WorkspacePathPolicy, input: string): { absolutePath: string; relativePath: string } {
   const relativePath = normalizeWorkspaceRelativePath(input);
+  if (isSecretWorkspacePath(relativePath)) throw new Error("workspace_secret_path_denied");
   const lexical = join(policy.canonicalRoot, relativePath);
   if (!lexical.startsWith(policy.canonicalRoot + "/") && lexical !== policy.canonicalRoot) {
     throw new Error("workspace_path_escape");
@@ -82,6 +89,9 @@ export function createWorkspaceWriteBuiltins(policy: WorkspacePathPolicy): ToolD
       generation: 1,
       async execute(input: unknown) {
         const { command, args } = input as { command: string; args?: string };
+        if (!SHELL_ALLOWLIST.has(command)) {
+          throw new Error(`shell_command_not_allowed:${command}`);
+        }
         const argList = args ? args.split(/\s+/) : [];
         try {
           const stdout = execFileSync(command, argList, {
