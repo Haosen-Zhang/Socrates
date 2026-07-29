@@ -6,6 +6,19 @@
  *
  * 依赖：@langchain/langgraph, @langchain/core
  * 仅引入 apps/sidecar，不进 packages/core。
+ *
+ * ## Persistence（Ticket 007）
+ *
+ * 方案 A（推荐）：使用 LangGraph 内置 SqliteSaver
+ *   - 来自 @langchain/langgraph-checkpoint-sqlite
+ *   - 与 Socrates SQLite 使用同一数据库文件，不同表（langgraph_checkpoints）
+ *   - 稳定格式，原生支持 replay
+ *   - LangGraph thread_id 与 Socrates agent_runs.thread_id 一一对应
+ *
+ * 方案 B（备选）：自定义 BaseCheckpointSaver → Socrates runtime_events 表
+ *   - 仅在方案 A 不可行时采用
+ *
+ * 集成点：构造函数接受可选 checkpointer，传递给 graph.compile({ checkpointer })
  */
 
 import { StateGraph, Annotation, START, END } from "@langchain/langgraph";
@@ -35,6 +48,9 @@ export interface LangGraphAgentRuntimeInput {
   agentId: string;
   workspaceId?: string;
   system?: string;
+  /** LangGraph checkpointer for persistence/replay (Ticket 007).
+   *  Passing a SqliteSaver enables checkpoint-based SSE replay. */
+  checkpointer?: import("@langchain/langgraph").BaseCheckpointSaver;
   /** Callback to invoke the model via Vercel AI SDK (or any provider) */
   modelInvoker: (input: {
     messages: BaseMessage[];
@@ -377,7 +393,7 @@ export class LangGraphAgentRuntime implements AgentRuntime {
       .addEdge("finalize", END);
 
     return graph.compile({
-      // No checkpointer yet — will be added in Ticket 007
+      checkpointer: this.input.checkpointer,
     });
   }
 
