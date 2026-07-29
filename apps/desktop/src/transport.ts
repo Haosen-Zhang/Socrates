@@ -24,7 +24,8 @@ export async function requireOk<T>(res: Response): Promise<T> {
 }
 
 /** SSE stream consumer — yields parsed JSON events.
- *  Supports Last-Event-ID for reconnection via optional lastEventId param. */
+ *  When lastEventId is provided, events are skipped until one with a matching
+ *  event id field ("id") is found; subsequent events are yielded normally. */
 export async function* streamSseEvents(
   response: Response,
   lastEventId?: string,
@@ -37,6 +38,7 @@ export async function* streamSseEvents(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let resumed = lastEventId === undefined || lastEventId === "";
 
   try {
     while (true) {
@@ -46,10 +48,36 @@ export async function* streamSseEvents(
       const { events, rest } = parseSseChunk(buffer);
       buffer = rest;
       for (const e of events) {
+        if (!resumed) {
+          // Check SSE "id:" field — Hono SSE may include it as __sse_id or similar
+          const raw = e as Record<string, unknown>;
+          const eventId = String(raw.id ?? raw.__sse_id ?? "");
+          if (eventId === lastEventId) {
+            resumed = true;
+          }
+          continue;
+        }
         yield e as unknown as Record<string, unknown>;
       }
     }
   } finally {
     reader.releaseLock();
   }
+}
+
+/** Track the last seen event id from SSE streams for reconnection */
+export function createEventIdTracker(): {
+  lastId: string | null;
+  /** Record an event id and return the previous last id */
+  track: (id: string) => string | null;
+} {
+  let lastId: string | null = null;
+  return {
+    get lastId() { return lastId; },
+    track(id: string) {
+      const prev = lastId;
+      lastId = id;
+      return prev;
+    },
+  };
 }
