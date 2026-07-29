@@ -22,10 +22,7 @@ import { agentRunRoutes } from "./routes/agent-runs";
 import { AttachmentResolver } from "./attachments/resolver";
 import { contentRoutes } from "./routes/content";
 import { WorkspacePathPolicy } from "./workspace/path-policy";
-import { createHash } from "node:crypto";
-import { streamText, tool, jsonSchema } from "ai";
 import { NativeAgentRuntime, createAiSdkNativeStream } from "./runtime/native-agent-runtime";
-import { LangGraphAgentRuntime } from "./runtime/langgraph-agent-runtime";
 import { createReadOnlyBuiltins } from "./tools/read-only-builtins";
 import { createWorkspaceWriteBuiltins } from "./tools/workspace-write-builtins";
 import { ToolRegistry } from "./tools/registry";
@@ -99,7 +96,6 @@ runtimes.register("native_ai_sdk", (input) => {
   if (!apiKey) throw new Error("native_provider_key_missing");
   const policy = new WorkspacePathPolicy(workspace.canonicalPath);
   const mcpDefinitions = mcp.definitionsFor(workspace.id, { effects: ["allow", "ask"] });
-  const mcpEffects = new Map(mcp.policyEntriesFor(workspace.id).map((entry) => [entry.namespacedName, entry.effect]));
   const sandboxMode: string = typeof input.runtimeOptions?.sandbox === "string" ? input.runtimeOptions.sandbox : "read-only";
   const workspaceWriteTools = sandboxMode === "workspace-write" ? createWorkspaceWriteBuiltins(policy) : [];
   const registry = new ToolRegistry([...createReadOnlyBuiltins(policy), ...workspaceWriteTools, ...mcpDefinitions]);
