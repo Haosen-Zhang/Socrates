@@ -37,7 +37,7 @@ export class SessionStore {
     /** 新模型：chat | cowork。省略时由 legacy mode 推导，兼容旧调用方。 */
     kind?: RoomKind;
     workspaceId?: string | null;
-    primaryAgentId?: string;
+    primaryAgentId: string;
     legacyRoomId?: string | null;
     agents: Array<{ agentId: string; snapshot: Record<string, unknown>; executionEligible: boolean }>;
   }): ConversationSession {
@@ -45,9 +45,7 @@ export class SessionStore {
     const errors = validateConversation({ mode: input.mode, agentIds });
     if (errors.length) throw new Error(errors[0]);
     if (new Set(agentIds).size !== agentIds.length) throw new Error("duplicate_session_agent");
-    const primaryAgentId = input.primaryAgentId
-      ?? input.agents.find((agent) => agent.executionEligible)?.agentId
-      ?? input.agents[0]?.agentId;
+    const primaryAgentId = input.primaryAgentId;
     if (!primaryAgentId || !agentIds.includes(primaryAgentId)) throw new Error("primary_agent_must_be_room_member");
     // 房间形状由 core 统一裁决：chat 不得绑定 workspace，cowork 必须绑定
     const kind: RoomKind = input.kind ?? (input.mode === "chat" ? "chat" : "cowork");
@@ -114,6 +112,7 @@ export class SessionStore {
       position: agent.position,
       executionEligible: agent.execution_eligible === 1,
     }));
+    if (!row.primary_agent_id) throw new Error("session_primary_agent_missing");
     return {
       id: row.id,
       title: row.title,
@@ -121,9 +120,7 @@ export class SessionStore {
       kind: row.kind ?? (row.mode === "chat" ? "chat" : "cowork"),
       collaboration: normalizeCollaborationSettings(row.collaboration_json ? JSON.parse(row.collaboration_json) : null),
       workspaceId: row.workspace_id,
-      primaryAgentId: row.primary_agent_id
-        ?? agents.find((agent) => agent.executionEligible)?.agentId
-        ?? agents[0]!.agentId,
+      primaryAgentId: row.primary_agent_id,
       archived: row.archived === 1,
       status: row.status,
       legacyRoomId: row.legacy_room_id,

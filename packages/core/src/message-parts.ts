@@ -5,7 +5,14 @@ export type MessagePart =
   | { type: "text"; text: string }
   | { type: "image"; attachmentId: string; mediaType: string; alt?: string }
   | { type: "file"; attachmentId: string; mediaType: string; filename: string }
-  | { type: "workspace_ref"; refId: string; relativePath: string; snapshotHash?: string }
+  | {
+    type: "workspace_ref";
+    refId: string;
+    relativePath: string;
+    snapshotHash?: string;
+    /** Content-addressed local snapshot used for durable model context. */
+    attachmentId?: string;
+  }
   | { type: "tool_call"; callId: string; name: string; input: unknown }
   | { type: "tool_result"; callId: string; output: ToolOutputRef; isError: boolean }
   | { type: "reasoning_summary"; text: string };
@@ -27,6 +34,7 @@ export function validateMessageParts(parts: readonly MessagePart[]): string[] {
     if (part.type === "text" && !part.text.trim()) errors.push("empty_text_part");
     if ((part.type === "image" || part.type === "file") && !part.attachmentId) errors.push("attachment_id_required");
     if (part.type === "workspace_ref") {
+      if (part.attachmentId === "") errors.push("attachment_id_required");
       try {
         if (normalizeWorkspaceRelativePath(part.relativePath) !== part.relativePath) errors.push("workspace_ref_noncanonical_path");
       } catch {

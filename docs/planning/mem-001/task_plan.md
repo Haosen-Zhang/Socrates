@@ -20,7 +20,7 @@ Persist product-authoritative same-Room/Thread Single-Agent memory in local Socr
 - [x] Phase 5: Feed durable typed history and tool results into Native AI SDK
 - [x] Phase 6: Add token-budget context policy and truncation diagnostics
 - [x] Phase 7: Run targeted tests, typecheck, full tests, desktop build, and migration checks
-- [ ] Phase 8: Review diff, update implementation report, commit, push, and open PR
+- [x] Phase 8: Review diff, update implementation report, commit, push, and open PR
 
 ## Guardrails
 
@@ -43,9 +43,10 @@ Persist product-authoritative same-Room/Thread Single-Agent memory in local Socr
 
 - Repository-wide `bun run lint` still reports seven pre-existing unused
   import/variable errors in files untouched by MEM-001.
-- Biome passes all 23 TypeScript/TSX files changed by this Ticket.
+- Biome passes all TypeScript/TSX files changed by this Ticket.
 - The existing Vite dynamic-import and chunk-size warnings remain unchanged.
 
 ## Status
 
-Phase 8: review, commit, push, and PR creation.
+Implementation and verification complete. PR creation is the final external
+handoff; no merge is performed by the Agent.

@@ -4,11 +4,14 @@ export interface ConversationContextOptions {
   contextWindowTokens: number;
   outputReserveTokens?: number;
   instructionTokens?: number;
+  /** Highest sequence omitted by the storage page before this builder ran. */
+  omittedBeforeSequence?: number | null;
 }
 
 export interface ConversationContext {
   messages: RuntimeConversationMessage[];
   truncated: boolean;
+  overflow: boolean;
   estimatedTokens: number;
   budgetTokens: number;
   droppedThroughSequence: number | null;
@@ -19,8 +22,11 @@ type MessageUnit = {
   tokens: number;
 };
 
+// Provider tokenizers are not available at this layer. One UTF-8 byte per token
+// is intentionally conservative (BPE token counts cannot exceed byte fallback)
+// and prevents the estimator from sending an over-budget payload.
 const tokenEstimate = (value: unknown): number =>
-  Math.max(1, Math.ceil(new TextEncoder().encode(JSON.stringify(value)).byteLength / 4));
+  Math.max(1, new TextEncoder().encode(JSON.stringify(value)).byteLength);
 
 function messageTokens(message: ConversationStoredMessage): number {
   return 4 + tokenEstimate({
@@ -30,12 +36,47 @@ function messageTokens(message: ConversationStoredMessage): number {
   });
 }
 
-function toolCallId(message: ConversationStoredMessage): string | null {
-  return message.parts.find((part) => part.type === "tool_call")?.callId ?? null;
+function toolCallKey(message: ConversationStoredMessage): string | null {
+  const callId = message.parts.find((part) => part.type === "tool_call")?.callId;
+  if (!callId) return null;
+  const scope = message.runId ?? message.turnId ?? `message:${message.messageId}`;
+  return `${scope}:${callId}`;
 }
 
-function toolResultId(message: ConversationStoredMessage): string | null {
-  return message.parts.find((part) => part.type === "tool_result")?.callId ?? null;
+function toolResultKey(message: ConversationStoredMessage): string | null {
+  const callId = message.parts.find((part) => part.type === "tool_result")?.callId;
+  if (!callId) return null;
+  const scope = message.runId ?? message.turnId ?? `message:${message.messageId}`;
+  return `${scope}:${callId}`;
+}
+
+/**
+ * Storage paging, cancellation, or an interrupted sidecar can leave only one
+ * side of a tool exchange in the loaded page. Provider APIs reject orphaned
+ * tool results/calls, so product history keeps them for audit while model
+ * context receives complete pairs only.
+ */
+function completeToolExchanges(messages: ConversationStoredMessage[]): ConversationStoredMessage[] {
+  const pending = new Map<string, number[]>();
+  const complete = new Set<number>();
+  messages.forEach((message, index) => {
+    const callKey = toolCallKey(message);
+    if (callKey) {
+      const indexes = pending.get(callKey) ?? [];
+      indexes.push(index);
+      pending.set(callKey, indexes);
+    }
+    const resultKey = toolResultKey(message);
+    const indexes = resultKey ? pending.get(resultKey) : undefined;
+    const callIndex = indexes?.shift();
+    if (callIndex !== undefined) {
+      complete.add(callIndex);
+      complete.add(index);
+      if (!indexes?.length) pending.delete(resultKey!);
+    }
+  });
+  return messages.filter((message, index) =>
+    (!toolCallKey(message) && !toolResultKey(message)) || complete.has(index));
 }
 
 /**
@@ -46,10 +87,10 @@ function messageUnits(messages: ConversationStoredMessage[]): MessageUnit[] {
   const calls = new Map<string, number>();
   const intervals: Array<{ start: number; end: number }> = [];
   messages.forEach((message, index) => {
-    const callId = toolCallId(message);
-    if (callId) calls.set(callId, index);
-    const resultId = toolResultId(message);
-    const callIndex = resultId ? calls.get(resultId) : undefined;
+    const callKey = toolCallKey(message);
+    if (callKey) calls.set(callKey, index);
+    const resultKey = toolResultKey(message);
+    const callIndex = resultKey ? calls.get(resultKey) : undefined;
     if (callIndex !== undefined) intervals.push({ start: callIndex, end: index });
   });
   intervals.sort((left, right) => left.start - right.start || left.end - right.end);
@@ -107,7 +148,9 @@ export function buildConversationContext(
   const budgetTokens = Math.max(1, contextWindow - outputReserve - instructionTokens);
   const ordered = [...history].sort((left, right) => left.sequence - right.sequence);
   const pinned = ordered.filter((message) => message.role === "system");
-  const conversational = ordered.filter((message) => message.role !== "system");
+  const conversational = completeToolExchanges(
+    ordered.filter((message) => message.role !== "system"),
+  );
   const units = messageUnits(conversational);
   const pinnedTokens = pinned.reduce((total, message) => total + messageTokens(message), 0);
   let used = pinnedTokens;
@@ -124,13 +167,21 @@ export function buildConversationContext(
     .sort((left, right) => left.sequence - right.sequence);
   const retainedIds = new Set(retained.map((message) => message.messageId));
   const dropped = ordered.filter((message) => !retainedIds.has(message.messageId));
+  const omittedBeforeSequence = options.omittedBeforeSequence && options.omittedBeforeSequence > 0
+    ? options.omittedBeforeSequence
+    : null;
+  const droppedThroughSequence = [
+    omittedBeforeSequence,
+    ...(dropped.length ? [Math.max(...dropped.map((message) => message.sequence))] : []),
+  ].filter((value): value is number => value !== null);
   return {
     messages: retained.map(toRuntimeMessage),
-    truncated: dropped.length > 0,
+    truncated: dropped.length > 0 || omittedBeforeSequence !== null,
+    overflow: used > budgetTokens,
     estimatedTokens: used,
     budgetTokens,
-    droppedThroughSequence: dropped.length
-      ? Math.max(...dropped.map((message) => message.sequence))
+    droppedThroughSequence: droppedThroughSequence.length
+      ? Math.max(...droppedThroughSequence)
       : null,
   };
 }

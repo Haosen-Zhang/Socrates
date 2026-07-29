@@ -144,41 +144,61 @@ function asToolOutputRef(output: unknown): ToolOutputRef {
 /** Convert Socrates-owned durable history to the AI SDK's provider-neutral model messages. */
 export function toAiSdkModelMessages(history: RuntimeConversationMessage[]): ModelMessage[] {
   const toolNames = new Map<string, string>();
-  return history.flatMap((message): ModelMessage[] => {
-    if (message.role === "system") return [{ role: "system", content: message.content }];
-    if (message.role === "user") return [{ role: "user", content: message.content }];
+  const messages: ModelMessage[] = [];
+  for (let index = 0; index < history.length; index += 1) {
+    const message = history[index]!;
+    if (message.role === "system") {
+      messages.push({ role: "system", content: message.content });
+      continue;
+    }
+    if (message.role === "user") {
+      messages.push({ role: "user", content: message.content });
+      continue;
+    }
     if (message.role === "assistant") {
-      const toolCalls = message.parts.filter((part) => part.type === "tool_call");
-      if (!toolCalls.length) return [{ role: "assistant", content: message.content }];
-      const content: Extract<ModelMessage, { role: "assistant" }>["content"] = [
-        ...(message.content ? [{ type: "text" as const, text: message.content }] : []),
-        ...toolCalls.map((part) => {
+      const content: Exclude<Extract<ModelMessage, { role: "assistant" }>["content"], string> = [];
+      while (index < history.length && history[index]!.role === "assistant") {
+        const assistant = history[index]!;
+        if (assistant.content) content.push({ type: "text", text: assistant.content });
+        for (const part of assistant.parts) {
+          if (part.type !== "tool_call") continue;
           toolNames.set(part.callId, part.name);
-          return {
-            type: "tool-call" as const,
+          content.push({
+            type: "tool-call",
             toolCallId: part.callId,
             toolName: part.name,
             input: part.input,
-          };
-        }),
-      ];
-      return [{ role: "assistant", content }];
+          });
+        }
+        index += 1;
+      }
+      index -= 1;
+      if (content.length === 1 && content[0]?.type === "text") {
+        messages.push({ role: "assistant", content: content[0].text });
+      } else if (content.length) {
+        messages.push({ role: "assistant", content });
+      }
+      continue;
     }
-    const results = message.parts.filter((part) => part.type === "tool_result");
-    if (!results.length) return [];
-    return [{
-      role: "tool",
-      content: results.map((part) => ({
-        type: "tool-result" as const,
-        toolCallId: part.callId,
-        toolName: toolNames.get(part.callId) ?? "unknown_tool",
-        output: {
-          type: "text" as const,
-          value: part.output.preview,
-        },
-      })),
-    }];
-  });
+    const content: Extract<ModelMessage, { role: "tool" }>["content"] = [];
+    while (index < history.length && history[index]!.role === "tool") {
+      for (const part of history[index]!.parts) {
+        if (part.type !== "tool_result") continue;
+        content.push({
+          type: "tool-result",
+          toolCallId: part.callId,
+          toolName: toolNames.get(part.callId) ?? "unknown_tool",
+          output: part.isError
+            ? { type: "error-text", value: part.output.preview }
+            : { type: "text", value: part.output.preview },
+        });
+      }
+      index += 1;
+    }
+    index -= 1;
+    if (content.length) messages.push({ role: "tool", content });
+  }
+  return messages;
 }
 
 type PendingApproval = {
@@ -192,6 +212,7 @@ export class NativeAgentRuntime implements AgentRuntime {
   readonly capabilities = { ...UNKNOWN_MODEL_CAPABILITIES, textInput: true as const, toolCalling: true as const };
   private opened = false;
   private interrupted = false;
+  private activeAbortController: AbortController | null = null;
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly approvedCalls = new Set<string>();
 
@@ -220,6 +241,27 @@ export class NativeAgentRuntime implements AgentRuntime {
     this.opened = true;
   }
 
+  private availableDefinitions(): ToolDefinition[] {
+    return this.input.registry.available({
+      mode: "single_agent",
+      phase: "executing",
+      allowedCapabilities: [...(this.input.allowedCapabilities ?? ["workspace_read", "mcp"])],
+    });
+  }
+
+  contextOverheadTokens(): number {
+    const payload = this.availableDefinitions().map((definition) => ({
+      name: definition.name,
+      description: definition.description,
+      inputSchema: definition.inputSchema,
+    }));
+    return new TextEncoder().encode(JSON.stringify({
+      system: this.input.system ?? "",
+      tools: payload,
+    })).byteLength
+      + payload.length * 64;
+  }
+
   async *start(input: {
     prompt: string;
     parts?: MessagePart[];
@@ -244,12 +286,7 @@ export class NativeAgentRuntime implements AgentRuntime {
         contextBlocks.push(`<untrusted_workspace_file path=${JSON.stringify(part.relativePath)}>\n${resolved.text}\n</untrusted_workspace_file>`);
       }
     }
-    const definitions = this.input.registry.available({
-      mode: "single_agent",
-      phase: "executing",
-      // 由调用方按 sandbox 决定；缺省退回只读，绝不擅自开放写能力
-      allowedCapabilities: [...(this.input.allowedCapabilities ?? ["workspace_read", "mcp"])],
-    });
+    const definitions = this.availableDefinitions();
     const tools = Object.fromEntries(definitions.flatMap((definition) => {
       const approval = this.input.permissionForTool?.(definition) ?? "allow";
       if (approval === "deny") return [];
@@ -300,37 +337,48 @@ export class NativeAgentRuntime implements AgentRuntime {
       const lastUserIndex = messages.findLastIndex((message) => message.role === "user");
       if (lastUserIndex >= 0) messages[lastUserIndex] = { role: "user", content: contextualPrompt };
     }
-    yield { type: "status", status: "running" };
-    for await (const event of this.input.stream({
-      prompt: contextualPrompt,
-      messages,
-      system: this.input.system,
-      signal: input.signal,
-      tools,
-      maxSteps: this.input.maxSteps ?? 8,
-      requestApproval: ({ requestId, callId }) => {
-        if (this.pendingApprovals.has(requestId)) return Promise.reject(new Error("native_approval_id_reused"));
-        return new Promise((resolve, reject) => this.pendingApprovals.set(requestId, { callId, resolve, reject }));
-      },
-    })) {
-      if (this.interrupted) throw new Error("native_agent_cancelled");
-      if (event.type === "text_delta") yield event;
-      else if (event.type === "tool_call") yield event;
-      else if (event.type === "tool_result") yield {
-        type: "tool_result",
-        callId: event.callId,
-        name: event.name,
-        output: asToolOutputRef(event.output),
-        isError: event.isError,
-      };
-      else if (event.type === "approval_required") yield {
-        type: "approval_required", requestId: event.requestId, callId: event.callId,
-        risk: tools[event.name]?.definition.risk ?? "high", kind: "tool",
-      };
-      else if (event.type === "usage") yield event;
-      else if (event.type === "error") throw event.error;
+    const abortController = new AbortController();
+    const abortFromRequest = () => abortController.abort(input.signal?.reason);
+    input.signal?.addEventListener("abort", abortFromRequest, { once: true });
+    if (input.signal?.aborted) abortFromRequest();
+    this.activeAbortController = abortController;
+    try {
+      yield { type: "status", status: "running" };
+      for await (const event of this.input.stream({
+        prompt: contextualPrompt,
+        messages,
+        system: this.input.system,
+        signal: abortController.signal,
+        tools,
+        maxSteps: this.input.maxSteps ?? 8,
+        requestApproval: ({ requestId, callId }) => {
+          if (this.pendingApprovals.has(requestId)) return Promise.reject(new Error("native_approval_id_reused"));
+          return new Promise((resolve, reject) => this.pendingApprovals.set(requestId, { callId, resolve, reject }));
+        },
+      })) {
+        if (this.interrupted || abortController.signal.aborted) throw new Error("native_agent_cancelled");
+        if (event.type === "text_delta") yield event;
+        else if (event.type === "tool_call") yield event;
+        else if (event.type === "tool_result") yield {
+          type: "tool_result",
+          callId: event.callId,
+          name: event.name,
+          output: asToolOutputRef(event.output),
+          isError: event.isError,
+        };
+        else if (event.type === "approval_required") yield {
+          type: "approval_required", requestId: event.requestId, callId: event.callId,
+          risk: tools[event.name]?.definition.risk ?? "high", kind: "tool",
+        };
+        else if (event.type === "usage") yield event;
+        else if (event.type === "error") throw event.error;
+      }
+      if (this.interrupted || abortController.signal.aborted) throw new Error("native_agent_cancelled");
+      yield { type: "status", status: "completed" };
+    } finally {
+      input.signal?.removeEventListener("abort", abortFromRequest);
+      if (this.activeAbortController === abortController) this.activeAbortController = null;
     }
-    yield { type: "status", status: "completed" };
   }
 
   async answerApproval(requestId: string, decision: "allow_once" | "allow_session" | "deny"): Promise<void> {
@@ -343,12 +391,15 @@ export class NativeAgentRuntime implements AgentRuntime {
 
   async interrupt(): Promise<void> {
     this.interrupted = true;
+    this.activeAbortController?.abort(new Error("native_agent_cancelled"));
     for (const pending of this.pendingApprovals.values()) pending.reject(new Error("native_agent_cancelled"));
     this.pendingApprovals.clear();
   }
 
   async close(): Promise<void> {
     this.opened = false;
+    this.activeAbortController?.abort(new Error("native_runtime_closed"));
+    this.activeAbortController = null;
     for (const pending of this.pendingApprovals.values()) pending.reject(new Error("native_runtime_closed"));
     this.pendingApprovals.clear();
     this.approvedCalls.clear();

@@ -51,6 +51,8 @@ export interface RuntimeConversationMessage {
 export interface AgentRuntime {
   readonly kind: string;
   readonly capabilities: ModelCapabilities;
+  /** Conservative provider-input overhead for tool names/descriptions/schemas. */
+  contextOverheadTokens?(): number;
   open(input: { sessionId: string; workspaceId?: string }): Promise<void>;
   start(input: {
     prompt: string;

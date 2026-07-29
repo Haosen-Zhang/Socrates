@@ -49,6 +49,7 @@ export type AgentForm = {
   role: string;
   systemPrompt: string;
   temperature: string; // 表单态，空串=未设置
+  contextWindowTokens: string; // 空串=未知，运行时使用保守上限
   reasoningCapabilityKnown: boolean;
   reasoningEfforts: ReasoningEffort[];
   reasoningEffort: ReasoningEffort | "";
@@ -947,6 +948,9 @@ export const useStore = create<Store>((set, get) => {
         role: form.role,
         systemPrompt: form.systemPrompt,
         temperature: form.temperature === "" ? undefined : Number(form.temperature),
+        contextWindowTokens: form.contextWindowTokens === ""
+          ? (editingId ? null : undefined)
+          : Number(form.contextWindowTokens),
         reasoningEfforts: form.reasoningCapabilityKnown ? form.reasoningEfforts : undefined,
         reasoningEffort: form.reasoningEffort || undefined,
       };
@@ -988,7 +992,7 @@ export const useStore = create<Store>((set, get) => {
           kind: payload.kind,
           mode: payload.mode,
           workspaceId: payload.workspaceId,
-          primaryAgentId: payload.agentIds[0],
+          primaryAgentId: payload.primaryAgentId,
           agents: agents.map((agent) => ({ agentId: agent!.id, snapshot: agent, executionEligible: true })),
         }),
       }));

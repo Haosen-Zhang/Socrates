@@ -78,4 +78,33 @@ describe("agent identity validation", () => {
     expect(unsupported.status).toBe(400);
     expect(await unsupported.json()).toEqual({ error: "reasoning_effort_unsupported" });
   });
+
+  it("persists an explicit model context window capability and rejects unsafe bounds", async () => {
+    const valid = await app.request("/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        nickname: "Long Context",
+        avatar: AGENT_AVATARS[2],
+        providerId,
+        modelId: "long-model",
+        contextWindowTokens: 128_000,
+      }),
+    });
+    expect(valid.status).toBe(201);
+    expect(await valid.json()).toMatchObject({
+      modelCapabilities: { contextWindowTokens: 128_000 },
+    });
+    const invalid = await app.request("/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        nickname: "Too Small",
+        avatar: AGENT_AVATARS[3],
+        providerId,
+        modelId: "tiny-model",
+        contextWindowTokens: 512,
+      }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ error: "context_window_tokens_invalid" });
+  });
 });

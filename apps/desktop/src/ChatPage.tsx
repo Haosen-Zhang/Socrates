@@ -903,6 +903,7 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
   const locked = presetWorkspaceId != null && workspaces.some((w) => w.id === presetWorkspaceId && !w.archived);
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
+  const [primaryAgentId, setPrimaryAgentId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [kind, setKind] = useState<RoomKind>(locked ? "cowork" : "chat");
   // Co-work 的工作区必须在这里明确选，不从全局 activeWorkspace 继承
@@ -910,7 +911,12 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
   const dialog = useAnimatedDialogClose(onClose);
 
   const toggle = (id: string) => {
-    setSelected((current) => toggleRoomAgentSelection(current, id));
+    const next = toggleRoomAgentSelection(selected, id);
+    setSelected(next);
+    setPrimaryAgentId((current) => {
+      if (current && next.includes(current)) return current;
+      return next.length === 1 ? next[0]! : null;
+    });
     setError(null);
   };
 
@@ -929,6 +935,7 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
         kind,
         title: roomTitleOrFallback(name, t("room_untitled")),
         agentIds: selected,
+        primaryAgentId,
         workspaceId: kind === "cowork" ? workspaceId : null,
       });
       dialog.close();
@@ -1049,6 +1056,25 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
             })}
           </div>
         )}
+        {kind === "cowork" && selected.length > 0 && (
+          <label className="mt-3 block text-sm font-bold">
+            {t("primary_agent")}
+            <select
+              className="pixel-input mt-1 w-full px-3 py-2 text-sm"
+              value={primaryAgentId ?? ""}
+              onChange={(event) => {
+                setPrimaryAgentId(event.target.value || null);
+                setError(null);
+              }}
+            >
+              <option value="">{t("primary_agent_placeholder")}</option>
+              {selected.map((id) => {
+                const agent = agents.find((item) => item.id === id);
+                return agent ? <option key={id} value={id}>{agent.nickname}</option> : null;
+              })}
+            </select>
+          </label>
+        )}
 
         {error && <p className="mt-3 text-sm text-red-700">{error}</p>}
         <footer className="mt-5 flex items-center justify-between gap-4 border-t border-neutral-200 pt-4">
@@ -1066,7 +1092,13 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
             <button
               className="pixel-button pixel-button--primary px-5 py-2 text-sm"
               type="submit"
-              disabled={roomDraftBlocker({ kind, title: name, agentIds: selected, workspaceId }) !== null}
+              disabled={roomDraftBlocker({
+                kind,
+                title: name,
+                agentIds: selected,
+                primaryAgentId,
+                workspaceId,
+              }) !== null}
             >
               {t("create_room")}
             </button>

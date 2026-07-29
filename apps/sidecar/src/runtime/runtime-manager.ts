@@ -117,6 +117,13 @@ export class RuntimeManager {
     }
   }
 
+  contextOverheadTokens(runtimeSessionId: string): number {
+    const active = this.active.get(runtimeSessionId);
+    if (!active) throw new Error("runtime_not_active");
+    const value = active.runtime.contextOverheadTokens?.() ?? 0;
+    return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  }
+
   async interrupt(runtimeSessionId: string): Promise<void> {
     const active = this.active.get(runtimeSessionId);
     if (!active) throw new Error("runtime_not_active");

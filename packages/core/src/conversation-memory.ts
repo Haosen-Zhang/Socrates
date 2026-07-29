@@ -2,6 +2,24 @@ import type { MessagePart } from "./message-parts";
 
 export type StoredMessageRole = "system" | "user" | "assistant" | "tool";
 export type StoredMessageKind = "text" | "tool_call" | "tool_result" | "summary" | "error";
+export type ConversationTurnStatus =
+  | "preparing"
+  | "running"
+  | "awaiting_approval"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export const ACTIVE_CONVERSATION_TURN_STATUSES: readonly ConversationTurnStatus[] = [
+  "preparing",
+  "running",
+  "awaiting_approval",
+];
+
+export function isActiveConversationTurnStatus(status: ConversationTurnStatus): boolean {
+  return ACTIVE_CONVERSATION_TURN_STATUSES.includes(status);
+}
 
 export interface ConversationStoredMessage {
   messageId: string;

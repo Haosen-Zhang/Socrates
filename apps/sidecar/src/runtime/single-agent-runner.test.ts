@@ -6,7 +6,8 @@ import type {
   RuntimeEvent,
 } from "@socrates/core";
 import { UNKNOWN_MODEL_CAPABILITIES } from "@socrates/core";
-import { rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { openDb } from "../db";
 import { ApprovalManager } from "../approvals/manager";
 import { EventStore } from "../store/event-store";
@@ -48,6 +49,7 @@ class InterruptibleRuntime implements AgentRuntime {
   async open() {}
   async *start(): AsyncIterable<RuntimeEvent> {
     yield { type: "status", status: "running" };
+    yield { type: "text_delta", text: "confirmed partial" };
     if (this.interrupted) throw new Error("interrupted");
     await new Promise<never>((_resolve, reject) => { this.reject = reject; });
   }
@@ -71,6 +73,7 @@ class RecordingRuntime implements AgentRuntime {
   async *start(input: { messages?: RuntimeConversationMessage[] }): AsyncIterable<RuntimeEvent> {
     this.seen.push(input.messages ?? []);
     if (this.withTool) {
+      yield { type: "text_delta", text: "checking first" };
       yield { type: "tool_call", callId: "read-call", name: "read_file", input: { path: "note.txt" } };
       yield {
         type: "tool_result",
@@ -108,6 +111,7 @@ function setup() {
     .run("w", "/tmp/w", "/tmp/w", "workspace-hash", "w", "now", "now");
   const session = new SessionStore(db).create({
     title: "Solo", mode: "single_agent", workspaceId: "w",
+    primaryAgentId: "a",
     agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: true }],
   });
   const approvals = new ApprovalManager(db);
@@ -118,7 +122,13 @@ function setup() {
 }
 
 function setupRecording(
-  options: { dbPath?: string; response?: string; withTool?: boolean; seen?: RuntimeConversationMessage[][] } = {},
+  options: {
+    dbPath?: string;
+    response?: string;
+    withTool?: boolean;
+    seen?: RuntimeConversationMessage[][];
+    attachmentRoot?: string;
+  } = {},
 ) {
   const db = openDb(options.dbPath ?? ":memory:");
   const existingWorkspace = db.query("SELECT id FROM workspaces WHERE id = 'w'").get();
@@ -129,6 +139,7 @@ function setupRecording(
   const store = new SessionStore(db);
   const session = store.list()[0] ?? store.create({
     title: "Solo", mode: "single_agent", workspaceId: "w",
+    primaryAgentId: "a",
     agents: [{
       agentId: "a",
       snapshot: { nickname: "A", modelCapabilities: { contextWindowTokens: 32_768 } },
@@ -144,14 +155,39 @@ function setupRecording(
     options.response ?? `answer-${seen.length + 1}`,
     options.withTool ?? false,
   ));
+  const attachmentRoot = options.attachmentRoot
+    ?? `${tmpdir()}/socrates-runner-attachments-${crypto.randomUUID()}`;
+  const attachments = new AttachmentResolver(db, attachmentRoot);
   const runner = new SingleAgentRunner(
     db,
     runtimes,
     approvals,
     events,
-    new AttachmentResolver(db, `${tmpdir()}/unused-${crypto.randomUUID()}`),
+    attachments,
   );
-  return { db, session, seen, runner };
+  return { db, session, seen, runner, attachments, attachmentRoot };
+}
+
+function setContextWindow(db: ReturnType<typeof openDb>, sessionId: string, tokens: number): void {
+  const row = db.query<{ agent_id: string; snapshot_json: string }, [string]>(`
+    SELECT agent_id, snapshot_json FROM session_agents WHERE session_id = ?
+  `).get(sessionId);
+  if (!row) throw new Error("test_agent_missing");
+  const snapshot = JSON.parse(row.snapshot_json) as Record<string, unknown>;
+  const capabilities = snapshot.modelCapabilities && typeof snapshot.modelCapabilities === "object"
+    ? snapshot.modelCapabilities as Record<string, unknown>
+    : {};
+  db.query(`
+    UPDATE session_agents SET snapshot_json = ?
+    WHERE session_id = ? AND agent_id = ?
+  `).run(
+    JSON.stringify({
+      ...snapshot,
+      modelCapabilities: { ...capabilities, contextWindowTokens: tokens },
+    }),
+    sessionId,
+    row.agent_id,
+  );
 }
 
 describe("SingleAgentRunner", () => {
@@ -238,6 +274,7 @@ describe("SingleAgentRunner", () => {
       title: "Other room",
       mode: "single_agent",
       workspaceId: "w",
+      primaryAgentId: "a",
       agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: true }],
     });
     await runner.run({
@@ -273,15 +310,100 @@ describe("SingleAgentRunner", () => {
     expect(followUp.map((message) => message.role)).toEqual([
       "user",
       "assistant",
+      "assistant",
       "tool",
       "assistant",
       "user",
     ]);
+    expect(followUp[1]?.content).toBe("checking first");
+    expect(followUp[4]?.content).toBe("tool answer");
     expect(followUp.find((message) => message.role === "tool")?.parts[0]).toMatchObject({
       type: "tool_result",
       callId: "read-call",
       output: { preview: "stored result" },
     });
+  });
+
+  it("resolves local text attachments and workspace refs before budgeting without changing durable content", async () => {
+    const workspaceRoot = `${tmpdir()}/socrates-memory-workspace-${crypto.randomUUID()}`;
+    mkdirSync(workspaceRoot, { recursive: true });
+    writeFileSync(`${workspaceRoot}/note.txt`, "workspace-ref-content");
+    const { db, session, seen, runner, attachments, attachmentRoot } = setupRecording();
+    db.query("UPDATE workspaces SET canonical_path = ?, display_path = ? WHERE id = 'w'")
+      .run(workspaceRoot, workspaceRoot);
+    const attachment = attachments.importClipboardBytes(
+      "w",
+      "context.txt",
+      Buffer.from("attachment-content"),
+    );
+    const refBytes = Buffer.from("workspace-ref-content");
+    db.query(`
+      INSERT INTO workspace_refs
+        (id, workspace_id, relative_path, kind, snapshot_hash, snapshot_size, created_at)
+      VALUES ('ref', 'w', 'note.txt', 'file', ?, ?, 'now')
+    `).run(createHash("sha256").update(refBytes).digest("hex"), refBytes.byteLength);
+
+    try {
+      expect((await runner.run({
+        sessionId: session.id,
+        runtimeKind: "recording",
+        clientTurnKey: "local-context",
+        prompt: "inspect local context",
+        attachmentIds: [attachment.id],
+        workspaceRefIds: ["ref"],
+      })).status).toBe("completed");
+      const sampled = seen[0]![0]!;
+      expect(sampled.content).toContain("attachment-content");
+      expect(sampled.content).toContain("workspace-ref-content");
+      expect(db.query("SELECT content FROM session_messages WHERE role = 'user'").get())
+        .toEqual({ content: "inspect local context" });
+      expect(db.query<{ metadata_json: string }, []>(`
+        SELECT metadata_json FROM message_parts WHERE type = 'workspace_ref'
+      `).get()?.metadata_json).toContain("attachmentId");
+
+      writeFileSync(`${workspaceRoot}/note.txt`, "mutated-live-file");
+      const mutated = Buffer.from("mutated-live-file");
+      db.query("UPDATE workspace_refs SET snapshot_hash = ?, snapshot_size = ? WHERE id = 'ref'")
+        .run(createHash("sha256").update(mutated).digest("hex"), mutated.byteLength);
+      expect((await runner.run({
+        sessionId: session.id,
+        runtimeKind: "recording",
+        clientTurnKey: "local-context-follow-up",
+        prompt: "what did the original file say?",
+      })).status).toBe("completed");
+      const followUpContext = seen[1]!.map((message) => message.content).join("\n");
+      expect(followUpContext).toContain("workspace-ref-content");
+      expect(followUpContext).not.toContain("mutated-live-file");
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+      rmSync(attachmentRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("counts resolved attachment contents and refuses an over-budget provider call", async () => {
+    const { db, session, seen, runner, attachments, attachmentRoot } = setupRecording();
+    setContextWindow(db, session.id, 1_024);
+    const attachment = attachments.importClipboardBytes(
+      "w",
+      "large.txt",
+      Buffer.from("local context ".repeat(2_000)),
+    );
+    try {
+      const result = await runner.run({
+        sessionId: session.id,
+        runtimeKind: "recording",
+        clientTurnKey: "large-local-context",
+        prompt: "inspect",
+        attachmentIds: [attachment.id],
+      });
+      expect(result).toMatchObject({
+        status: "failed",
+        error: "context_current_unit_exceeds_budget",
+      });
+      expect(seen).toHaveLength(0);
+    } finally {
+      rmSync(attachmentRoot, { recursive: true, force: true });
+    }
   });
 
   it("replays a completed client command without another provider call or duplicate messages", async () => {
@@ -355,12 +477,12 @@ describe("SingleAgentRunner", () => {
       clientTurnKey: "large-history",
       prompt: "old question ".repeat(600),
     });
+    setContextWindow(db, session.id, 1_024);
     await runner.run({
       sessionId: session.id,
       runtimeKind: "recording",
       clientTurnKey: "limited-context",
       prompt: "current question",
-      runtimeOptions: { contextWindowTokens: 1_024, maxOutputTokens: 256 },
     });
     const turn = db.query<{ context_truncated: number; context_json: string }, []>(`
       SELECT context_truncated, context_json
@@ -374,6 +496,52 @@ describe("SingleAgentRunner", () => {
     });
     expect(db.query("SELECT COUNT(*) AS count FROM task_events WHERE type = 'memory.context_truncated'").get())
       .toEqual({ count: 1 });
+  });
+
+  it("fails before provider sampling when the current work alone exceeds the context budget", async () => {
+    const { db, session, seen, runner } = setupRecording({ response: "must not run" });
+    setContextWindow(db, session.id, 1_024);
+    const result = await runner.run({
+      sessionId: session.id,
+      runtimeKind: "recording",
+      clientTurnKey: "oversized-current",
+      prompt: "oversized ".repeat(1_000),
+      runtimeOptions: { contextWindowTokens: 4_000_000 },
+    });
+    expect(result).toMatchObject({
+      status: "failed",
+      error: "context_current_unit_exceeds_budget",
+    });
+    expect(seen).toHaveLength(0);
+    expect(db.query("SELECT context_truncated, status FROM conversation_turns").get()).toEqual({
+      context_truncated: 1,
+      status: "failed",
+    });
+  });
+
+  it("rolls back the final assistant message when terminal Turn persistence fails", async () => {
+    const { db, session, runner } = setupRecording({ response: "must roll back" });
+    db.exec(`
+      CREATE TRIGGER reject_turn_completion
+      BEFORE UPDATE ON conversation_turns
+      WHEN NEW.status = 'completed'
+      BEGIN
+        SELECT RAISE(ABORT, 'turn completion rejected');
+      END
+    `);
+    const result = await runner.run({
+      sessionId: session.id,
+      runtimeKind: "recording",
+      clientTurnKey: "atomic-final",
+      prompt: "finish atomically",
+    });
+    expect(result).toMatchObject({ status: "failed", error: "turn completion rejected" });
+    expect(db.query("SELECT content, status FROM session_messages WHERE role = 'assistant'").get())
+      .toEqual({ content: "must roll back", status: "failed" });
+    expect(db.query("SELECT COUNT(*) AS count FROM session_messages WHERE role = 'assistant' AND status = 'completed'").get())
+      .toEqual({ count: 0 });
+    expect(db.query("SELECT status FROM conversation_turns").get()).toEqual({ status: "failed" });
+    expect(db.query("SELECT status FROM agent_runs").get()).toEqual({ status: "failed" });
   });
 
   it("does not depend on PATH, CODEX_HOME, or a local Codex executable", async () => {
@@ -454,8 +622,8 @@ describe("SingleAgentRunner", () => {
     expect((await runPromise).status).toBe("cancelled");
     expect(db.query("SELECT status FROM sessions WHERE id = ?").get(session.id)).toEqual({ status: "cancelled" });
     expect(db.query("SELECT COUNT(*) AS count FROM session_messages WHERE role = 'user'").get()).toEqual({ count: 1 });
-    expect(db.query("SELECT COUNT(*) AS count FROM session_messages WHERE role = 'assistant' AND kind = 'text'").get())
-      .toEqual({ count: 0 });
+    expect(db.query("SELECT content, status FROM session_messages WHERE role = 'assistant' AND kind = 'text'").get())
+      .toEqual({ content: "confirmed partial", status: "cancelled" });
   });
 
   it("recovers a restart by interrupting orphaned runs and expiring their approvals", () => {

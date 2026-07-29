@@ -20,6 +20,14 @@ export function agentRunRoutes(runner: SingleAgentRunner, approvals: ApprovalMan
     } | null;
     if (typeof body?.prompt !== "string" || !body.prompt.trim()) return c.json({ error: "prompt_required" }, 400);
     const runtimeKind = typeof body.runtimeKind === "string" ? body.runtimeKind : "native_ai_sdk";
+    const requestedRuntimeOptions = body.runtimeOptions && typeof body.runtimeOptions === "object"
+      ? body.runtimeOptions as Record<string, unknown>
+      : {};
+    const runtimeOptions = {
+      sandbox: requestedRuntimeOptions.sandbox === "workspace-write"
+        ? "workspace-write"
+        : "read-only",
+    };
     return streamSSE(c, async (stream) => {
       const emit = async (event: RuntimeEvent) => {
         await stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
@@ -35,7 +43,7 @@ export function agentRunRoutes(runner: SingleAgentRunner, approvals: ApprovalMan
         attachmentIds: Array.isArray(body.attachmentIds) && body.attachmentIds.every((id) => typeof id === "string") ? body.attachmentIds as string[] : [],
         workspaceRefIds: Array.isArray(body.workspaceRefIds) && body.workspaceRefIds.every((id) => typeof id === "string") ? body.workspaceRefIds as string[] : [],
         signal: c.req.raw.signal,
-        runtimeOptions: body.runtimeOptions && typeof body.runtimeOptions === "object" ? body.runtimeOptions as Record<string, unknown> : undefined,
+        runtimeOptions,
       }, emit);
       await stream.writeSSE({ event: "run_terminal", data: JSON.stringify(result) });
     });

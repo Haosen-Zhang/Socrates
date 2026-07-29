@@ -107,6 +107,43 @@ describe("ConversationMemoryStore", () => {
     expect((await memory.listThreadMessages(thread.id)).map((message) => message.content)).toEqual(["hello", "world"]);
   });
 
+  it("returns the newest bounded history and rejects conflicting idempotency payloads", async () => {
+    const { memory } = setupRooms();
+    const thread = memory.ensureDefaultThread("room-a");
+    for (let index = 1; index <= 5; index += 1) {
+      await memory.appendMessage({
+        roomId: "room-a",
+        threadId: thread.id,
+        runId: `run-${index}`,
+        turnId: `turn-${index}`,
+        agentId: null,
+        role: "user",
+        kind: "text",
+        content: `message-${index}`,
+        status: "completed",
+        idempotencyKey: `message-${index}`,
+        parts: [{ type: "text", text: `message-${index}` }],
+      });
+    }
+    expect((await memory.listThreadMessages(thread.id, { limit: 3 })).map((message) => message.sequence))
+      .toEqual([3, 4, 5]);
+    expect((await memory.listThreadMessages(thread.id, { afterSequence: 2, limit: 2 })).map((message) => message.sequence))
+      .toEqual([3, 4]);
+    await expect(memory.appendMessage({
+      roomId: "room-a",
+      threadId: thread.id,
+      runId: "other-run",
+      turnId: "turn-5",
+      agentId: null,
+      role: "user",
+      kind: "text",
+      content: "different",
+      status: "completed",
+      idempotencyKey: "message-5",
+      parts: [{ type: "text", text: "different" }],
+    })).rejects.toThrow("message_idempotency_conflict");
+  });
+
   it("isolates Rooms and independent Threads", async () => {
     const { memory } = setupRooms();
     const a = memory.ensureDefaultThread("room-a");

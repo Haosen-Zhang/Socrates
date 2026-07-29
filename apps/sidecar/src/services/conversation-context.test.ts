@@ -6,13 +6,13 @@ function message(
   sequence: number,
   role: StoredMessageRole,
   content: string,
-  options: { kind?: StoredMessageKind; parts?: MessagePart[] } = {},
+  options: { kind?: StoredMessageKind; parts?: MessagePart[]; runId?: string } = {},
 ): ConversationStoredMessage {
   return {
     messageId: `m-${sequence}`,
     roomId: "room",
     threadId: "thread",
-    runId: "run",
+    runId: options.runId ?? "run",
     turnId: `turn-${sequence}`,
     agentId: role === "user" ? null : "agent",
     role,
@@ -35,10 +35,11 @@ describe("buildConversationContext", () => {
       message(4, "user", "current question"),
     ];
     const context = buildConversationContext(history, {
-      contextWindowTokens: 120,
-      outputReserveTokens: 20,
+      contextWindowTokens: 256,
+      outputReserveTokens: 32,
     });
     expect(context.truncated).toBe(true);
+    expect(context.overflow).toBe(false);
     expect(context.messages.map((item) => item.messageId)).toEqual(["m-1", "m-4"]);
     expect(context.droppedThroughSequence).toBe(3);
   });
@@ -112,6 +113,69 @@ describe("buildConversationContext", () => {
     }
   });
 
+  it("excludes orphaned tool messages left by paging or cancellation", () => {
+    const resultOnly = buildConversationContext([
+      message(10, "tool", "orphan result", {
+        kind: "tool_result",
+        parts: [{
+          type: "tool_result",
+          callId: "paged-call",
+          output: { preview: "orphan", byteSize: 6, truncated: false },
+          isError: false,
+        }],
+      }),
+      message(11, "user", "continue"),
+    ], {
+      contextWindowTokens: 1_024,
+      outputReserveTokens: 128,
+      omittedBeforeSequence: 9,
+    });
+    expect(resultOnly.messages.map((item) => item.messageId)).toEqual(["m-11"]);
+    expect(resultOnly.truncated).toBe(true);
+
+    const callOnly = buildConversationContext([
+      message(1, "user", "start"),
+      message(2, "assistant", "", {
+        kind: "tool_call",
+        parts: [{ type: "tool_call", callId: "cancelled-call", name: "read_file", input: {} }],
+      }),
+    ], {
+      contextWindowTokens: 1_024,
+      outputReserveTokens: 128,
+    });
+    expect(callOnly.messages.map((item) => item.messageId)).toEqual(["m-1"]);
+    expect(callOnly.truncated).toBe(true);
+  });
+
+  it("never pairs a reused tool call ID across different Runs", () => {
+    const context = buildConversationContext([
+      message(1, "assistant", "", {
+        runId: "cancelled-run",
+        kind: "tool_call",
+        parts: [{ type: "tool_call", callId: "reused", name: "read_file", input: { path: "old" } }],
+      }),
+      message(2, "assistant", "", {
+        runId: "new-run",
+        kind: "tool_call",
+        parts: [{ type: "tool_call", callId: "reused", name: "read_file", input: { path: "new" } }],
+      }),
+      message(3, "tool", "new result", {
+        runId: "new-run",
+        kind: "tool_result",
+        parts: [{
+          type: "tool_result",
+          callId: "reused",
+          output: { preview: "new result", byteSize: 10, truncated: false },
+          isError: false,
+        }],
+      }),
+    ], {
+      contextWindowTokens: 4_096,
+      outputReserveTokens: 512,
+    });
+    expect(context.messages.map((item) => item.messageId)).toEqual(["m-2", "m-3"]);
+  });
+
   it("does not truncate when the Thread is within the model budget", () => {
     const history = [
       message(1, "user", "hello"),
@@ -123,6 +187,23 @@ describe("buildConversationContext", () => {
       outputReserveTokens: 512,
     });
     expect(context.truncated).toBe(false);
+    expect(context.overflow).toBe(false);
     expect(context.messages.map((item) => item.content)).toEqual(["hello", "hi", "remember me"]);
+  });
+
+  it("reports storage paging and refuses to pretend an oversized current unit is bounded", () => {
+    const current = message(10_001, "user", "oversized ".repeat(400));
+    const context = buildConversationContext([current], {
+      contextWindowTokens: 256,
+      outputReserveTokens: 32,
+      omittedBeforeSequence: 10_000,
+    });
+    expect(context).toMatchObject({
+      truncated: true,
+      overflow: true,
+      budgetTokens: 224,
+      droppedThroughSequence: 10_000,
+    });
+    expect(context.messages).toHaveLength(1);
   });
 });

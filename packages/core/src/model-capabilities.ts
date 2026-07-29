@@ -9,6 +9,8 @@ export interface ModelCapabilities {
   streaming: CapabilityState;
   reasoningEfforts: ReasoningEffort[] | "unknown";
   runtimeKinds: ("native" | "langgraph_socrates")[] | "unknown";
+  /** Provider/model context limit when known; unknown uses a conservative runtime fallback. */
+  contextWindowTokens?: number | "unknown";
 }
 
 export const UNKNOWN_MODEL_CAPABILITIES: Readonly<ModelCapabilities> = Object.freeze({
@@ -19,6 +21,7 @@ export const UNKNOWN_MODEL_CAPABILITIES: Readonly<ModelCapabilities> = Object.fr
   streaming: "unknown",
   reasoningEfforts: "unknown",
   runtimeKinds: "unknown",
+  contextWindowTokens: "unknown",
 });
 
 export function mergeModelCapabilities(

@@ -17,6 +17,8 @@ export type RoomDraft = {
   kind: RoomKind;
   title: string;
   agentIds: string[];
+  /** Co-work 的默认执行 Agent；必须显式保存，不能由成员数组位置推导。 */
+  primaryAgentId: string | null;
   /** 仅 Co-work 有意义；Chat 恒为 null */
   workspaceId: string | null;
 };
@@ -25,7 +27,10 @@ export type RoomDraft = {
 export function roomDraftBlocker(draft: RoomDraft): string | null {
   if (draft.agentIds.length < 1) return "room_requires_member";
   if (draft.kind === "chat") return null;
-  return draft.workspaceId ? null : "cowork_room_requires_workspace";
+  if (!draft.workspaceId) return "cowork_room_requires_workspace";
+  return draft.primaryAgentId && draft.agentIds.includes(draft.primaryAgentId)
+    ? null
+    : "cowork_room_requires_primary_agent";
 }
 
 /** 草稿 → 后端 payload。mode 由 kind + 人数派生，前端不再各自拼。 */
@@ -34,6 +39,7 @@ export function roomCreatePayload(draft: RoomDraft): {
   mode: ConversationMode;
   workspaceId: string | null;
   agentIds: string[];
+  primaryAgentId: string | null;
 } {
   const isChat = draft.kind === "chat";
   return {
@@ -41,5 +47,6 @@ export function roomCreatePayload(draft: RoomDraft): {
     mode: isChat ? "chat" : draft.agentIds.length > 1 ? "multi_agent" : "single_agent",
     workspaceId: isChat ? null : draft.workspaceId,
     agentIds: draft.agentIds,
+    primaryAgentId: isChat ? null : draft.primaryAgentId,
   };
 }
