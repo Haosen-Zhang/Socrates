@@ -374,7 +374,9 @@ export class LangGraphAgentRuntime implements AgentRuntime {
         messages: toolMessages,
         turnState: reduceTurnState(nextTurn, { type: "tools_completed" }),
         pendingApprovals: [],
-        agentState: reduceAgentState(state.agentState, { type: "approval_resolved" }),
+        agentState: state.turnState === "awaiting_tool_approval"
+          ? reduceAgentState(state.agentState, { type: "approval_resolved" })
+          : state.agentState,
       };
     };
 
