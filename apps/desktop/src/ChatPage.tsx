@@ -676,7 +676,7 @@ function SingleAgentSession() {
         <div className="flex items-center gap-2">
           {agentSnapshot && <div className="pixel-card flex items-center gap-2 px-2 py-1"><AgentAvatar src={String(agentSnapshot.avatar ?? "")} label={String(agentSnapshot.nickname ?? "Agent")} size={28} lively={false} /><span className="text-[10px]">{t("usage_current")}: {usageText(agentUsage?.current.totalTokens)}<br />{t("usage_total")}: {usageText(agentUsage?.cumulative.totalTokens)}</span></div>}
           <WorkspaceChip workspaceId={session?.workspaceId} locked />
-          <select className="pixel-input px-2 py-1 text-xs" value={sandbox} disabled={agentRunning || true /* workspace-write pending Ticket 006 */} onChange={(event) => setSandbox(event.target.value as typeof sandbox)}>
+          <select className="pixel-input px-2 py-1 text-xs" value={sandbox} disabled={agentRunning} onChange={(event) => setSandbox(event.target.value as typeof sandbox)}>
             <option value="read-only">{t("sandbox_read_only")}</option>
             <option value="workspace-write">{t("sandbox_workspace_write")}</option>
           </select>

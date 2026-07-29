@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 import { streamText, tool, jsonSchema } from "ai";
 import { LangGraphAgentRuntime } from "./runtime/langgraph-agent-runtime";
 import { createReadOnlyBuiltins } from "./tools/read-only-builtins";
+import { createWorkspaceWriteBuiltins } from "./tools/workspace-write-builtins";
 import { ToolRegistry } from "./tools/registry";
 import { ToolExecutor } from "./tools/executor";
 import type { ProviderType } from "@socrates/core";
@@ -98,7 +99,9 @@ runtimes.register("native_ai_sdk", (input) => {
   const policy = new WorkspacePathPolicy(workspace.canonicalPath);
   const mcpDefinitions = mcp.definitionsFor(workspace.id, { effects: ["allow", "ask"] });
   const mcpEffects = new Map(mcp.policyEntriesFor(workspace.id).map((entry) => [entry.namespacedName, entry.effect]));
-  const registry = new ToolRegistry([...createReadOnlyBuiltins(policy), ...mcpDefinitions]);
+  const sandboxMode: string = typeof input.runtimeOptions?.sandbox === "string" ? input.runtimeOptions.sandbox : "read-only";
+  const workspaceWriteTools = sandboxMode === "workspace-write" ? createWorkspaceWriteBuiltins(policy) : [];
+  const registry = new ToolRegistry([...createReadOnlyBuiltins(policy), ...workspaceWriteTools, ...mcpDefinitions]);
   const executor = new ToolExecutor(db, registry, approvals);
   const model = createAiSdkModel({
     providerType: provider.type,
@@ -107,7 +110,8 @@ runtimes.register("native_ai_sdk", (input) => {
     modelId: agent.model_id,
     fetchImpl: proxiedFetch,
   });
-  const availableDefs = registry.available({ mode: "single_agent", phase: "executing", allowedCapabilities: ["workspace_read", "mcp"] });
+  const writeCapabilities: string[] = sandboxMode === "workspace-write" ? ["workspace_read", "workspace_write", "mcp"] : ["workspace_read", "mcp"];
+  const availableDefs = registry.available({ mode: "single_agent", phase: "executing", allowedCapabilities: writeCapabilities as any });
   return new LangGraphAgentRuntime({
     sessionId: input.sessionId,
     agentId: input.agentId,
