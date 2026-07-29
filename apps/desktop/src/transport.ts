@@ -23,9 +23,11 @@ export async function requireOk<T>(res: Response): Promise<T> {
   return body as T;
 }
 
-/** SSE stream consumer — yields parsed JSON events */
+/** SSE stream consumer — yields parsed JSON events.
+ *  Supports Last-Event-ID for reconnection via optional lastEventId param. */
 export async function* streamSseEvents(
   response: Response,
+  lastEventId?: string,
 ): AsyncIterable<Record<string, unknown>> {
   if (!response.body) {
     await requireOk(response);
