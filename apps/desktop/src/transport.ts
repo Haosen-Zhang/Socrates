@@ -51,7 +51,7 @@ export async function* streamSseEvents(
         if (!resumed) {
           // Check SSE "id:" field — Hono SSE may include it as __sse_id or similar
           const raw = e as Record<string, unknown>;
-          const eventId = String(raw.id ?? raw.__sse_id ?? "");
+          const eventId = String(raw._sseId ?? "");
           if (eventId === lastEventId) {
             resumed = true;
           }
