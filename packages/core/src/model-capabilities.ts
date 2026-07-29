@@ -8,7 +8,7 @@ export interface ModelCapabilities {
   toolCalling: CapabilityState;
   streaming: CapabilityState;
   reasoningEfforts: ReasoningEffort[] | "unknown";
-  runtimeKinds: ("native" | "codex_app_server")[] | "unknown";
+  runtimeKinds: ("native" | "langgraph_socrates")[] | "unknown";
 }
 
 export const UNKNOWN_MODEL_CAPABILITIES: Readonly<ModelCapabilities> = Object.freeze({

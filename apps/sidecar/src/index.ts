@@ -23,7 +23,8 @@ import { AttachmentResolver } from "./attachments/resolver";
 import { contentRoutes } from "./routes/content";
 import { WorkspacePathPolicy } from "./workspace/path-policy";
 import { createHash } from "node:crypto";
-import { NativeAgentRuntime, createAiSdkNativeStream } from "./runtime/native-agent-runtime";
+import { streamText, tool, jsonSchema } from "ai";
+import { LangGraphAgentRuntime } from "./runtime/langgraph-agent-runtime";
 import { createReadOnlyBuiltins } from "./tools/read-only-builtins";
 import { ToolRegistry } from "./tools/registry";
 import { ToolExecutor } from "./tools/executor";
@@ -106,30 +107,57 @@ runtimes.register("native_ai_sdk", (input) => {
     modelId: agent.model_id,
     fetchImpl: proxiedFetch,
   });
-  return new NativeAgentRuntime({
+  const availableDefs = registry.available({ mode: "single_agent", phase: "executing", allowedCapabilities: ["workspace_read", "mcp"] });
+  return new LangGraphAgentRuntime({
     sessionId: input.sessionId,
-    taskId: input.agentSessionId,
     agentId: input.agentId,
     workspaceId: workspace.id,
-    workspaceIdentity: workspace.identityHash,
     system: [agent.role, agent.system_prompt].filter(Boolean).join("\n\n"),
-    registry,
-    executor,
-    stream: createAiSdkNativeStream(model),
-    permissionForTool: (definition) => definition.capability === "mcp" ? mcpEffects.get(definition.name) ?? "ask" : "allow",
-    resolveAttachment: (attachmentId) => {
-      const attachment = attachments.read(attachmentId);
-      return { mediaType: attachment.record.mediaType, filename: attachment.record.filename, bytes: attachment.bytes };
+    modelInvoker: async function* (invokeInput) {
+      const tools: Record<string, any> = Object.fromEntries(
+        availableDefs.map((def) => [def.name, tool({ description: def.description, inputSchema: jsonSchema(def.inputSchema) })])
+      );
+      const result = streamText({
+        model,
+        system: invokeInput.system,
+        messages: invokeInput.messages.map((m: any) => ({
+          role: m.getType?.() === "human" ? "user" : m.getType?.() === "ai" ? "assistant" : m.getType?.() === "tool" ? "tool" : "user",
+          content: m.content,
+          ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
+          ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
+        })),
+        tools: Object.keys(tools).length > 0 ? tools : undefined,
+        maxRetries: 2,
+        abortSignal: invokeInput.signal,
+      });
+      for await (const part of result.fullStream) {
+        if (part.type === "text-delta") yield { type: "text_delta" as const, text: part.text };
+        else if (part.type === "tool-call") yield { type: "tool_call" as const, callId: part.toolCallId, name: part.toolName, input: part.input };
+        else if (part.type === "finish") yield { type: "usage" as const, usage: { inputTokens: null, outputTokens: null, totalTokens: null, cachedInputTokens: null, cacheWriteTokens: null, reasoningTokens: null, cost: null, currency: null, source: "provider" as const, estimated: false, effort: null } };
+        else if (part.type === "error") throw part.error;
+        else if (part.type === "abort") throw new Error(part.reason ?? "cancelled");
+      }
     },
-    resolveWorkspaceRef: (relativePath, snapshotHash) => {
-      const content = policy.readText(relativePath, 512 * 1024);
-      if (content.truncated) throw new Error("workspace_ref_context_too_large");
-      const currentHash = createHash("sha256").update(content.text).digest("hex");
-      if (snapshotHash && currentHash !== snapshotHash) throw new Error("workspace_ref_changed");
-      return { text: content.text };
+    toolExecutor: async ({ callId, name, input: toolInput, signal }) => {
+      const context = {
+        callId, sessionId: input.sessionId, taskId: input.agentSessionId, turnId: input.agentSessionId,
+        agentId: input.agentId, workspaceId: workspace.id, mode: "single_agent" as const, phase: "executing" as const,
+        signal: signal ?? new AbortController().signal,
+      };
+      const record = await executor.invoke({
+        stableKey: `${input.agentSessionId}:${callId}`, name, generation: 1, input: toolInput,
+        workspaceIdentity: workspace.identityHash, policyVersion: 1, attemptId: input.agentSessionId,
+      }, context, {
+        effect: "allow", risk: availableDefs.find(d => d.name === name)?.risk ?? "medium",
+        matchedRuleIds: ["native-read-only"], reasonCode: "native_read_only_tool",
+        freshHumanRequired: false, policyVersion: 1,
+      });
+      if (record.status === "succeeded" && record.output) return { output: record.output, isError: false };
+      return { output: record.error ?? "tool_failed", isError: true };
     },
-    onClose: () => {
-      mcp.releaseOwners(input.agentSessionId, `${input.sessionId}:${input.agentId}`);
+    toolNeedsApproval: (toolName) => {
+      const def = availableDefs.find(d => d.name === toolName);
+      return def ? (def.risk === "high" || def.risk === "destructive") : true;
     },
   });
 });

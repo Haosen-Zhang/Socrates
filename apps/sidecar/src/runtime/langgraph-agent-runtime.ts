@@ -107,11 +107,15 @@ const AgentGraphState = Annotation.Root({
 
 export class LangGraphAgentRuntime implements AgentRuntime {
   readonly kind = "langgraph_socrates";
-  readonly capabilities = {
-    textInput: true as const,
-    toolCalling: true as const,
-    streaming: true as const,
-  } as const;
+  readonly capabilities: import("@socrates/core").ModelCapabilities = {
+    textInput: true,
+    imageInput: true,
+    fileInput: true,
+    toolCalling: true,
+    streaming: true,
+    reasoningEfforts: "unknown",
+    runtimeKinds: ["langgraph_socrates"],
+  };
 
   private compiled: ReturnType<typeof this.buildGraph> | null = null;
   private currentMessages: BaseMessage[] = [];
@@ -307,7 +311,7 @@ export class LangGraphAgentRuntime implements AgentRuntime {
       }
 
       // Add AIMessage placeholder for tracking
-      const aiMsg = new AIMessage({ content: "", tool_calls: pendingApprovals.map(a => ({ id: a.callId, name: a.name, args: a.input })) });
+      const aiMsg = new AIMessage({ content: "", tool_calls: pendingApprovals.map(a => ({ id: a.callId, name: a.name, args: a.input as Record<string, unknown> })) });
       modelResponse.unshift(aiMsg);
 
       const nextTurn2 = reduceTurnState(nextTurn, {

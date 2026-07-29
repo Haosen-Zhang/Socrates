@@ -3,7 +3,7 @@ import type { ConversationMode, AgentRunPhase } from "./conversation";
 export type JsonSchema = {
   type: "object";
   properties?: Record<string, { type: "string" | "number" | "integer" | "boolean" | "array" | "object" }>;
-  required?: readonly string[];
+  required?: string[];
   additionalProperties?: boolean;
 };
 
