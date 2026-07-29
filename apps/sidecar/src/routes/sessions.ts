@@ -51,6 +51,24 @@ export function sessionRoutes(sessions: SessionStore, events: EventStore, usage?
       return c.json({ error: message }, message === "session_not_found" ? 404 : 409);
     }
   });
+  app.post("/:id/agents", async (c) => {
+    const body = await c.req.json().catch(() => null) as { agentId?: unknown; snapshot?: unknown } | null;
+    if (!body || typeof body.agentId !== "string" || typeof body.snapshot !== "object" || body.snapshot === null) return c.json({ error: "invalid_member_input" }, 400);
+    try {
+      return c.json(sessions.addAgent(c.req.param("id"), body.agentId, body.snapshot as Record<string, unknown>));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "session_add_member_failed";
+      return c.json({ error: message }, message === "session_not_found" ? 404 : 409);
+    }
+  });
+  app.delete("/:id/agents/:agentId", (c) => {
+    try {
+      return c.json(sessions.removeAgent(c.req.param("id"), c.req.param("agentId")));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "session_remove_member_failed";
+      return c.json({ error: message }, message === "session_not_found" ? 404 : 409);
+    }
+  });
   app.put("/:id/collaboration", async (c) => {
     const body = await c.req.json().catch(() => null) as { collaboration?: unknown } | null;
     if (!body || typeof body.collaboration !== "object" || body.collaboration === null) return c.json({ error: "invalid_collaboration_input" }, 400);

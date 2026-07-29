@@ -30,7 +30,7 @@ import { createReadOnlyBuiltins } from "./tools/read-only-builtins";
 import { createWorkspaceWriteBuiltins } from "./tools/workspace-write-builtins";
 import { ToolRegistry } from "./tools/registry";
 import { ToolExecutor } from "./tools/executor";
-import type { ProviderType } from "@socrates/core";
+import type { ProviderType, ToolCapability } from "@socrates/core";
 import { McpStore } from "./mcp/store";
 import { McpManager } from "./mcp/manager";
 import { OfficialMcpClientAdapter } from "./mcp/adapter";
@@ -111,7 +111,7 @@ runtimes.register("native_ai_sdk", (input) => {
     modelId: agent.model_id,
     fetchImpl: proxiedFetch,
   });
-  const writeCapabilities: string[] = sandboxMode === "workspace-write" ? ["workspace_read", "workspace_write", "mcp"] : ["workspace_read", "mcp"];
+  const writeCapabilities: ToolCapability[] = sandboxMode === "workspace-write" ? ["workspace_read", "workspace_write", "mcp"] : ["workspace_read", "mcp"];
   const availableDefs = registry.available({ mode: "single_agent", phase: "executing", allowedCapabilities: writeCapabilities as any });
   const approvalEffect = (def: typeof availableDefs[number]) =>
     (def.risk === "high" || def.risk === "destructive") ? "ask" : "allow";
@@ -126,6 +126,7 @@ runtimes.register("native_ai_sdk", (input) => {
     registry,
     executor,
     stream: createAiSdkNativeStream(model),
+    allowedCapabilities: writeCapabilities,
     permissionForTool: (definition) => approvalEffect(definition) === "ask" ? "ask" : "allow",
   });
 });

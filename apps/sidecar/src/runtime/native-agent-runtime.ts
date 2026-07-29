@@ -5,6 +5,7 @@ import {
   type MessagePart,
   type NormalizedUsage,
   type RuntimeEvent,
+  type ToolCapability,
   type ToolContext,
   type ToolDefinition,
 } from "@socrates/core";
@@ -143,6 +144,8 @@ export class NativeAgentRuntime implements AgentRuntime {
       resolveWorkspaceRef?: (relativePath: string, snapshotHash?: string) => { text: string };
       onClose?: () => void;
       permissionForTool?: (definition: ToolDefinition) => "allow" | "ask" | "deny";
+      /** 运行时可用能力；workspace-write 会话须含 workspace_write，否则写工具被过滤掉（默认只读兜底） */
+      allowedCapabilities?: readonly ToolCapability[];
       maxSteps?: number;
     },
   ) {}
@@ -173,7 +176,8 @@ export class NativeAgentRuntime implements AgentRuntime {
     const definitions = this.input.registry.available({
       mode: "single_agent",
       phase: "executing",
-      allowedCapabilities: ["workspace_read", "mcp"],
+      // 由调用方按 sandbox 决定；缺省退回只读，绝不擅自开放写能力
+      allowedCapabilities: [...(this.input.allowedCapabilities ?? ["workspace_read", "mcp"])],
     });
     const tools = Object.fromEntries(definitions.flatMap((definition) => {
       const approval = this.input.permissionForTool?.(definition) ?? "allow";
