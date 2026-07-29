@@ -24,6 +24,7 @@ import { contentRoutes } from "./routes/content";
 import { WorkspacePathPolicy } from "./workspace/path-policy";
 import { createHash } from "node:crypto";
 import { streamText, tool, jsonSchema } from "ai";
+import { NativeAgentRuntime, createAiSdkNativeStream } from "./runtime/native-agent-runtime";
 import { LangGraphAgentRuntime } from "./runtime/langgraph-agent-runtime";
 import { createReadOnlyBuiltins } from "./tools/read-only-builtins";
 import { createWorkspaceWriteBuiltins } from "./tools/workspace-write-builtins";
@@ -112,60 +113,20 @@ runtimes.register("native_ai_sdk", (input) => {
   });
   const writeCapabilities: string[] = sandboxMode === "workspace-write" ? ["workspace_read", "workspace_write", "mcp"] : ["workspace_read", "mcp"];
   const availableDefs = registry.available({ mode: "single_agent", phase: "executing", allowedCapabilities: writeCapabilities as any });
-  return new LangGraphAgentRuntime({
+  const approvalEffect = (def: typeof availableDefs[number]) =>
+    (def.risk === "high" || def.risk === "destructive") ? "ask" : "allow";
+
+  return new NativeAgentRuntime({
     sessionId: input.sessionId,
+    taskId: input.agentSessionId,
     agentId: input.agentId,
     workspaceId: workspace.id,
+    workspaceIdentity: workspace.identityHash,
     system: [agent.role, agent.system_prompt].filter(Boolean).join("\n\n"),
-    modelInvoker: async function* (invokeInput) {
-      const tools: Record<string, any> = Object.fromEntries(
-        availableDefs.map((def) => [def.name, tool({ description: def.description, inputSchema: jsonSchema(def.inputSchema) })])
-      );
-      const result = streamText({
-        model,
-        system: invokeInput.system,
-        messages: invokeInput.messages.map((m: any) => ({
-          role: m.getType?.() === "human" ? "user" : m.getType?.() === "ai" ? "assistant" : m.getType?.() === "tool" ? "tool" : "user",
-          content: m.content,
-          ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
-          ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
-        })),
-        tools: Object.keys(tools).length > 0 ? tools : undefined,
-        maxRetries: 2,
-        abortSignal: invokeInput.signal,
-      });
-      for await (const part of result.fullStream) {
-        if (part.type === "text-delta") yield { type: "text_delta" as const, text: part.text };
-        else if (part.type === "tool-call") yield { type: "tool_call" as const, callId: part.toolCallId, name: part.toolName, input: part.input };
-        else if (part.type === "finish") yield { type: "usage" as const, usage: { inputTokens: null, outputTokens: null, totalTokens: null, cachedInputTokens: null, cacheWriteTokens: null, reasoningTokens: null, cost: null, currency: null, source: "provider" as const, estimated: false, effort: null } };
-        else if (part.type === "error") throw part.error;
-        else if (part.type === "abort") throw new Error(part.reason ?? "cancelled");
-      }
-    },
-    toolExecutor: async ({ callId, name, input: toolInput, signal }) => {
-      const context = {
-        callId, sessionId: input.sessionId, taskId: input.agentSessionId, turnId: input.agentSessionId,
-        agentId: input.agentId, workspaceId: workspace.id, mode: "single_agent" as const, phase: "executing" as const,
-        signal: signal ?? new AbortController().signal,
-      };
-      const record = await executor.invoke({
-        stableKey: `${input.agentSessionId}:${callId}`, name, generation: 1, input: toolInput,
-        workspaceIdentity: workspace.identityHash, policyVersion: 1, attemptId: input.agentSessionId,
-      }, context, {
-        effect: (availableDefs.find(d => d.name === name)?.risk === "high" || availableDefs.find(d => d.name === name)?.risk === "destructive") ? "ask" : "allow",
-        risk: availableDefs.find(d => d.name === name)?.risk ?? "medium",
-        matchedRuleIds: ["runtime_tool"],
-        reasonCode: "runtime_tool_execution",
-        freshHumanRequired: false,
-        policyVersion: 1,
-      });
-      if (record.status === "succeeded" && record.output) return { output: record.output, isError: false };
-      return { output: record.error ?? "tool_failed", isError: true };
-    },
-    toolNeedsApproval: (toolName) => {
-      const def = availableDefs.find(d => d.name === toolName);
-      return def ? (def.risk === "high" || def.risk === "destructive") : true;
-    },
+    registry,
+    executor,
+    stream: createAiSdkNativeStream(model),
+    permissionForTool: (definition) => approvalEffect(definition) === "ask" ? "ask" : "allow",
   });
 });
 const agentRuns = new SingleAgentRunner(db, runtimes, approvals, events, attachments);
