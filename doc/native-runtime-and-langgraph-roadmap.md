@@ -8,6 +8,20 @@
 
 ---
 
+## 📌 进度更新（截至 #78）
+
+- ✅ **Phase 1 基本达成**：#77 移除了整个 Codex 依赖，执行改走自研 `native_ai_sdk` 运行时 +
+  workspace-write 内建工具（`write_file`/`run_shell`），用**你配的 provider key**，不再依赖 codex 登录/额度。
+  `execution-runner` 的 `runtimeKind` 现在是 `native_ai_sdk`。
+- 🚧 **Phase 2 起步**：`LangGraphAgentRuntime` 已在代码里（`runtime/langgraph-agent-runtime.ts`），
+  但**尚未 register 进生产**，也还没接治理编排（多 Agent 仍由手写 `MultiAgentCoordinator` 驱动）。
+- ⏳ 待办：多执行者分派、supervision 运行时、LangGraph 治理图、Rust 执行辅助进程（Phase 3–6）。
+- ⚠️ §13 的安全点（`parseVerdict()` 无法解析时默认 approve）**尚未修**，将来 Reviewer 代替人工审批前必须处理。
+
+下面是原始决策记录，方向不变。
+
+---
+
 ## 最重要的结论（先看这个）
 
 现在**不应该重写 Socrates**，而应沿现有 seam 做两件事：
