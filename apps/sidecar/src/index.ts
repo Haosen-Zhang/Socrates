@@ -18,16 +18,16 @@ import { isAllowedLoopbackHost, isAllowedRendererOrigin } from "./security/loopb
 import { ApprovalManager } from "./approvals/manager";
 import { RuntimeManager } from "./runtime/runtime-manager";
 import { SingleAgentRunner } from "./runtime/single-agent-runner";
-import { CodexRuntime } from "./runtime/codex/codex-runtime";
-import { configuredCodexBinary } from "./runtime/codex/binary";
-import { createPinnedCodexClient } from "./runtime/codex/protocol-client";
 import { agentRunRoutes } from "./routes/agent-runs";
 import { AttachmentResolver } from "./attachments/resolver";
 import { contentRoutes } from "./routes/content";
 import { WorkspacePathPolicy } from "./workspace/path-policy";
 import { createHash } from "node:crypto";
+import { streamText, tool, jsonSchema } from "ai";
 import { NativeAgentRuntime, createAiSdkNativeStream } from "./runtime/native-agent-runtime";
+import { LangGraphAgentRuntime } from "./runtime/langgraph-agent-runtime";
 import { createReadOnlyBuiltins } from "./tools/read-only-builtins";
+import { createWorkspaceWriteBuiltins } from "./tools/workspace-write-builtins";
 import { ToolRegistry } from "./tools/registry";
 import { ToolExecutor } from "./tools/executor";
 import type { ProviderType } from "@socrates/core";
@@ -84,29 +84,6 @@ const attachments = new AttachmentResolver(db, defaultDataDir());
 const mcpStore = new McpStore(db, secrets);
 const mcp = new McpManager(db, mcpStore, new OfficialMcpClientAdapter(proxiedFetch));
 const runtimes = new RuntimeManager(db, events);
-runtimes.register("codex_app_server", (input) => {
-  const workspace = input.workspaceId ? workspaces.get(input.workspaceId) : null;
-  if (!workspace) throw new Error("codex_workspace_required");
-  const sandbox = input.runtimeOptions?.sandbox === "workspace-write" ? "workspace-write" : "read-only";
-  const model = typeof input.runtimeOptions?.model === "string" ? input.runtimeOptions.model : undefined;
-  return new CodexRuntime({
-    cwd: workspace.canonicalPath,
-    sandbox,
-    model,
-    clientFactory: async (approvalHandler) => createPinnedCodexClient(configuredCodexBinary(), approvalHandler),
-    resolveAttachment: (attachmentId) => {
-      const attachment = attachments.read(attachmentId);
-      return { mediaType: attachment.record.mediaType, filename: attachment.record.filename, bytes: attachment.bytes };
-    },
-    resolveWorkspaceRef: (relativePath, snapshotHash) => {
-      const content = new WorkspacePathPolicy(workspace.canonicalPath).readText(relativePath, 512 * 1024);
-      if (content.truncated) throw new Error("workspace_ref_context_too_large");
-      const currentHash = createHash("sha256").update(content.text).digest("hex");
-      if (snapshotHash && currentHash !== snapshotHash) throw new Error("workspace_ref_changed");
-      return { text: content.text, currentHash };
-    },
-  });
-});
 runtimes.register("native_ai_sdk", (input) => {
   const workspace = input.workspaceId ? workspaces.get(input.workspaceId) : null;
   if (!workspace) throw new Error("native_workspace_required");
@@ -123,7 +100,9 @@ runtimes.register("native_ai_sdk", (input) => {
   const policy = new WorkspacePathPolicy(workspace.canonicalPath);
   const mcpDefinitions = mcp.definitionsFor(workspace.id, { effects: ["allow", "ask"] });
   const mcpEffects = new Map(mcp.policyEntriesFor(workspace.id).map((entry) => [entry.namespacedName, entry.effect]));
-  const registry = new ToolRegistry([...createReadOnlyBuiltins(policy), ...mcpDefinitions]);
+  const sandboxMode: string = typeof input.runtimeOptions?.sandbox === "string" ? input.runtimeOptions.sandbox : "read-only";
+  const workspaceWriteTools = sandboxMode === "workspace-write" ? createWorkspaceWriteBuiltins(policy) : [];
+  const registry = new ToolRegistry([...createReadOnlyBuiltins(policy), ...workspaceWriteTools, ...mcpDefinitions]);
   const executor = new ToolExecutor(db, registry, approvals);
   const model = createAiSdkModel({
     providerType: provider.type,
@@ -132,6 +111,11 @@ runtimes.register("native_ai_sdk", (input) => {
     modelId: agent.model_id,
     fetchImpl: proxiedFetch,
   });
+  const writeCapabilities: string[] = sandboxMode === "workspace-write" ? ["workspace_read", "workspace_write", "mcp"] : ["workspace_read", "mcp"];
+  const availableDefs = registry.available({ mode: "single_agent", phase: "executing", allowedCapabilities: writeCapabilities as any });
+  const approvalEffect = (def: typeof availableDefs[number]) =>
+    (def.risk === "high" || def.risk === "destructive") ? "ask" : "allow";
+
   return new NativeAgentRuntime({
     sessionId: input.sessionId,
     taskId: input.agentSessionId,
@@ -142,21 +126,7 @@ runtimes.register("native_ai_sdk", (input) => {
     registry,
     executor,
     stream: createAiSdkNativeStream(model),
-    permissionForTool: (definition) => definition.capability === "mcp" ? mcpEffects.get(definition.name) ?? "ask" : "allow",
-    resolveAttachment: (attachmentId) => {
-      const attachment = attachments.read(attachmentId);
-      return { mediaType: attachment.record.mediaType, filename: attachment.record.filename, bytes: attachment.bytes };
-    },
-    resolveWorkspaceRef: (relativePath, snapshotHash) => {
-      const content = policy.readText(relativePath, 512 * 1024);
-      if (content.truncated) throw new Error("workspace_ref_context_too_large");
-      const currentHash = createHash("sha256").update(content.text).digest("hex");
-      if (snapshotHash && currentHash !== snapshotHash) throw new Error("workspace_ref_changed");
-      return { text: content.text };
-    },
-    onClose: () => {
-      mcp.releaseOwners(input.agentSessionId, `${input.sessionId}:${input.agentId}`);
-    },
+    permissionForTool: (definition) => approvalEffect(definition) === "ask" ? "ask" : "allow",
   });
 });
 const agentRuns = new SingleAgentRunner(db, runtimes, approvals, events, attachments);

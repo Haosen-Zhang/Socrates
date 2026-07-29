@@ -27,6 +27,8 @@ import {
 } from "@socrates/core";
 import { relativeWorkspacePath } from "./workspace/workspacePath";
 import { resolveActiveWorkspace } from "./workspace/projectSelection";
+import { sidecarFetch, requireOk, streamSseEvents } from "./transport";
+import { decodeRuntimeEvent } from "./protocol";
 
 type Handshake = { port: number; token: string };
 export type ConnStatus = "connecting" | "connected" | "disconnected";
@@ -257,20 +259,6 @@ function persistActiveWorkspaceId(workspaceId: string | null): void {
   }
 }
 
-async function sidecarFetch(hs: Handshake, path: string, init?: RequestInit): Promise<Response> {
-  const res = await fetch(`http://127.0.0.1:${hs.port}${path}`, {
-    ...init,
-    headers: { Authorization: `Bearer ${hs.token}`, ...init?.headers },
-  });
-  if (res.status >= 500) throw new Error(`sidecar ${path} 返回 ${res.status}`);
-  return res;
-}
-
-async function requireOk<T>(res: Response): Promise<T> {
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error ?? `请求失败 (${res.status})`);
-  return body as T;
-}
 
 export const useStore = create<Store>((set, get) => {
   const hs = () => {
@@ -593,15 +581,13 @@ export const useStore = create<Store>((set, get) => {
             prompt,
             attachmentIds: get().draftAttachments.map((attachment) => attachment.id),
             workspaceRefIds: get().draftWorkspaceRefs.map((reference) => reference.id),
-            runtimeKind: sandbox === "read-only" ? "native_ai_sdk" : "codex_app_server",
+            runtimeKind: "native_ai_sdk",
             runtimeOptions: { sandbox },
           }),
         });
         if (!response.ok || !response.body) await requireOk(response);
-        const reader = response.body!.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        // 高频 text_delta 累积进缓冲，每帧 flush 一次；控制事件在处理前先 flush，保证顺序
+
+        // Frame-buffered delta batching (rAF) — decoupled from transport
         let pendingText = "";
         let rafHandle: number | null = null;
         const flushText = () => {
@@ -615,52 +601,43 @@ export const useStore = create<Store>((set, get) => {
           if (rafHandle === null) rafHandle = requestAnimationFrame(flushText);
         };
         const flushNow = () => {
-          if (rafHandle !== null) {
-            cancelAnimationFrame(rafHandle);
-            rafHandle = null;
-          }
+          if (rafHandle !== null) { cancelAnimationFrame(rafHandle); rafHandle = null; }
           flushText();
         };
+
         try {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const blocks = buffer.split("\n\n");
-            buffer = blocks.pop() ?? "";
-            for (const block of blocks) {
-              const data = block.split("\n").find((line) => line.startsWith("data:"))?.slice(5).trim();
-              if (!data) continue;
-              const event = JSON.parse(data) as RuntimeEvent | { status: string; error?: string };
-              if ("type" in event) {
-                if (event.type === "text_delta") {
-                  pendingText += event.text;
-                  scheduleFlush();
-                  continue;
-                }
-                // 控制事件：先落定文本再入事件数组，保证呈现顺序
-                flushNow();
-                set((state) => ({ agentEvents: [...state.agentEvents, event] }));
-                if (event.type === "extension" && event.name === "run_started" && event.payload && typeof event.payload === "object" && "runId" in event.payload) {
-                  set({ activeAgentRunId: String((event.payload as { runId: unknown }).runId) });
-                }
-                if (event.type === "approval_required") {
-                  const pendingApprovals = await requireOk<PendingApproval[]>(await sidecarFetch(hs(), "/agent/approvals"));
-                  set({ pendingApprovals });
-                }
-              } else if (event.status === "failed") {
-                flushNow();
-                runError = event.error ?? "agent_run_failed";
+          for await (const raw of streamSseEvents(response)) {
+            const event = decodeRuntimeEvent(raw);
+            if (!event) continue;
+
+            if (event.type === "text_delta") {
+              pendingText += event.text;
+              scheduleFlush();
+              continue;
+            }
+
+            flushNow();
+            set((state) => ({ agentEvents: [...state.agentEvents, event] }));
+
+            if (event.type === "extension" && event.name === "run_started" && event.payload && typeof event.payload === "object" && "runId" in event.payload) {
+              set({ activeAgentRunId: String((event.payload as { runId: unknown }).runId) });
+            }
+            if (event.type === "approval_required") {
+              const pendingApprovals = await requireOk<PendingApproval[]>(await sidecarFetch(hs(), "/agent/approvals"));
+              set({ pendingApprovals });
+            }
+            if (event.type === "status") {
+              if (event.status === "failed") {
+                runError = event.message ?? "agent_run_failed";
                 set({ agentError: runError });
-              } else if (event.status === "cancelled") {
-                flushNow();
+              } else if (event.status === "interrupted") {
                 runError = tr(get().lang, "task_cancelled_notice");
                 set({ agentError: runError });
               }
             }
           }
         } finally {
-          flushNow(); // 收尾保证最后一段文本不丢
+          flushNow();
         }
         if (!runError) set({ draftAttachments: [], draftWorkspaceRefs: [], workspacePathResults: [] });
       } catch (error) {

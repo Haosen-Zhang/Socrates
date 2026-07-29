@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { makeToolCallKey, truncateToolOutput, validateJsonSchemaInput } from "./tools";
+import { type JsonSchema, makeToolCallKey, truncateToolOutput, validateJsonSchemaInput } from "./tools";
 
 describe("tool contracts", () => {
   it("validates the supported object-schema subset and rejects unknown fields", () => {
-    const schema = { type: "object", required: ["path"], additionalProperties: false, properties: { path: { type: "string" } } } as const;
+    const schema: JsonSchema = { type: "object", required: ["path"], additionalProperties: false, properties: { path: { type: "string" } } };
     expect(validateJsonSchemaInput(schema, { path: "src" })).toEqual([]);
     expect(validateJsonSchemaInput(schema, {})).toContain("missing:path");
     expect(validateJsonSchemaInput(schema, { path: "src", surprise: true })).toContain("unknown:surprise");

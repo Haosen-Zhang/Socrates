@@ -41,7 +41,7 @@ async function setup() {
   tasks.decidePlan({ taskId: task.id, version: plan.version, hash: plan.contentHash, clientDecisionKey: "plan-decision", decision: "approve_exact_plan" });
   const events = new EventStore(db);
   const runtimes = new RuntimeManager(db, events);
-  runtimes.register("codex_app_server", () => new ApprovalRuntime());
+  runtimes.register("native_ai_sdk", () => new ApprovalRuntime());
   const approvals = new ApprovalManager(db);
   const runner = new ExecutionRunner(db, tasks, runtimes, new WorkspaceLeaseManager(db, "test-instance"), approvals, events);
   return { db, tasks, task, approvals, runner };
