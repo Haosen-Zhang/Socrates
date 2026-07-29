@@ -1,6 +1,10 @@
 # AGENTS.md
 
-Socrates 是一个多模型群聊式 Agent 工作台：把不同厂商的 LLM 拉进同一个房间，按可控的编排策略讨论同一个任务，最后由指定模型总结。MVP（issue #2 及 #3–#9）已完成：Provider 管理、Agent、Room、Round Robin / Debate 编排、流式群聊 UI、任务取消/重试、历史回放、语言切换。
+Socrates 是一个多模型群聊 + 本地协作的桌面 Agent 工作台：把不同厂商的 LLM 拉进同一个房间，按可控的编排策略讨论同一个任务，并能在本地工作区里真正改代码/跑命令。
+
+顶层只有两种房间：**Chat**（1..N Agent 纯讨论，不绑工作区、无工具）与 **Co-work**（1..N Agent 在工作区协作，有工具/执行）。Co-work 多 Agent 走「讨论 → 综合计划 → 审批 → 执行」，支持 Boss 统筹与 Agent 审核（真实生效）。执行内核是自研的 `native_ai_sdk` 运行时，用你在设置里配的 provider key 跑（**Codex 依赖已移除，#77**）。
+
+> **架构文档（务必先读）**：`doc/architecture.md`（当前真实架构，含图）、`doc/native-runtime-and-langgraph-roadmap.md`（演进路线：Native Runtime + LangGraph.js）。注意仓库同时有 `doc/`（架构/设计）与 `docs/`（adr、agents 流程）两个目录。
 
 ## 代码结构
 

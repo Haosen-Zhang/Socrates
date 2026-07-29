@@ -10,7 +10,7 @@
 Socrates 是一个**多模型群聊 + 本地协作**的桌面 Agent 工作台：
 - **外壳**：Tauri（Rust）+ React 19 + Vite + Tailwind + Zustand。
 - **大脑/IO**：一个 Bun 进程（sidecar），跑 Hono HTTP/SSE 服务，管所有状态、模型调用、执行。
-- **执行内核**：目前借 **Codex**（OpenAI 的 `codex app-server`）当"真正动工作区"的运行时；已用统一的 `AgentRuntime` 接口做了 seam，将来可换自研。
+- **执行内核**：Socrates 自研的 **`native_ai_sdk` 运行时**——用**你配的 provider key** 驱动模型循环调用工具（读/写文件、跑命令），逐工具审批。（Codex 依赖已在 #77 移除。）统一 `AgentRuntime` 接口做 seam，可再接 LangGraph/其它。
 - **纯逻辑**：`packages/core` 是零 IO 的领域层，前后端共享同一份判断（房间形状、导航、状态机、审批规则）。
 
 三层 monorepo（Bun workspaces）：
@@ -31,7 +31,7 @@ graph TB
     Domain["领域模型 + 校验 + 状态机"]
   end
   Ext["模型 Provider<br/>(OpenAI/DeepSeek/…)"]
-  Codex["Codex app-server<br/>(本地执行内核)"]
+  WS[["本地工作区<br/>(读/写文件·跑命令·逐工具审批)"]]
 
   UI -->|"invoke() 拿 handshake"| Rust
   Rust -->|"spawn + 读 stdout"| HTTP
@@ -39,7 +39,7 @@ graph TB
   HTTP --> Svc --> DB
   Svc --> KC
   Svc -->|"HTTPS (你配的 key)"| Ext
-  Svc -->|"stdio JSONL (它自己的登录)"| Codex
+  Svc -->|"native_ai_sdk 运行时 (软沙箱)"| WS
   desktop -.->|"import"| core
   sidecar -.->|"import"| core
 ```
@@ -236,6 +236,15 @@ graph TD
 
 跨字段规则集中在 `validateCollaborationSettings()`，前后端共用。
 
+### 5.2 成员管理（#78）
+
+Co-work 房间可增/删成员（`session-store` 的 `addAgent`/`removeAgent`，路由 `POST/DELETE /sessions/:id/agents`）：
+- 仅**会话空闲**时可改（`active_session_members_locked`），**至少保留一人**。
+- 加/减人后 **mode 按人数自动重算**：1 人 → `single_agent`，≥2 人 → `multi_agent`，`position` 重排——所以给单 Agent 会话加一个成员，它会自动变成多 Agent 会话。
+- 前端 `SessionMembersDialog`，入口在单/多 Agent 会话头部的成员按钮。
+
+**建房入口收敛**：从侧栏工作区分组的「＋」建房会**锁定为该工作区的 Co-work**（`presetWorkspaceId`），不再让重选工作区；「选工作区」只在全局「新建房间」时开放。
+
 ---
 
 ## 6. 多 Agent 编排（协调器）— 核心
@@ -277,7 +286,7 @@ sequenceDiagram
   participant Co as Coordinator
   participant A as 各 Agent (ModelGateway)
   participant Ex as ExecutionRunner
-  participant Cx as Codex
+  participant Cx as native_ai_sdk 运行时
 
   U->>Co: 提交任务 + config(顺序/轮数/综合者/执行者)
   loop discussionMode≠off: round × speakingOrder
@@ -295,7 +304,7 @@ sequenceDiagram
   end
   Co-->>U: awaiting_plan_approval (SSE plan_ready)
   U->>Ex: 批准计划
-  Ex->>Cx: 开执行(workspace-write, 拿写锁)
+  Ex->>Cx: 开执行(workspace-write, 写内建, 拿写锁)
   loop 每个高风险工具调用
     Cx-->>Ex: approval_required
     Ex-->>U: 弹审批 (plan_scope 校验)
@@ -320,41 +329,47 @@ sequenceDiagram
 
 ## 7. 运行时骨架与执行内核（seam 所在）
 
+> **重要变更（PR #77）**：Codex 已被**整个移除**（`runtime/codex/`、`child-supervisor` 全删）。
+> 执行内核现在是 Socrates 自研的 **`native_ai_sdk` 运行时**，用**你在 Socrates 里配的 provider key**
+> 跑，不再依赖本机 codex 登录/额度。roadmap 里的 Phase 1（摆脱 Codex）基本达成。
+
 ### 7.1 统一接口 + 注册表
 
-`runtime/runtime-manager.ts` 是运行时注册表：`register(kind, factory)`，按字符串 `runtimeKind` 取工厂。所有运行时都实现 `core` 的 `AgentRuntime` 接口。**目前注册了两个**：
+`runtime/runtime-manager.ts` 是运行时注册表：`register(kind, factory)`，按字符串 `runtimeKind` 取工厂。所有运行时都实现 `core` 的 `AgentRuntime` 接口。**生产只注册了一个**：`native_ai_sdk`。（另有一个 `LangGraphAgentRuntime` 已在代码里，但**尚未 register 进生产**，见 roadmap Phase 2。）
 
 ```mermaid
 graph TB
   RM["RuntimeManager (注册表)"]
-  RM -->|"native_ai_sdk"| N["NativeAgentRuntime<br/>单Agent聊天+工具"]
-  RM -->|"codex_app_server"| Cx["CodexRuntime<br/>工作区写入执行"]
-  N -->|"你配的 provider key"| Prov["OpenAI/DeepSeek/… (AI SDK)"]
-  N --> Tools["只读内建工具 + MCP 工具"]
-  Cx -->|"codex 自己的登录"| Codex["codex app-server 子进程"]
+  RM -->|"native_ai_sdk (唯一生产运行时)"| N["NativeAgentRuntime"]
+  N -->|"你配的 provider key (AI SDK)"| Prov["OpenAI/DeepSeek/…"]
+  N -->|"read-only 会话"| RO["只读内建 (list/read/search) + MCP"]
+  N -->|"workspace-write 会话"| RW["写内建 (write_file / run_shell) + 只读 + MCP"]
+  LG["LangGraphAgentRuntime (存在但未接入)"] -.->|Phase 2| RM
 ```
 
-| runtime | 用途 | 鉴权/计费 | 工具 |
-| --- | --- | --- | --- |
-| `native_ai_sdk` | 单 Agent 聊天（可带只读工具/MCP） | **你配的 API key** | 只读内建 + MCP |
-| `codex_app_server` | 工作区写入执行（改文件/跑命令） | **codex 自己的登录**（ChatGPT 账号/其配置里的 key） | Codex 的 apply_patch / exec，带沙箱 |
+`native_ai_sdk` 按 sandbox 决定可用能力（`index.ts` 计算 `writeCapabilities` 传入运行时）：
 
-**单 Agent 会话按沙箱选运行时**（`store.ts`）：`sandbox === "read-only" → native_ai_sdk`（走你的 key，只读），`workspace-write → codex_app_server`（走 codex，可写）。这解释了界面上"SINGLE AGENT · READ-ONLY / Native Agent"与"WORKSPACE-WRITE / Codex"的区别。
+| sandbox | 鉴权/计费 | 可用工具 |
+| --- | --- | --- |
+| `read-only` | **你配的 API key** | 只读内建（list/read/search）+ MCP |
+| `workspace-write` | **你配的 API key** | 上面 + 写内建 `write_file` / `run_shell`（risk high/destructive，须审批） |
 
-> ⚠️ **计费关键**：`codex_app_server` 启动为 `[codex, app-server, --stdio]`，Socrates **不传任何 key**，子进程环境只放行 `PATH/HOME/TMPDIR/LANG/LC_ALL/CODEX_HOME`（明确挡掉 `OPENAI_API_KEY`）。所以执行走的是**用户本机 codex 的登录额度**，不是 Socrates 配的 key。这是"借 Codex 当内核"的固有约束，也是将来换自研 runtime 的主要动机。
+> **计费**：整条链路（讨论 + 执行）都走 `ModelGateway` / `native_ai_sdk`，用的是**你配的 provider key**。不再有"codex 登录额度"这回事。
+>
+> **写能力接线（易错点，见 #78）**：`NativeAgentRuntime.start()` 曾硬编码 `allowedCapabilities: ["workspace_read","mcp"]`，把写工具过滤掉——导致 workspace-write 却只有只读。现在由 `index.ts` 按 sandbox 传入 `allowedCapabilities`（含 `workspace_write`），写工具才到得了模型。缺省仍退回只读，绝不擅自开放写。
 
 ### 7.2 执行内核（ExecutionRunner）
 
-`runtime/execution-runner.ts`：拿到**已批准**的计划后——
+`runtime/execution-runner.ts`：多 Agent 任务拿到**已批准**的计划后——
 1. 校验计划哈希与状态（`approved_plan_required`）。
 2. 解析工作区、检查 evidence 时效、**获取写锁**（`workspace/leases.ts`，30 分钟租约，定时续租，丢锁自动取消）。
-3. 开 `codex_app_server` 运行时（sandbox=workspace-write），流式跑计划。
+3. 开 **`native_ai_sdk`** 运行时（sandbox=workspace-write，带写内建），流式跑计划。
 4. **每个高风险工具调用**：走 `ApprovalManager` 请求审批；`plan-scope.ts` 判断是否在计划范围内（超范围 = `plan_scope_expansion`，强制人工）。
 5. 完成 → `complete`；失败 → `fail(reason)`（reason 存 `terminalReason`，前端会展示）。
 
-### 7.3 换成自研 runtime 需要什么
+### 7.3 下一步（roadmap）
 
-seam 已就绪：写一个实现 `AgentRuntime` 的类（负责沙箱、文件改动、命令执行、审批事件流），`register("socrates_native", …)`，把 `execution-runner` 的 `runtimeKind` 指过去即可——**上面的计划/审批/Boss/Reviewer 逻辑一行不用改**。真正的工作量在**重造执行内核本身**（安全沙箱、可靠 diff 应用、命令隔离），那正是 Codex 现在帮忙省掉、也最难做对的部分。
+seam 已就绪且已被用上（execution-runner 现在指向 `native_ai_sdk`）。后续按 [native-runtime-and-langgraph-roadmap.md](native-runtime-and-langgraph-roadmap.md)：把 `LangGraphAgentRuntime` register 进生产做治理编排（Phase 2），以及可选的 Rust 执行辅助进程强化沙箱/资源限制（Phase 6）。当前的沙箱是**软沙箱**（工作区路径策略 `path-policy.ts` + 写锁 + 逐工具审批），跨平台但非内核级隔离。
 
 ---
 
@@ -364,7 +379,7 @@ seam 已就绪：写一个实现 `AgentRuntime` 的类（负责沙箱、文件�
 | --- | --- |
 | 传输 | 仅回环 `127.0.0.1` + 一次性 Bearer token + origin 校验（否则 403） |
 | 密钥 | macOS Keychain，库里只存引用；日志里 `sk-…` 主动打码（`security/redaction.ts`） |
-| 执行沙箱 | Codex 的 `read-only` / `workspace-write` 沙箱 + `on-request` 审批策略 |
+| 执行沙箱 | 软沙箱：工作区路径策略（`path-policy.ts`，禁越界/symlink 逃逸）+ read-only/workspace-write 能力分级 + 写锁 |
 | 逐步审批 | 计划审批（人/审核 Agent）+ 每个高风险工具调用审批（`ApprovalManager`），计划范围外强制人工 |
 | 工作区隔离 | 写锁租约（`leases.ts`）+ 路径策略（`path-policy.ts`，禁止越界访问） |
 | 子进程 | 环境变量白名单，父进程死亡自动退出 |
@@ -380,7 +395,7 @@ seam 已就绪：写一个实现 `AgentRuntime` 的类（负责沙箱、文件�
 | 计划生成 | 协调器 `synthesize()` | 综合者/Boss 产出 `StructuredPlan`（JSON，校验+修复） |
 | Boss 统筹 | 协调器 `effectiveSynthesizerId` | Boss 接管综合，默认不执行 |
 | Agent 审核 | 协调器 `reviewPlan()` | 真跑审核 Agent，request_changes 自动改一版 |
-| 本地执行 | `execution-runner.ts` + Codex | 写锁 + 沙箱 + 逐工具审批 |
+| 本地执行 | `execution-runner.ts` + `native_ai_sdk` | 你配的 key + 写内建 + 写锁 + 逐工具审批 |
 | 单 Agent 带工具 | `native-agent-runtime.ts` | AI SDK + 只读内建 + MCP 工具 |
 | 用量统计 | `services/usage-collector.ts` | 按 stableKey 幂等记账，前端 usageSummaries |
 | MCP 工具 | `mcp/manager.ts` `mcp/adapter.ts` | 官方 MCP client，工具注入 native runtime |
@@ -393,7 +408,8 @@ seam 已就绪：写一个实现 `AgentRuntime` 的类（负责沙箱、文件�
 
 - **多执行者分派**（Boss 把 work package 分给不同 Agent 分别执行）：运行时只有单 `executionAgentId`，未实现。
 - **Supervision 监督**：类型/UI 有，协调器未消费。
-- **执行层计费解耦**：目前走 codex 登录额度（见 §7.1）；要走 Socrates 配的 key 需改造或换自研 runtime。
+- ✅ **执行层计费已解耦**（#77）：执行改走 `native_ai_sdk` + 你配的 provider key，不再依赖 codex 登录。
+- **LangGraph 编排**：`LangGraphAgentRuntime` 已在代码里但未 register 进生产（roadmap Phase 2）。
 - **`discussionMode=debate`**：未实现（只有 off/round_robin 生效）。
 
 ---
@@ -403,6 +419,6 @@ seam 已就绪：写一个实现 `AgentRuntime` 的类（负责沙箱、文件�
 - 领域：`packages/core/src/{room-kind,navigation,task-state,orchestration,plan,plan-scope,approvals}.ts`
 - 后端装配：`apps/sidecar/src/index.ts`
 - 多 Agent：`apps/sidecar/src/multi-agent/{coordinator,task-store}.ts`
-- 执行内核 + seam：`apps/sidecar/src/runtime/{runtime-manager,execution-runner,native-agent-runtime}.ts` + `runtime/codex/`
+- 执行内核 + seam：`apps/sidecar/src/runtime/{runtime-manager,execution-runner,native-agent-runtime,langgraph-agent-runtime}.ts` + `tools/{read-only-builtins,workspace-write-builtins}.ts`
 - 前端主视图：`apps/desktop/src/ChatPage.tsx`、`store.ts`、`selectors.ts`
 - 导航/侧栏：`apps/desktop/src/sidebar/`、`settings/`
