@@ -313,8 +313,15 @@ export class LangGraphAgentRuntime implements AgentRuntime {
       const aiMsg = new AIMessage({ content: "", tool_calls: pendingApprovals.map(a => ({ id: a.callId, name: a.name, args: a.input as Record<string, unknown> })) });
       modelResponse.unshift(aiMsg);
 
-      // Transition from sampling → processing_response (prepareContextNode already set 'sampling')
-      const nextTurn = reduceTurnState(state.turnState, {
+      // Transition: sampling → processing_response → target state
+      // Step 1: sampling → processing_response
+      const intermediate = reduceTurnState(state.turnState, {
+        type: "model_response",
+        hasToolCalls: false,
+        needsApproval: false,
+      });
+      // Step 2: processing_response → final target
+      const nextTurn = reduceTurnState(intermediate, {
         type: "model_response",
         hasToolCalls,
         needsApproval,
@@ -331,8 +338,10 @@ export class LangGraphAgentRuntime implements AgentRuntime {
     };
 
     const executeToolsNode = async (state: typeof AgentGraphState.State): Promise<Partial<typeof AgentGraphState.State>> => {
-      // Transition: awaiting_tool_approval → executing_tools
-      const nextTurn = reduceTurnState(state.turnState, { type: "approval_settled" });
+      // If awaiting approval, transition to executing_tools. If already executing_tools（inline path）, skip.
+      const nextTurn = state.turnState === "awaiting_tool_approval"
+        ? reduceTurnState(state.turnState, { type: "approval_settled" })
+        : state.turnState;
       const results: Array<{ callId: string; output: unknown; isError: boolean }> = [];
 
       for (const pending of state.pendingApprovals) {
