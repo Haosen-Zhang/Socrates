@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { openDb } from "../db";
 import { ApprovalManager } from "../approvals/manager";
 import { createReadOnlyBuiltins } from "../tools/read-only-builtins";
+import { createWorkspaceWriteBuiltins } from "../tools/workspace-write-builtins";
 import { ToolExecutor } from "../tools/executor";
 import { ToolRegistry } from "../tools/registry";
 import { WorkspacePathPolicy } from "../workspace/path-policy";
@@ -69,6 +70,39 @@ describe("NativeAgentRuntime", () => {
       { name: "search_files", status: "succeeded" },
       { name: "read_file", status: "succeeded" },
     ]);
+  });
+
+  it("offers workspace-write tools only when workspace_write capability is allowed", async () => {
+    const root = `${tmpdir()}/socrates-native-${crypto.randomUUID()}`;
+    roots.push(root);
+    mkdirSync(root, { recursive: true });
+    const db = openDb(":memory:");
+    const policy = new WorkspacePathPolicy(root);
+    const registry = new ToolRegistry([...createReadOnlyBuiltins(policy), ...createWorkspaceWriteBuiltins(policy)]);
+    const executor = new ToolExecutor(db, registry, new ApprovalManager(db));
+    let offered: string[] = [];
+    const stream: NativeStreamFactory = async function* (input) {
+      offered = Object.keys(input.tools).sort();
+      yield { type: "text_delta", text: "ok" };
+    };
+    const make = (allowedCapabilities: ("workspace_read" | "workspace_write" | "mcp")[]) => new NativeAgentRuntime({
+      sessionId: "s", taskId: "t", agentId: "a", workspaceId: "w", workspaceIdentity: "h",
+      registry, executor, stream, allowedCapabilities,
+    });
+
+    // 只读能力：写工具不应出现（回归防线——这正是"workspace-write 却只有只读"的 bug）
+    const ro = make(["workspace_read", "mcp"]);
+    await ro.open();
+    for await (const _ of ro.start({ prompt: "x" })) { /* drain */ }
+    expect(offered).not.toContain("write_file");
+    expect(offered).not.toContain("run_shell");
+
+    // 授予 workspace_write：写工具必须出现
+    const rw = make(["workspace_read", "workspace_write", "mcp"]);
+    await rw.open();
+    for await (const _ of rw.start({ prompt: "x" })) { /* drain */ }
+    expect(offered).toContain("write_file");
+    expect(offered).toContain("run_shell");
   });
 
   it("fails closed for unsupported images instead of silently dropping them", async () => {

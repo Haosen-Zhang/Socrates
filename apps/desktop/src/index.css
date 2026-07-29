@@ -563,7 +563,9 @@ button, input, select, textarea { font: inherit; }
 .anim-msg { will-change: transform, opacity; animation: pixel-pop-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 .anim-panel { will-change: transform, opacity; animation: pixel-slide-down 160ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 .anim-view { will-change: opacity; animation: pixel-fade 160ms ease-out both; }
-.pixel-dialog { will-change: transform, opacity; animation: pixel-dialog-in 190ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+/* 注意：不要在这里放 will-change: transform —— 它会让 .pixel-dialog 成为 fixed 定位的包含块，
+   导致嵌套在设置面板里的对话框（如创建 Agent）被裁进面板、显示不全。只保留 opacity。 */
+.pixel-dialog { will-change: opacity; animation: pixel-dialog-in 190ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 .pixel-dialog-backdrop { will-change: opacity; animation: pixel-fade 150ms ease-out both; }
 .pixel-dialog-backdrop.is-closing { animation: pixel-fade-out 150ms ease-in both; }
 .pixel-dialog-backdrop.is-closing .pixel-dialog { animation: pixel-dialog-out 150ms ease-in both; }

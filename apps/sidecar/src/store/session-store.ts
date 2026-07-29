@@ -168,6 +168,44 @@ export class SessionStore {
     return this.get(sessionId)!;
   }
 
+  private static readonly INACTIVE = ["idle", "completed", "failed", "cancelled", "interrupted"];
+
+  /** 会话人数变了，mode 随之重算：1 人 single_agent，≥2 人 multi_agent（chat 不变）。 */
+  private syncMode(sessionId: string, kind: RoomKind, memberCount: number): void {
+    if (kind === "chat") return;
+    const mode = memberCount >= 2 ? "multi_agent" : "single_agent";
+    this.db.query("UPDATE sessions SET mode = ? WHERE id = ?").run(mode, sessionId);
+  }
+
+  addAgent(sessionId: string, agentId: string, snapshot: Record<string, unknown>): ConversationSession {
+    const session = this.get(sessionId);
+    if (!session) throw new Error("session_not_found");
+    if (!SessionStore.INACTIVE.includes(session.status)) throw new Error("active_session_members_locked");
+    if (session.agents.some((agent) => agent.agentId === agentId)) throw new Error("session_agent_already_member");
+    const position = session.agents.length;
+    this.db.query("INSERT INTO session_agents (session_id, agent_id, snapshot_json, position, execution_eligible) VALUES (?, ?, ?, ?, 1)")
+      .run(sessionId, agentId, JSON.stringify(snapshot), position);
+    this.syncMode(sessionId, session.kind, session.agents.length + 1);
+    this.db.query("UPDATE sessions SET updated_at = ? WHERE id = ?").run(new Date().toISOString(), sessionId);
+    return this.get(sessionId)!;
+  }
+
+  removeAgent(sessionId: string, agentId: string): ConversationSession {
+    const session = this.get(sessionId);
+    if (!session) throw new Error("session_not_found");
+    if (!SessionStore.INACTIVE.includes(session.status)) throw new Error("active_session_members_locked");
+    if (!session.agents.some((agent) => agent.agentId === agentId)) throw new Error("session_agent_not_member");
+    if (session.agents.length <= 1) throw new Error("session_requires_at_least_one_member");
+    this.db.query("DELETE FROM session_agents WHERE session_id = ? AND agent_id = ?").run(sessionId, agentId);
+    // 重排 position，保持连续（发言顺序等依赖它）
+    this.get(sessionId)!.agents.forEach((agent, index) => {
+      this.db.query("UPDATE session_agents SET position = ? WHERE session_id = ? AND agent_id = ?").run(index, sessionId, agent.agentId);
+    });
+    this.syncMode(sessionId, session.kind, session.agents.length - 1);
+    this.db.query("UPDATE sessions SET updated_at = ? WHERE id = ?").run(new Date().toISOString(), sessionId);
+    return this.get(sessionId)!;
+  }
+
   rename(sessionId: string, title: string): ConversationSession {
     const value = title.trim();
     if (!value) throw new Error("session_title_required");

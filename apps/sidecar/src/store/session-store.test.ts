@@ -3,6 +3,38 @@ import { openDb } from "../db";
 import { SessionStore } from "./session-store";
 
 describe("SessionStore", () => {
+  it("adds and removes co-work members and recomputes mode by member count", () => {
+    const db = openDb(":memory:");
+    const store = new SessionStore(db);
+    db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w','/w','/w','h','w','now','now')").run();
+    const session = store.create({ title: "Cowork", mode: "single_agent", workspaceId: "w", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: true }] });
+    expect(session.mode).toBe("single_agent");
+
+    // 加第二人 → multi_agent
+    const two = store.addAgent(session.id, "b", { nickname: "B" });
+    expect(two.agents.map((m) => m.agentId)).toEqual(["a", "b"]);
+    expect(two.mode).toBe("multi_agent");
+
+    // 踢回一人 → single_agent，position 重排连续
+    const one = store.removeAgent(session.id, "a");
+    expect(one.agents.map((m) => m.agentId)).toEqual(["b"]);
+    expect(one.agents[0]!.position).toBe(0);
+    expect(one.mode).toBe("single_agent");
+
+    // 不能踢到 0 人，不能重复加
+    expect(() => store.removeAgent(session.id, "b")).toThrow("session_requires_at_least_one_member");
+    expect(() => store.addAgent(session.id, "b", { nickname: "B" })).toThrow("session_agent_already_member");
+  });
+
+  it("locks member changes while the session is running", () => {
+    const db = openDb(":memory:");
+    const store = new SessionStore(db);
+    db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w','/w','/w','h','w','now','now')").run();
+    const session = store.create({ title: "Cowork", mode: "single_agent", workspaceId: "w", agents: [{ agentId: "a", snapshot: {}, executionEligible: true }] });
+    db.query("UPDATE sessions SET status = 'running' WHERE id = ?").run(session.id);
+    expect(() => store.addAgent(session.id, "b", {})).toThrow("active_session_members_locked");
+  });
+
   it("creates all three modes with immutable agent snapshots", () => {
     const db = openDb(":memory:");
     const store = new SessionStore(db);

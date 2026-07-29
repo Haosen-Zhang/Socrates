@@ -649,6 +649,7 @@ function SingleAgentSession() {
   const t = useT();
   const [draft, setDraft] = useState("");
   const [sandbox, setSandbox] = useState<"read-only" | "workspace-write">("read-only");
+  const [showMembers, setShowMembers] = useState(false);
   const session = sessions.find((item) => item.id === currentSessionId);
   const agentSnapshot = session?.agents[0]?.snapshot;
   const agentUsage = usageSummaries.find((item) => item.agentId === session?.agents[0]?.agentId);
@@ -677,6 +678,7 @@ function SingleAgentSession() {
         <div className="flex items-center gap-2">
           {agentSnapshot && <div className="pixel-card flex items-center gap-2 px-2 py-1"><AgentAvatar src={String(agentSnapshot.avatar ?? "")} label={String(agentSnapshot.nickname ?? "Agent")} size={28} lively={false} /><span className="text-[10px]">{t("usage_current")}: {usageText(agentUsage?.current.totalTokens)}<br />{t("usage_total")}: {usageText(agentUsage?.cumulative.totalTokens)}</span></div>}
           <WorkspaceChip workspaceId={session?.workspaceId} locked />
+          {session && <button className="pixel-button flex items-center gap-1 px-2 py-1 text-xs" onClick={() => setShowMembers(true)} title={t("room_members_title")}><PixelIcon name="robot" size={14} />{session.agents.length}</button>}
           <select className="pixel-input px-2 py-1 text-xs" value={sandbox} disabled={agentRunning} onChange={(event) => setSandbox(event.target.value as typeof sandbox)}>
             <option value="read-only">{t("sandbox_read_only")}</option>
             <option value="workspace-write">{t("sandbox_workspace_write")}</option>
@@ -750,6 +752,7 @@ function SingleAgentSession() {
           <button className="pixel-send shrink-0" type="submit" disabled={agentRunning || !draft.trim()} aria-label={t("send")}><PixelIcon name="send" size={18} /></button>
         </ResizableComposer>
       </form>
+      {showMembers && session && <SessionMembersDialog session={session} onClose={() => setShowMembers(false)} />}
     </div>
   );
 }
@@ -816,6 +819,7 @@ function MultiAgentSession() {
   const [fallbackOrderByAgent, setFallbackOrderByAgent] = useState<Record<string, string[]>>({});
   const dragging = useRef<string | null>(null);
   const [showCollab, setShowCollab] = useState(false);
+  const [showMembers, setShowMembers] = useState(false);
   useEffect(() => {
     const ids = participants.map((item) => item.id);
     setOrder(ids); setSynthesizerId(ids[ids.length - 1] ?? ""); setExecutionAgentId(ids[0] ?? "");
@@ -834,7 +838,7 @@ function MultiAgentSession() {
   return <div className="flex min-h-0 flex-1 flex-col">
     <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
       <div><div className="text-sm font-bold">{session?.title}</div><div className="text-[10px] uppercase tracking-wider text-neutral-500">Multi-Agent · {currentMultiTask?.state ?? "idle"}</div></div>
-      <div className="flex items-center gap-2"><WorkspaceChip workspaceId={session?.workspaceId} locked />{session && <button className="pixel-button flex items-center gap-1 px-2 py-1 text-xs" onClick={() => setShowCollab(true)} title={t("cowork_settings_title")}><PixelIcon name="gear" size={14} />{t("cowork_settings_title")}</button>}<div className="flex -space-x-2">{participants.slice(0, 6).map((agent) => <AgentAvatar key={agent.id} src={String(agent.avatar ?? "")} label={String(agent.nickname ?? agent.id)} size={28} lively={false} />)}</div>{currentMultiTask?.state === "paused" ? <button className="pixel-button pixel-button--primary px-2 py-1 text-xs" onClick={() => void (currentMultiTask.outcomeUnknown || currentMultiTask.requiresExecutionReview ? retryMultiTask() : resumeMultiTask())}>{t(currentMultiTask.outcomeUnknown || currentMultiTask.requiresExecutionReview ? "multi_retry_reviewed" : "multi_resume")}</button> : pausable && <button className="pixel-button px-2 py-1 text-xs" onClick={() => void pauseMultiTask()}>{t("multi_pause")}</button>}{currentMultiTask && !terminal && <button className="pixel-button px-2 py-1 text-xs text-red-700" onClick={() => void cancelMultiTask()}>{t("cancel_task")}</button>}</div>
+      <div className="flex items-center gap-2"><WorkspaceChip workspaceId={session?.workspaceId} locked />{session && <button className="pixel-button flex items-center gap-1 px-2 py-1 text-xs" onClick={() => setShowMembers(true)} title={t("room_members_title")}><PixelIcon name="robot" size={14} />{participants.length}</button>}{session && <button className="pixel-button flex items-center gap-1 px-2 py-1 text-xs" onClick={() => setShowCollab(true)} title={t("cowork_settings_title")}><PixelIcon name="gear" size={14} />{t("cowork_settings_title")}</button>}<div className="flex -space-x-2">{participants.slice(0, 6).map((agent) => <AgentAvatar key={agent.id} src={String(agent.avatar ?? "")} label={String(agent.nickname ?? agent.id)} size={28} lively={false} />)}</div>{currentMultiTask?.state === "paused" ? <button className="pixel-button pixel-button--primary px-2 py-1 text-xs" onClick={() => void (currentMultiTask.outcomeUnknown || currentMultiTask.requiresExecutionReview ? retryMultiTask() : resumeMultiTask())}>{t(currentMultiTask.outcomeUnknown || currentMultiTask.requiresExecutionReview ? "multi_retry_reviewed" : "multi_resume")}</button> : pausable && <button className="pixel-button px-2 py-1 text-xs" onClick={() => void pauseMultiTask()}>{t("multi_pause")}</button>}{currentMultiTask && !terminal && <button className="pixel-button px-2 py-1 text-xs text-red-700" onClick={() => void cancelMultiTask()}>{t("cancel_task")}</button>}</div>
     </header>
     <div className="flex-1 space-y-4 overflow-y-auto p-4">
       {multiError && <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{multiError}</div>}
@@ -888,18 +892,21 @@ function MultiAgentSession() {
       </form>}
     </div>
     {showCollab && session && <CoworkRoomSettingsDialog session={session} onClose={() => setShowCollab(false)} />}
+    {showMembers && session && <SessionMembersDialog session={session} onClose={() => setShowMembers(false)} />}
   </div>;
 }
 
-function NewRoomDialog({ onClose }: { onClose: () => void }) {
+function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; presetWorkspaceId?: string | null }) {
   const { agents, workspaces, createRoomFromDraft } = useStorePick("agents", "workspaces", "createRoomFromDraft");
   const t = useT();
+  // 从某个工作区分组的「＋」进来时，直接锁定为该工作区的 Co-work 房间——不再让用户重选工作区
+  const locked = presetWorkspaceId != null && workspaces.some((w) => w.id === presetWorkspaceId && !w.archived);
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [kind, setKind] = useState<RoomKind>("chat");
+  const [kind, setKind] = useState<RoomKind>(locked ? "cowork" : "chat");
   // Co-work 的工作区必须在这里明确选，不从全局 activeWorkspace 继承
-  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [workspaceId, setWorkspaceId] = useState<string | null>(locked ? presetWorkspaceId! : null);
   const dialog = useAnimatedDialogClose(onClose);
 
   const toggle = (id: string) => {
@@ -980,7 +987,8 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
               type="button"
               role="radio"
               aria-checked={kind === value}
-              className={`pixel-mode-card p-3 text-left ${kind === value ? "is-selected" : ""}`}
+              disabled={locked}
+              className={`pixel-mode-card p-3 text-left ${kind === value ? "is-selected" : ""} ${locked ? "cursor-not-allowed opacity-50" : ""}`}
               onClick={() => {
                 setKind(value);
                 setError(null);
@@ -995,8 +1003,9 @@ function NewRoomDialog({ onClose }: { onClose: () => void }) {
           <label className="mt-3 block text-sm font-bold">
             {t("room_workspace")}
             <select
-              className="pixel-input mt-1 w-full px-3 py-2 text-sm"
+              className={`pixel-input mt-1 w-full px-3 py-2 text-sm ${locked ? "cursor-not-allowed opacity-70" : ""}`}
               value={workspaceId ?? ""}
+              disabled={locked}
               onChange={(event) => {
                 setWorkspaceId(event.target.value || null);
                 setError(null);
@@ -1432,12 +1441,85 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
   );
 }
 
+/** Co-work 房间的成员管理：可加人、可踢人（会话空闲时；至少保留一人）。加/减人后 mode 由后端重算。 */
+function SessionMembersDialog({ session, onClose }: { session: ConversationSession; onClose: () => void }) {
+  const { agents, addSessionAgent, removeSessionAgent } = useStorePick("agents", "addSessionAgent", "removeSessionAgent");
+  const t = useT();
+  const dialog = useAnimatedDialogClose(onClose);
+  const [error, setError] = useState<string | null>(null);
+  const memberIds = session.agents.map((agent) => agent.agentId);
+  const members = memberIds.map((id) => agents.find((agent) => agent.id === id)).filter((agent): agent is Agent => !!agent);
+  const available = agents.filter((agent) => !memberIds.includes(agent.id));
+  const busy = !["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status);
+  const run = (op: () => Promise<void>) => op().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
+
+  return (
+    <div className={`pixel-dialog-backdrop ${dialog.closing ? "is-closing" : ""}`} role="presentation" onMouseDown={dialog.close}>
+      <section className="pixel-dialog max-h-[calc(100vh-40px)] w-[min(560px,calc(100vw-48px))] overflow-y-auto p-5" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="mb-4 flex items-start justify-between">
+          <div>
+            <div className="pixel-kicker">ROOM ROSTER</div>
+            <h3 className="text-lg font-bold">{t("room_members_title")}</h3>
+            <p className="mt-1 text-xs text-neutral-500">{session.title}</p>
+          </div>
+          <button className="pixel-button h-8 w-8" aria-label={t("close")} onClick={() => { sfx.close(); dialog.close(); }}>×</button>
+        </div>
+        {busy && <p className="mb-3 text-xs text-amber-700">{t("active_session_members_locked")}</p>}
+        <div className="space-y-2">
+          {members.map((agent) => (
+            <div key={agent.id} className="flex items-center gap-3 border-b border-neutral-200 py-2 last:border-0">
+              <AgentAvatar src={agent.avatar} label={agent.nickname} size={42} />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-bold">{agentLabel(agent)}</div>
+                <div className="truncate text-xs text-neutral-500">{agent.role || agent.modelId}</div>
+              </div>
+              <button
+                className="pixel-button px-3 py-1.5 text-xs text-red-700 disabled:opacity-40"
+                disabled={busy || members.length <= 1}
+                title={members.length <= 1 ? t("session_requires_at_least_one_member") : t("remove_member")}
+                onClick={() => void run(() => removeSessionAgent(session.id, agent.id))}
+              >
+                {t("remove_member")}
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="my-5 h-[2px] bg-neutral-200" />
+        <h4 className="mb-2 text-sm font-bold">{t("invite_agents")}</h4>
+        {available.length === 0 ? (
+          <p className="text-sm text-neutral-500">{t("all_agents_joined")}</p>
+        ) : (
+          <div className="space-y-2">
+            {available.map((agent) => (
+              <div key={agent.id} className="flex items-center gap-3 border-b border-neutral-200 py-2 last:border-0">
+                <AgentAvatar src={agent.avatar} label={agent.nickname} size={42} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{agentLabel(agent)}</div>
+                  <div className="truncate text-xs text-neutral-500">{agent.role || agent.modelId}</div>
+                </div>
+                <button
+                  className="pixel-button pixel-button--primary px-3 py-1.5 text-xs disabled:opacity-40"
+                  disabled={busy}
+                  onClick={() => void run(() => addSessionAgent(session.id, agent.id))}
+                >
+                  + {t("add_to_room")}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {error && <p className="mt-3 text-sm text-red-700">{t(error)}</p>}
+      </section>
+    </div>
+  );
+}
+
 export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { rooms, agents, sessions, workspaces, activeWorkspace, currentRoomId, currentSessionId, config, updateConfig, messages, streaming, activeTaskId, rewindTo, chatError, tasks, usageSummaries, selectRoom, selectAgentSession, setActiveWorkspace, clearChatError } =
     useStorePick("rooms", "agents", "sessions", "workspaces", "activeWorkspace", "currentRoomId", "currentSessionId", "config", "updateConfig", "messages", "streaming", "activeTaskId", "rewindTo", "chatError", "tasks", "usageSummaries", "selectRoom", "selectAgentSession", "setActiveWorkspace", "clearChatError");
   const bubbleBusy = !!streaming || !!activeTaskId;
   const t = useT();
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState<false | { presetWorkspaceId: string | null }>(false);
   const [showTasks, setShowTasks] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
@@ -1519,14 +1601,8 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
     );
   };
 
-  const createInWorkspace = async (workspaceId: string | null) => {
-    try {
-      await setActiveWorkspace(workspaceId);
-      setCreating(true);
-    } catch (error) {
-      setSidebarError(error instanceof Error ? error.message : String(error));
-    }
-  };
+  // 从工作区分组的「＋」建房：直接锁定为该工作区的 Co-work，不再走全局 activeWorkspace、不让重选
+  const createInWorkspace = (workspaceId: string) => setCreating({ presetWorkspaceId: workspaceId });
 
   /** Co-work 的工作区分组；展开与选中互不影响（展开状态由 collapsedGroups 单独持有）。 */
   const workspaceGroup = (group: { workspace: WorkspaceRecord; rooms: SidebarRoom[] }) => {
@@ -1549,7 +1625,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
               </>
             )}
           </button>
-          {!collapsed && <button className="pixel-project-action" title={t("new_room")} aria-label={t("new_room")} onClick={() => void createInWorkspace(workspace.id)}><PixelIcon name="plus" size={15} /></button>}
+          {!collapsed && <button className="pixel-project-action" title={t("new_room")} aria-label={t("new_room")} onClick={() => createInWorkspace(workspace.id)}><PixelIcon name="plus" size={15} /></button>}
           {!collapsed && <button className="pixel-project-action" title={t("room_menu")} aria-label={t("room_menu")} onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setMenu({ kind: "workspace", id: workspace.id, x: rect.right - 176, y: rect.bottom + 4 }); }}>⋯</button>}
         </div>
         {!folded && (
@@ -1609,7 +1685,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
           {!collapsed && (
             <button
               className="pixel-new-room-button flex min-w-0 flex-1 items-center justify-center gap-2 px-3 py-2.5 text-sm font-bold"
-              onClick={() => setCreating(true)}
+              onClick={() => setCreating({ presetWorkspaceId: null })}
             >
               <PixelIcon name="plus" size={20} />
               {t("new_room")}
@@ -1626,7 +1702,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
           </button>
         </div>
         {collapsed && (
-          <button className="pixel-button mt-2 h-9 w-9 self-center" aria-label={t("new_room")} title={t("new_room")} onClick={() => setCreating(true)}>
+          <button className="pixel-button mt-2 h-9 w-9 self-center" aria-label={t("new_room")} title={t("new_room")} onClick={() => setCreating({ presetWorkspaceId: null })}>
             <PixelIcon name="plus" size={18} />
           </button>
         )}
@@ -1739,7 +1815,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
           </button>
         </div>
       </aside>
-      {creating && <NewRoomDialog onClose={() => setCreating(false)} />}
+      {creating && <NewRoomDialog onClose={() => setCreating(false)} presetWorkspaceId={creating.presetWorkspaceId} />}
       {renameTarget && <RenameDialog target={renameTarget} onClose={() => setRenameTarget(null)} />}
       {menu && <SidebarEntityMenu menu={menu} onClose={() => setMenu(null)} onRename={setRenameTarget} onCollab={setCollabSessionId} onError={setSidebarError} />}
       {collabSessionId && (() => {
@@ -1812,7 +1888,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
               <p className="text-lg font-bold text-neutral-700">{t("pick_room_title")}</p>
               <p className="text-sm text-neutral-500">{t("pick_room")}</p>
             </div>
-            <button className="pixel-button pixel-button--primary flex items-center gap-2 px-4 py-2 text-sm" onClick={() => setCreating(true)}>
+            <button className="pixel-button pixel-button--primary flex items-center gap-2 px-4 py-2 text-sm" onClick={() => setCreating({ presetWorkspaceId: null })}>
               <PixelIcon name="plus" size={16} />
               {t("new_room")}
             </button>

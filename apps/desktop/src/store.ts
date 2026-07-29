@@ -226,6 +226,8 @@ export type Store = {
   createRoomFromDraft: (draft: RoomDraft) => Promise<void>;
   renameRoom: (id: string, name: string) => Promise<void>;
   addRoomAgent: (roomId: string, agentId: string) => Promise<void>;
+  addSessionAgent: (sessionId: string, agentId: string) => Promise<void>;
+  removeSessionAgent: (sessionId: string, agentId: string) => Promise<void>;
   removeRoom: (id: string) => Promise<void>;
   archiveRoom: (id: string, archived: boolean) => Promise<void>;
   selectRoom: (id: string) => Promise<void>;
@@ -1005,6 +1007,19 @@ export const useStore = create<Store>((set, get) => {
         }),
       );
       await get().loadRooms();
+    },
+    addSessionAgent: async (sessionId, agentId) => {
+      const agent = get().agents.find((item) => item.id === agentId);
+      if (!agent) throw new Error("unknown_agent");
+      await requireOk<ConversationSession>(await sidecarFetch(hs(), `/sessions/${sessionId}/agents`, {
+        method: "POST",
+        body: JSON.stringify({ agentId, snapshot: agent }),
+      }));
+      await get().loadSessions();
+    },
+    removeSessionAgent: async (sessionId, agentId) => {
+      await requireOk<ConversationSession>(await sidecarFetch(hs(), `/sessions/${sessionId}/agents/${agentId}`, { method: "DELETE" }));
+      await get().loadSessions();
     },
     removeRoom: async (id) => {
       await sidecarFetch(hs(), `/rooms/${id}`, { method: "DELETE" });
