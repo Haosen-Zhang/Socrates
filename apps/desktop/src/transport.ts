@@ -64,20 +64,3 @@ export async function* streamSseEvents(
     reader.releaseLock();
   }
 }
-
-/** Track the last seen event id from SSE streams for reconnection */
-export function createEventIdTracker(): {
-  lastId: string | null;
-  /** Record an event id and return the previous last id */
-  track: (id: string) => string | null;
-} {
-  let lastId: string | null = null;
-  return {
-    get lastId() { return lastId; },
-    track(id: string) {
-      const prev = lastId;
-      lastId = id;
-      return prev;
-    },
-  };
-}
