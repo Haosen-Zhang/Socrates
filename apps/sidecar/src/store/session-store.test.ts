@@ -1,8 +1,27 @@
 import { describe, expect, it } from "bun:test";
 import { openDb } from "../db";
 import { SessionStore } from "./session-store";
+import { ConversationMemoryStore } from "./conversation-memory-store";
 
 describe("SessionStore", () => {
+  it("persists an explicit primary Agent independently of member position", () => {
+    const db = openDb(":memory:");
+    db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w', '/tmp/w', '/tmp/w', 'hash', 'w', 'now', 'now')").run();
+    const store = new SessionStore(db);
+    const session = store.create({
+      title: "Explicit primary",
+      mode: "multi_agent",
+      workspaceId: "w",
+      primaryAgentId: "second",
+      agents: [
+        { agentId: "first", snapshot: {}, executionEligible: true },
+        { agentId: "second", snapshot: {}, executionEligible: true },
+      ],
+    });
+    expect(session.primaryAgentId).toBe("second");
+    expect(store.get(session.id)?.primaryAgentId).toBe("second");
+  });
+
   it("adds and removes co-work members and recomputes mode by member count", () => {
     const db = openDb(":memory:");
     const store = new SessionStore(db);
@@ -102,6 +121,64 @@ describe("SessionStore", () => {
     store.rewind(session.id, "second");
     expect(store.listMessages(session.id).map((message) => message.id)).toEqual(["first"]);
     expect(store.get(session.id)?.status).toBe("idle");
+  });
+
+  it("rewinds sequenced local memory and allows the next append to reuse the released sequence", async () => {
+    const db = openDb(":memory:");
+    const store = new SessionStore(db);
+    db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w','/w','/w','h','w','now','now')").run();
+    const session = store.create({
+      title: "Memory",
+      mode: "single_agent",
+      workspaceId: "w",
+      agents: [{ agentId: "a", snapshot: {}, executionEligible: true }],
+    });
+    const memory = new ConversationMemoryStore(db);
+    const thread = memory.ensureDefaultThread(session.id);
+    const user = await memory.appendMessage({
+      roomId: session.id,
+      threadId: thread.id,
+      runId: "run",
+      turnId: "turn",
+      agentId: null,
+      role: "user",
+      kind: "text",
+      content: "question",
+      parts: [{ type: "text", text: "question" }],
+      status: "completed",
+      idempotencyKey: "user",
+    });
+    const answer = await memory.appendMessage({
+      roomId: session.id,
+      threadId: thread.id,
+      runId: "run",
+      turnId: "turn",
+      agentId: "a",
+      role: "assistant",
+      kind: "text",
+      content: "answer",
+      parts: [{ type: "text", text: "answer" }],
+      status: "completed",
+      idempotencyKey: "answer",
+    });
+    store.rewind(session.id, answer.messageId);
+    const replacement = await memory.appendMessage({
+      roomId: session.id,
+      threadId: thread.id,
+      runId: "replacement-run",
+      turnId: "replacement-turn",
+      agentId: "a",
+      role: "assistant",
+      kind: "text",
+      content: "replacement",
+      parts: [{ type: "text", text: "replacement" }],
+      status: "completed",
+      idempotencyKey: "replacement",
+    });
+    expect(user.sequence).toBe(1);
+    expect(replacement.sequence).toBe(2);
+    expect((await memory.listThreadMessages(thread.id)).map((message) => message.content))
+      .toEqual(["question", "replacement"]);
   });
 
   it("removes local conversation records only when the session is inactive", () => {

@@ -557,8 +557,9 @@ export const useStore = create<Store>((set, get) => {
     sendAgentPrompt: async (prompt, sandbox) => {
       const sessionId = get().currentSessionId;
       if (!sessionId || get().agentRunning) return false;
+      const clientTurnKey = crypto.randomUUID();
       const optimisticMessage: SessionMessage = {
-        id: `local:${crypto.randomUUID()}`,
+        id: `local:${clientTurnKey}`,
         sessionId,
         role: "user",
         authorId: null,
@@ -581,6 +582,7 @@ export const useStore = create<Store>((set, get) => {
           method: "POST",
           body: JSON.stringify({
             prompt,
+            clientTurnKey,
             attachmentIds: get().draftAttachments.map((attachment) => attachment.id),
             workspaceRefIds: get().draftWorkspaceRefs.map((reference) => reference.id),
             runtimeKind: "native_ai_sdk",
@@ -986,6 +988,7 @@ export const useStore = create<Store>((set, get) => {
           kind: payload.kind,
           mode: payload.mode,
           workspaceId: payload.workspaceId,
+          primaryAgentId: payload.agentIds[0],
           agents: agents.map((agent) => ({ agentId: agent!.id, snapshot: agent, executionEligible: true })),
         }),
       }));

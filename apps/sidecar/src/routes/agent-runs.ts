@@ -9,7 +9,15 @@ const DECISIONS = new Set<ApprovalDecision>(["allow_once", "allow_session", "den
 export function agentRunRoutes(runner: SingleAgentRunner, approvals: ApprovalManager): Hono {
   const app = new Hono();
   app.post("/sessions/:sessionId/runs", async (c) => {
-    const body = await c.req.json().catch(() => null) as { prompt?: unknown; attachmentIds?: unknown; workspaceRefIds?: unknown; runtimeKind?: unknown; runtimeOptions?: unknown } | null;
+    const body = await c.req.json().catch(() => null) as {
+      prompt?: unknown;
+      threadId?: unknown;
+      clientTurnKey?: unknown;
+      attachmentIds?: unknown;
+      workspaceRefIds?: unknown;
+      runtimeKind?: unknown;
+      runtimeOptions?: unknown;
+    } | null;
     if (typeof body?.prompt !== "string" || !body.prompt.trim()) return c.json({ error: "prompt_required" }, 400);
     const runtimeKind = typeof body.runtimeKind === "string" ? body.runtimeKind : "native_ai_sdk";
     return streamSSE(c, async (stream) => {
@@ -20,6 +28,10 @@ export function agentRunRoutes(runner: SingleAgentRunner, approvals: ApprovalMan
         sessionId: c.req.param("sessionId"),
         runtimeKind,
         prompt: body.prompt as string,
+        threadId: typeof body.threadId === "string" && body.threadId ? body.threadId : undefined,
+        clientTurnKey: typeof body.clientTurnKey === "string" && body.clientTurnKey
+          ? body.clientTurnKey
+          : undefined,
         attachmentIds: Array.isArray(body.attachmentIds) && body.attachmentIds.every((id) => typeof id === "string") ? body.attachmentIds as string[] : [],
         workspaceRefIds: Array.isArray(body.workspaceRefIds) && body.workspaceRefIds.every((id) => typeof id === "string") ? body.workspaceRefIds as string[] : [],
         signal: c.req.raw.signal,

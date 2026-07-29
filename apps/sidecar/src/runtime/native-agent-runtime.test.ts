@@ -8,12 +8,75 @@ import { createWorkspaceWriteBuiltins } from "../tools/workspace-write-builtins"
 import { ToolExecutor } from "../tools/executor";
 import { ToolRegistry } from "../tools/registry";
 import { WorkspacePathPolicy } from "../workspace/path-policy";
-import { NativeAgentRuntime, type NativeStreamFactory } from "./native-agent-runtime";
+import {
+  NativeAgentRuntime,
+  toAiSdkModelMessages,
+  type NativeStreamFactory,
+} from "./native-agent-runtime";
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
 describe("NativeAgentRuntime", () => {
+  it("converts durable text and tool history into an AI SDK model transcript", () => {
+    expect(toAiSdkModelMessages([
+      {
+        messageId: "u1",
+        role: "user",
+        content: "read it",
+        parts: [{ type: "text", text: "read it" }],
+        sequence: 1,
+      },
+      {
+        messageId: "call",
+        role: "assistant",
+        content: "",
+        parts: [{ type: "tool_call", callId: "c1", name: "read_file", input: { path: "a.txt" } }],
+        sequence: 2,
+      },
+      {
+        messageId: "result",
+        role: "tool",
+        content: "hello",
+        parts: [{
+          type: "tool_result",
+          callId: "c1",
+          output: { preview: "hello", byteSize: 5, truncated: false },
+          isError: false,
+        }],
+        sequence: 3,
+      },
+      {
+        messageId: "a1",
+        role: "assistant",
+        content: "It says hello.",
+        parts: [{ type: "text", text: "It says hello." }],
+        sequence: 4,
+      },
+    ])).toEqual([
+      { role: "user", content: "read it" },
+      {
+        role: "assistant",
+        content: [{
+          type: "tool-call",
+          toolCallId: "c1",
+          toolName: "read_file",
+          input: { path: "a.txt" },
+        }],
+      },
+      {
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: "c1",
+          toolName: "read_file",
+          output: { type: "text", value: "hello" },
+        }],
+      },
+      { role: "assistant", content: "It says hello." },
+    ]);
+  });
+
   it("completes a bounded read-only search and read tool loop", async () => {
     const root = `${tmpdir()}/socrates-native-${crypto.randomUUID()}`;
     roots.push(root);
@@ -163,7 +226,11 @@ describe("NativeAgentRuntime", () => {
     expect((await iterator.next()).value).toEqual({ type: "approval_required", requestId: "approval-1", callId: "call-1", risk: "medium", kind: "tool" });
     expect(executions).toBe(0);
     await runtime.answerApproval("approval-1", "allow_once");
-    expect((await iterator.next()).value).toMatchObject({ type: "extension", name: "tool_result" });
+    expect((await iterator.next()).value).toMatchObject({
+      type: "tool_result",
+      callId: "call-1",
+      name: "mcp__demo__lookup",
+    });
     expect(executions).toBe(1);
     expect((await iterator.next()).value).toEqual({ type: "status", status: "completed" });
   });

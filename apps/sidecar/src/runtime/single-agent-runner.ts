@@ -6,17 +6,32 @@ import type { RuntimeManager } from "./runtime-manager";
 import type { EventStore } from "../store/event-store";
 import type { AttachmentResolver } from "../attachments/resolver";
 import { UsageCollector } from "../services/usage-collector";
+import { ConversationMemoryStore } from "../store/conversation-memory-store";
+import { buildConversationContext } from "../services/conversation-context";
 
-type SessionRow = { id: string; mode: string; workspace_id: string | null; status: string };
+type SessionRow = {
+  id: string;
+  mode: string;
+  workspace_id: string | null;
+  primary_agent_id: string | null;
+  status: string;
+};
 type WorkspaceRow = { identity_hash: string };
-type AgentRow = { agent_id: string };
+type AgentRow = { agent_id: string; snapshot_json: string };
 type WorkspaceRefRow = { id: string; workspace_id: string; relative_path: string; snapshot_hash: string | null };
-type ActiveRun = { runtimeSessionId: string; calls: Map<string, { name: string; input: unknown }>; cancelled: boolean };
+type ActiveRun = {
+  runtimeSessionId: string;
+  turnId: string;
+  calls: Map<string, { name: string; input: unknown }>;
+  cancelled: boolean;
+};
 
 export interface AgentRunResult {
   id: string;
   sessionId: string;
   runtimeSessionId: string;
+  threadId: string;
+  turnId: string;
   status: "completed" | "failed" | "cancelled";
   error?: string;
 }
@@ -24,6 +39,7 @@ export interface AgentRunResult {
 export class SingleAgentRunner {
   private readonly active = new Map<string, ActiveRun>();
   private readonly usage: UsageCollector;
+  private readonly memory: ConversationMemoryStore;
 
   constructor(
     private readonly db: Database,
@@ -31,7 +47,10 @@ export class SingleAgentRunner {
     private readonly approvals: ApprovalManager,
     private readonly events: EventStore,
     private readonly attachments: AttachmentResolver,
-  ) { this.usage = new UsageCollector(db); }
+  ) {
+    this.usage = new UsageCollector(db);
+    this.memory = new ConversationMemoryStore(db);
+  }
 
   recoverInterrupted(): { runs: number; approvals: number } {
     let runs = 0;
@@ -51,20 +70,41 @@ export class SingleAgentRunner {
         UPDATE agent_runs SET status = 'interrupted', error = 'sidecar_restarted', completed_at = ?
         WHERE status IN ('preparing', 'running', 'awaiting_approval')
       `).run(new Date().toISOString()).changes;
+      this.db.query(`
+        UPDATE conversation_turns SET status = 'interrupted', updated_at = ?, completed_at = ?
+        WHERE status IN ('preparing', 'running', 'awaiting_approval')
+      `).run(new Date().toISOString(), new Date().toISOString());
     })();
     return { runs, approvals };
   }
 
   async run(
-    input: { sessionId: string; runtimeKind: string; prompt: string; attachmentIds?: string[]; workspaceRefIds?: string[]; signal?: AbortSignal; runtimeOptions?: Record<string, unknown> },
+    input: {
+      sessionId: string;
+      runtimeKind: string;
+      prompt: string;
+      threadId?: string;
+      clientTurnKey?: string;
+      attachmentIds?: string[];
+      workspaceRefIds?: string[];
+      signal?: AbortSignal;
+      runtimeOptions?: Record<string, unknown>;
+    },
     emit: (event: RuntimeEvent) => void | Promise<void> = () => {},
   ): Promise<AgentRunResult> {
-    const session = this.db.query<SessionRow, [string]>("SELECT id, mode, workspace_id, status FROM sessions WHERE id = ?").get(input.sessionId);
+    const session = this.db.query<SessionRow, [string]>(
+      "SELECT id, mode, workspace_id, primary_agent_id, status FROM sessions WHERE id = ?",
+    ).get(input.sessionId);
     if (!session) throw new Error("session_not_found");
     if (session.mode !== "single_agent") throw new Error("single_agent_session_required");
     if (!session.workspace_id) throw new Error("single_agent_workspace_required");
     if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) throw new Error("session_already_running");
-    const agent = this.db.query<AgentRow, [string]>("SELECT agent_id FROM session_agents WHERE session_id = ? ORDER BY position LIMIT 1").get(session.id);
+    if (!session.primary_agent_id) throw new Error("single_agent_missing_primary_agent");
+    const agent = this.db.query<AgentRow, [string, string]>(`
+      SELECT agent_id, snapshot_json
+      FROM session_agents
+      WHERE session_id = ? AND agent_id = ?
+    `).get(session.id, session.primary_agent_id);
     if (!agent) throw new Error("single_agent_missing_agent");
     const attachmentRecords = (input.attachmentIds ?? []).map((attachmentId) => {
       const attachment = this.attachments.get(attachmentId);
@@ -80,10 +120,6 @@ export class SingleAgentRunner {
       if (!reference || reference.workspace_id !== session.workspace_id) throw new Error("workspace_ref_not_found");
       return reference;
     });
-    const runId = crypto.randomUUID();
-    const now = new Date().toISOString();
-    const startedEvent: RuntimeEvent = { type: "extension", name: "run_started", payload: { runId } };
-    const userMessageId = crypto.randomUUID();
     const parts: MessagePart[] = [];
     for (const attachment of attachmentRecords) {
       const attachmentId = attachment.id;
@@ -95,26 +131,106 @@ export class SingleAgentRunner {
     for (const reference of workspaceRefs) {
       parts.push({ type: "workspace_ref", refId: reference.id, relativePath: reference.relative_path, snapshotHash: reference.snapshot_hash ?? undefined });
     }
-    this.db.transaction(() => {
-      this.db.query("INSERT INTO agent_runs (id, session_id, prompt, status, created_at) VALUES (?, ?, ?, 'preparing', ?)").run(runId, session.id, input.prompt, now);
-      this.events.appendInTransaction({ eventId: `run-started:${runId}`, sessionId: session.id, taskId: runId, type: "run.started", payload: { runId } });
-      this.db.query("INSERT INTO session_messages (id, session_id, role, content, status, created_at) VALUES (?, ?, 'user', ?, 'completed', ?)")
-        .run(userMessageId, session.id, input.prompt, now);
-      this.db.query("INSERT INTO message_parts (id, message_id, ordinal, type, text) VALUES (?, ?, 0, 'text', ?)").run(crypto.randomUUID(), userMessageId, input.prompt);
-      for (const [index, attachment] of attachmentRecords.entries()) {
-        const attachmentId = attachment.id;
-        const part = parts[index]!;
-        this.db.query("INSERT INTO message_parts (id, message_id, ordinal, type, attachment_id, metadata_json) VALUES (?, ?, ?, ?, ?, ?)")
-          .run(crypto.randomUUID(), userMessageId, index + 1, part.type, attachmentId, JSON.stringify({ mediaType: attachment.mediaType, filename: attachment.filename }));
-        this.db.query("INSERT INTO message_attachments (message_id, attachment_id, ordinal) VALUES (?, ?, ?)").run(userMessageId, attachmentId, index);
-      }
-      for (const [index, reference] of workspaceRefs.entries()) {
-        const ordinal = attachmentRecords.length + index + 1;
-        this.db.query("INSERT INTO message_parts (id, message_id, ordinal, type, metadata_json) VALUES (?, ?, ?, 'workspace_ref', ?)")
-          .run(crypto.randomUUID(), userMessageId, ordinal, JSON.stringify({ refId: reference.id, relativePath: reference.relative_path, snapshotHash: reference.snapshot_hash }));
-      }
-      this.db.query("UPDATE sessions SET status = 'running', updated_at = ? WHERE id = ?").run(now, session.id);
-    })();
+    const thread = input.threadId
+      ? this.memory.getThread(input.threadId)
+      : this.memory.ensureDefaultThread(session.id);
+    if (!thread || thread.roomId !== session.id) throw new Error("conversation_thread_not_found");
+    const runId = crypto.randomUUID();
+    const clientTurnKey = input.clientTurnKey ?? crypto.randomUUID();
+    const prepared = this.memory.beginTurn({
+      roomId: session.id,
+      threadId: thread.id,
+      clientTurnKey,
+      inputHash: hashToolInput({
+        prompt: input.prompt,
+        attachmentIds: input.attachmentIds ?? [],
+        workspaceRefIds: input.workspaceRefIds ?? [],
+      }),
+      runId,
+      agentId: agent.agent_id,
+      prompt: input.prompt,
+      parts,
+    });
+    const startedEvent: RuntimeEvent = {
+      type: "extension",
+      name: "run_started",
+      payload: {
+        runId: prepared.runId,
+        turnId: prepared.turnId,
+        threadId: prepared.threadId,
+        replayed: prepared.replayed,
+      },
+    };
+    if (prepared.replayed) {
+      await emit(startedEvent);
+      const previous = this.db.query<{ runtime_session_id: string | null }, [string]>(
+        "SELECT runtime_session_id FROM agent_runs WHERE id = ?",
+      ).get(prepared.runId);
+      return {
+        id: prepared.runId,
+        sessionId: session.id,
+        runtimeSessionId: previous?.runtime_session_id ?? "",
+        threadId: prepared.threadId,
+        turnId: prepared.turnId,
+        status: "completed",
+      };
+    }
+    this.events.append({
+      eventId: `run-started:${prepared.runId}`,
+      sessionId: session.id,
+      taskId: prepared.runId,
+      type: "run.started",
+      payload: {
+        runId: prepared.runId,
+        turnId: prepared.turnId,
+        threadId: prepared.threadId,
+        attemptNo: prepared.attemptNo,
+      },
+    });
+    const history = await this.memory.listThreadMessages(prepared.threadId);
+    const snapshot = JSON.parse(agent.snapshot_json) as Record<string, unknown>;
+    const capabilities = snapshot.modelCapabilities && typeof snapshot.modelCapabilities === "object"
+      ? snapshot.modelCapabilities as Record<string, unknown>
+      : {};
+    const configuredWindow = input.runtimeOptions?.contextWindowTokens
+      ?? capabilities.contextWindowTokens
+      ?? snapshot.contextWindowTokens;
+    const contextWindowTokens = typeof configuredWindow === "number" && Number.isFinite(configuredWindow)
+      ? Math.max(1_024, Math.floor(configuredWindow))
+      : 32_768;
+    const configuredOutput = input.runtimeOptions?.maxOutputTokens;
+    const outputReserveTokens = typeof configuredOutput === "number" && Number.isFinite(configuredOutput)
+      ? Math.max(256, Math.floor(configuredOutput))
+      : Math.min(4_096, Math.floor(contextWindowTokens * 0.2));
+    const instructionText = [snapshot.role, snapshot.systemPrompt].filter((value) => typeof value === "string").join("\n\n");
+    const context = buildConversationContext(history, {
+      contextWindowTokens,
+      outputReserveTokens,
+      instructionTokens: Math.ceil(new TextEncoder().encode(instructionText).byteLength / 4),
+    });
+    this.memory.updateTurnStatus(prepared.turnId, "preparing", {
+      contextTruncated: context.truncated,
+      context: {
+        estimatedTokens: context.estimatedTokens,
+        budgetTokens: context.budgetTokens,
+        droppedThroughSequence: context.droppedThroughSequence,
+      },
+    });
+    if (context.truncated) {
+      this.events.append({
+        eventId: `context-truncated:${prepared.runId}`,
+        sessionId: session.id,
+        taskId: prepared.runId,
+        type: "memory.context_truncated",
+        payload: {
+          threadId: prepared.threadId,
+          turnId: prepared.turnId,
+          estimatedTokens: context.estimatedTokens,
+          budgetTokens: context.budgetTokens,
+          droppedThroughSequence: context.droppedThroughSequence,
+        },
+      });
+    }
 
     let runtimeSessionId = "";
     let assistantText = "";
@@ -123,44 +239,89 @@ export class SingleAgentRunner {
       await emit(startedEvent);
       const handle = await this.runtimes.open({
         runtimeKind: input.runtimeKind,
-        agentSessionId: `${session.id}:${agent.agent_id}:${runId}`,
+        agentSessionId: `${session.id}:${agent.agent_id}:${prepared.turnId}:${prepared.attemptNo}`,
         sessionId: session.id,
         agentId: agent.agent_id,
         workspaceId: session.workspace_id,
         runtimeOptions: input.runtimeOptions,
       });
       runtimeSessionId = handle.id;
-      this.db.query("UPDATE agent_runs SET runtime_session_id = ?, status = 'running' WHERE id = ?").run(handle.id, runId);
-      const active: ActiveRun = { runtimeSessionId: handle.id, calls: new Map(), cancelled: false };
-      this.active.set(runId, active);
+      this.db.query("UPDATE agent_runs SET runtime_session_id = ?, status = 'running' WHERE id = ?")
+        .run(handle.id, prepared.runId);
+      this.db.query("UPDATE sessions SET status = 'running', updated_at = ? WHERE id = ?")
+        .run(new Date().toISOString(), session.id);
+      this.memory.updateTurnStatus(prepared.turnId, "running");
+      const active: ActiveRun = {
+        runtimeSessionId: handle.id,
+        turnId: prepared.turnId,
+        calls: new Map(),
+        cancelled: false,
+      };
+      this.active.set(prepared.runId, active);
       await this.runtimes.run(handle.id, {
-        taskId: runId,
+        taskId: prepared.runId,
         prompt: input.prompt,
         parts,
+        messages: context.messages,
         signal: input.signal,
         onEvent: async (event) => {
-          if (event.type === "tool_call") active.calls.set(event.callId, { name: event.name, input: event.input });
+          if (event.type === "tool_call") {
+            active.calls.set(event.callId, { name: event.name, input: event.input });
+            await this.memory.appendMessage({
+              roomId: session.id,
+              threadId: prepared.threadId,
+              runId: prepared.runId,
+              turnId: prepared.turnId,
+              agentId: agent.agent_id,
+              role: "assistant",
+              kind: "tool_call",
+              content: "",
+              parts: [{ type: "tool_call", callId: event.callId, name: event.name, input: event.input }],
+              status: "completed",
+              idempotencyKey: `tool-call:${prepared.runId}:${event.callId}`,
+            });
+          } else if (event.type === "tool_result") {
+            await this.memory.appendMessage({
+              roomId: session.id,
+              threadId: prepared.threadId,
+              runId: prepared.runId,
+              turnId: prepared.turnId,
+              agentId: agent.agent_id,
+              role: "tool",
+              kind: "tool_result",
+              content: event.output.preview,
+              parts: [{
+                type: "tool_result",
+                callId: event.callId,
+                output: event.output,
+                isError: event.isError,
+              }],
+              status: event.isError ? "failed" : "completed",
+              idempotencyKey: `tool-result:${prepared.runId}:${event.callId}`,
+            });
+          }
           if (event.type === "approval_required") {
             const call = active.calls.get(event.callId);
             if (!call) throw new Error("approval_without_tool_call");
             const workspace = this.db.query<WorkspaceRow, [string]>("SELECT identity_hash FROM workspaces WHERE id = ?").get(session.workspace_id!);
             if (!workspace) throw new Error("workspace_not_found");
             const approval = this.approvals.request({
-              taskId: runId,
+              taskId: prepared.runId,
               kind: event.kind ?? (call.name === "file_change" ? "file_change" : "command_execution"),
-              subjectId: `${runId}:${event.requestId}`,
+              subjectId: `${prepared.runId}:${event.requestId}`,
               inputHash: hashToolInput(call.input),
               workspaceIdentity: workspace.identity_hash,
-              attemptId: runId,
+              attemptId: prepared.runId,
               policyVersion: 1,
               risk: event.risk ?? (call.name === "file_change" ? "high" : "medium"),
               freshHumanRequired: call.name === "file_change" || event.risk === "high" || event.risk === "destructive",
             });
-            this.db.query("UPDATE agent_runs SET status = 'awaiting_approval' WHERE id = ?").run(runId);
+            this.db.query("UPDATE agent_runs SET status = 'awaiting_approval' WHERE id = ?").run(prepared.runId);
+            this.memory.updateTurnStatus(prepared.turnId, "awaiting_approval");
             this.events.append({
               eventId: `approval:${approval.id}`,
               sessionId: session.id,
-              taskId: runId,
+              taskId: prepared.runId,
               type: "approval.requested",
               payload: approval,
             });
@@ -169,34 +330,76 @@ export class SingleAgentRunner {
           } else if (event.type === "text_delta") {
             assistantText += event.text;
           } else if (event.type === "usage") {
-            this.usage.record({ stableKey: `single:${runId}:${usageIndex++}`, sessionId: session.id, taskId: runId, agentId: agent.agent_id, usage: event.usage });
+            this.usage.record({
+              stableKey: `single:${prepared.runId}:${usageIndex++}`,
+              sessionId: session.id,
+              taskId: prepared.runId,
+              agentId: agent.agent_id,
+              usage: event.usage,
+            });
           }
           await emit(event);
         },
       });
       const completedAt = new Date().toISOString();
+      await this.memory.appendMessage({
+        roomId: session.id,
+        threadId: prepared.threadId,
+        runId: prepared.runId,
+        turnId: prepared.turnId,
+        agentId: agent.agent_id,
+        role: "assistant",
+        kind: "text",
+        content: assistantText,
+        parts: [{ type: "text", text: assistantText }],
+        status: "completed",
+        idempotencyKey: `assistant-final:${prepared.turnId}`,
+        createdAt: completedAt,
+      });
       this.db.transaction(() => {
-        this.db.query("UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = ?").run(completedAt, runId);
+        this.db.query("UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = ?")
+          .run(completedAt, prepared.runId);
         this.db.query("UPDATE sessions SET status = 'completed', updated_at = ? WHERE id = ?").run(completedAt, session.id);
-        const assistantMessageId = crypto.randomUUID();
-        this.db.query("INSERT INTO session_messages (id, session_id, role, author_id, content, status, created_at) VALUES (?, ?, 'assistant', ?, ?, 'completed', ?)")
-          .run(assistantMessageId, session.id, agent.agent_id, assistantText, completedAt);
-        this.db.query("INSERT INTO message_parts (id, message_id, ordinal, type, text) VALUES (?, ?, 0, 'text', ?)")
-          .run(crypto.randomUUID(), assistantMessageId, assistantText);
+        this.db.query(`
+          UPDATE conversation_turns
+          SET status = 'completed', updated_at = ?, completed_at = ?
+          WHERE id = ?
+        `).run(completedAt, completedAt, prepared.turnId);
       })();
-      return { id: runId, sessionId: session.id, runtimeSessionId, status: "completed" };
+      return {
+        id: prepared.runId,
+        sessionId: session.id,
+        runtimeSessionId,
+        threadId: prepared.threadId,
+        turnId: prepared.turnId,
+        status: "completed",
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const status = input.signal?.aborted || this.active.get(runId)?.cancelled ? "cancelled" : "failed";
+      const status = input.signal?.aborted || this.active.get(prepared.runId)?.cancelled ? "cancelled" : "failed";
       const completedAt = new Date().toISOString();
       this.db.transaction(() => {
-        this.db.query("UPDATE agent_runs SET status = ?, error = ?, completed_at = ? WHERE id = ?").run(status, message, completedAt, runId);
+        this.db.query("UPDATE agent_runs SET status = ?, error = ?, completed_at = ? WHERE id = ?")
+          .run(status, message, completedAt, prepared.runId);
         this.db.query("UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?").run(status, completedAt, session.id);
+        this.db.query(`
+          UPDATE conversation_turns
+          SET status = ?, updated_at = ?, completed_at = ?
+          WHERE id = ?
+        `).run(status, completedAt, completedAt, prepared.turnId);
       })();
-      return { id: runId, sessionId: session.id, runtimeSessionId, status, error: message };
+      return {
+        id: prepared.runId,
+        sessionId: session.id,
+        runtimeSessionId,
+        threadId: prepared.threadId,
+        turnId: prepared.turnId,
+        status,
+        error: message,
+      };
     } finally {
       if (runtimeSessionId) await this.runtimes.close(runtimeSessionId);
-      this.active.delete(runId);
+      this.active.delete(prepared.runId);
     }
   }
 
@@ -213,6 +416,7 @@ export class SingleAgentRunner {
     const decision = this.approvals.decide(requestId, input);
     await this.runtimes.answerApproval(active.runtimeSessionId, runtimeRequestId, input.decision);
     this.db.query("UPDATE agent_runs SET status = 'running' WHERE id = ?").run(runId);
+    this.memory.updateTurnStatus(active.turnId, "running");
     const run = this.db.query<{ session_id: string }, [string]>("SELECT session_id FROM agent_runs WHERE id = ?").get(runId);
     if (run) this.events.append({
       eventId: `approval-decision:${decision.id}`,

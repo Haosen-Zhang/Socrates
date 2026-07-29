@@ -1,6 +1,6 @@
 import type { ModelCapabilities } from "./model-capabilities";
 import type { NormalizedUsage } from "./usage";
-import type { MessagePart } from "./message-parts";
+import type { MessagePart, ToolOutputRef } from "./message-parts";
 import type { ToolRisk } from "./tools";
 
 export type RuntimeStatus = "opening" | "ready" | "running" | "awaiting_approval" | "interrupted" | "completed" | "failed" | "closed";
@@ -27,16 +27,37 @@ export function isTerminalRuntimeStatus(status: RuntimeStatus): boolean {
 export type RuntimeEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; callId: string; name: string; input: unknown }
+  | { type: "tool_result"; callId: string; name: string; output: ToolOutputRef; isError: boolean }
   | { type: "approval_required"; requestId: string; callId: string; risk?: ToolRisk; kind?: string }
   | { type: "usage"; usage: NormalizedUsage }
   | { type: "status"; status: RuntimeStatus; message?: string }
   | { type: "extension"; name: string; payload: unknown };
 
+/**
+ * Provider-neutral, product-owned conversation context.
+ *
+ * This is deliberately separate from provider SDK message types: Socrates
+ * reloads it from the local ConversationMemoryStore for every Turn, then each
+ * runtime adapter converts it to its provider-specific payload.
+ */
+export interface RuntimeConversationMessage {
+  messageId: string;
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  parts: MessagePart[];
+  sequence: number;
+}
+
 export interface AgentRuntime {
   readonly kind: string;
   readonly capabilities: ModelCapabilities;
   open(input: { sessionId: string; workspaceId?: string }): Promise<void>;
-  start(input: { prompt: string; parts?: MessagePart[]; signal?: AbortSignal }): AsyncIterable<RuntimeEvent>;
+  start(input: {
+    prompt: string;
+    parts?: MessagePart[];
+    messages?: RuntimeConversationMessage[];
+    signal?: AbortSignal;
+  }): AsyncIterable<RuntimeEvent>;
   answerApproval(requestId: string, decision: "allow_once" | "allow_session" | "deny"): Promise<void>;
   interrupt(): Promise<void>;
   resume?(): Promise<void>;
