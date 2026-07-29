@@ -676,7 +676,7 @@ function SingleAgentSession() {
         <div className="flex items-center gap-2">
           {agentSnapshot && <div className="pixel-card flex items-center gap-2 px-2 py-1"><AgentAvatar src={String(agentSnapshot.avatar ?? "")} label={String(agentSnapshot.nickname ?? "Agent")} size={28} lively={false} /><span className="text-[10px]">{t("usage_current")}: {usageText(agentUsage?.current.totalTokens)}<br />{t("usage_total")}: {usageText(agentUsage?.cumulative.totalTokens)}</span></div>}
           <WorkspaceChip workspaceId={session?.workspaceId} locked />
-          <select className="pixel-input px-2 py-1 text-xs" value={sandbox} disabled={agentRunning} onChange={(event) => setSandbox(event.target.value as typeof sandbox)}>
+          <select className="pixel-input px-2 py-1 text-xs" value={sandbox} disabled={agentRunning || true /* workspace-write pending Ticket 006 */} onChange={(event) => setSandbox(event.target.value as typeof sandbox)}>
             <option value="read-only">{t("sandbox_read_only")}</option>
             <option value="workspace-write">{t("sandbox_workspace_write")}</option>
           </select>
@@ -685,7 +685,7 @@ function SingleAgentSession() {
       </header>
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
         <div className="border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          {sandbox === "read-only" ? t("runtime_native_read_only") : t("runtime_codex_experimental")}
+          {t("runtime_native_read_only")}
         </div>
         {agentError && <div role="alert" className="border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">{agentError}</div>}
         {sessionWindow.hiddenCount > 0 && (

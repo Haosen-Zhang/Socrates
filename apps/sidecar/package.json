@@ -8,6 +8,8 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.10",
     "@ai-sdk/openai-compatible": "^3.0.6",
+    "@langchain/core": "^0.3.0",
+    "@langchain/langgraph": "^0.2.0",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@napi-rs/keyring": "^1.3.0",
     "@socrates/core": "workspace:*",

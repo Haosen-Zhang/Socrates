@@ -11,7 +11,7 @@ export function agentRunRoutes(runner: SingleAgentRunner, approvals: ApprovalMan
   app.post("/sessions/:sessionId/runs", async (c) => {
     const body = await c.req.json().catch(() => null) as { prompt?: unknown; attachmentIds?: unknown; workspaceRefIds?: unknown; runtimeKind?: unknown; runtimeOptions?: unknown } | null;
     if (typeof body?.prompt !== "string" || !body.prompt.trim()) return c.json({ error: "prompt_required" }, 400);
-    const runtimeKind = typeof body.runtimeKind === "string" ? body.runtimeKind : "codex_app_server";
+    const runtimeKind = typeof body.runtimeKind === "string" ? body.runtimeKind : "native_ai_sdk";
     return streamSSE(c, async (stream) => {
       const emit = async (event: RuntimeEvent) => {
         await stream.writeSSE({ event: event.type, data: JSON.stringify(event) });

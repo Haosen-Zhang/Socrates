@@ -593,7 +593,7 @@ export const useStore = create<Store>((set, get) => {
             prompt,
             attachmentIds: get().draftAttachments.map((attachment) => attachment.id),
             workspaceRefIds: get().draftWorkspaceRefs.map((reference) => reference.id),
-            runtimeKind: sandbox === "read-only" ? "native_ai_sdk" : "codex_app_server",
+            runtimeKind: "native_ai_sdk",
             runtimeOptions: { sandbox },
           }),
         });
