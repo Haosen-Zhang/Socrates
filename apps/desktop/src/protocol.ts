@@ -11,6 +11,7 @@ import type { RuntimeEvent } from "@socrates/core";
 const KNOWN_EVENT_TYPES = new Set([
   "text_delta",
   "tool_call",
+  "tool_result",
   "approval_required",
   "usage",
   "status",

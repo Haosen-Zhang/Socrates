@@ -1,13 +1,32 @@
 import { describe, expect, it } from "bun:test";
 import { openDb } from "../db";
 import { SessionStore } from "./session-store";
+import { ConversationMemoryStore } from "./conversation-memory-store";
 
 describe("SessionStore", () => {
+  it("persists an explicit primary Agent independently of member position", () => {
+    const db = openDb(":memory:");
+    db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w', '/tmp/w', '/tmp/w', 'hash', 'w', 'now', 'now')").run();
+    const store = new SessionStore(db);
+    const session = store.create({
+      title: "Explicit primary",
+      mode: "multi_agent",
+      workspaceId: "w",
+      primaryAgentId: "second",
+      agents: [
+        { agentId: "first", snapshot: {}, executionEligible: true },
+        { agentId: "second", snapshot: {}, executionEligible: true },
+      ],
+    });
+    expect(session.primaryAgentId).toBe("second");
+    expect(store.get(session.id)?.primaryAgentId).toBe("second");
+  });
+
   it("adds and removes co-work members and recomputes mode by member count", () => {
     const db = openDb(":memory:");
     const store = new SessionStore(db);
     db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w','/w','/w','h','w','now','now')").run();
-    const session = store.create({ title: "Cowork", mode: "single_agent", workspaceId: "w", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: true }] });
+    const session = store.create({ title: "Cowork", mode: "single_agent", workspaceId: "w", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: true }] });
     expect(session.mode).toBe("single_agent");
 
     // 加第二人 → multi_agent
@@ -30,7 +49,7 @@ describe("SessionStore", () => {
     const db = openDb(":memory:");
     const store = new SessionStore(db);
     db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w','/w','/w','h','w','now','now')").run();
-    const session = store.create({ title: "Cowork", mode: "single_agent", workspaceId: "w", agents: [{ agentId: "a", snapshot: {}, executionEligible: true }] });
+    const session = store.create({ title: "Cowork", mode: "single_agent", workspaceId: "w", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: {}, executionEligible: true }] });
     db.query("UPDATE sessions SET status = 'running' WHERE id = ?").run(session.id);
     expect(() => store.addAgent(session.id, "b", {})).toThrow("active_session_members_locked");
   });
@@ -40,24 +59,35 @@ describe("SessionStore", () => {
     const store = new SessionStore(db);
     db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("w1", "/tmp/w1", "/tmp/w1", "hash1", "w1", "now", "now");
-    expect(store.create({ title: "Chat", mode: "chat", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] }).mode).toBe("chat");
-    expect(store.create({ title: "Solo", mode: "single_agent", workspaceId: "w1", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: true }] }).mode).toBe("single_agent");
+    expect(store.create({ title: "Chat", mode: "chat", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] }).mode).toBe("chat");
+    expect(store.create({ title: "Solo", mode: "single_agent", workspaceId: "w1", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: true }] }).mode).toBe("single_agent");
     const multi = store.create({
       title: "Team",
       mode: "multi_agent",
       workspaceId: "w1",
+      primaryAgentId: "a",
       agents: [
         { agentId: "a", snapshot: { nickname: "A" }, executionEligible: true },
         { agentId: "b", snapshot: { nickname: "B" }, executionEligible: false },
       ],
     });
     expect(multi.agents.map((agent) => agent.snapshot)).toEqual([{ nickname: "A" }, { nickname: "B" }]);
+    expect(() => store.create({
+      title: "Missing primary",
+      mode: "multi_agent",
+      workspaceId: "w1",
+      primaryAgentId: "missing",
+      agents: [
+        { agentId: "a", snapshot: {}, executionEligible: true },
+        { agentId: "b", snapshot: {}, executionEligible: true },
+      ],
+    })).toThrow("primary_agent_must_be_room_member");
   });
 
   it("rejects invalid cardinality and duplicate agents", () => {
     const store = new SessionStore(openDb(":memory:"));
-    expect(() => store.create({ title: "Bad", mode: "single_agent", agents: [] })).toThrow("single_agent_requires_one_agent");
-    expect(() => store.create({ title: "Bad", mode: "multi_agent", agents: [
+    expect(() => store.create({ title: "Bad", mode: "single_agent", primaryAgentId: "a", agents: [] })).toThrow("single_agent_requires_one_agent");
+    expect(() => store.create({ title: "Bad", mode: "multi_agent", primaryAgentId: "a", agents: [
       { agentId: "a", snapshot: {}, executionEligible: false },
       { agentId: "a", snapshot: {}, executionEligible: false },
     ] })).toThrow("duplicate_session_agent");
@@ -68,14 +98,14 @@ describe("SessionStore", () => {
     const store = new SessionStore(db);
     db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, archived, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)")
       .run("wa", "/tmp/wa", "/tmp/wa", "hasha", "wa", "now", "now");
-    expect(() => store.create({ title: "Cowork", mode: "single_agent", workspaceId: "wa", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: true }] }))
+    expect(() => store.create({ title: "Cowork", mode: "single_agent", workspaceId: "wa", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: true }] }))
       .toThrow("workspace_archived");
   });
 
   it("binds a workspace only while the session is inactive", () => {
     const db = openDb(":memory:");
     const store = new SessionStore(db);
-    const session = store.create({ title: "Chat", mode: "chat", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
+    const session = store.create({ title: "Chat", mode: "chat", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
     db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("w", "/tmp/w", "/tmp/w", "hash", "w", "now", "now");
     expect(store.bindWorkspace(session.id, "w").workspaceId).toBe("w");
@@ -85,7 +115,7 @@ describe("SessionStore", () => {
 
   it("renames and archives an inactive conversation", () => {
     const store = new SessionStore(openDb(":memory:"));
-    const session = store.create({ title: "Before", mode: "chat", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
+    const session = store.create({ title: "Before", mode: "chat", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
     expect(store.rename(session.id, "After").title).toBe("After");
     expect(store.archive(session.id, true).archived).toBe(true);
     expect(store.list().map((item) => item.id)).toEqual([session.id]);
@@ -94,7 +124,7 @@ describe("SessionStore", () => {
   it("rewinds persisted context but never relies on reversing external workspace effects", () => {
     const db = openDb(":memory:");
     const store = new SessionStore(db);
-    const session = store.create({ title: "Chat", mode: "chat", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
+    const session = store.create({ title: "Chat", mode: "chat", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
     const insert = db.query("INSERT INTO session_messages (id, session_id, role, author_id, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
     insert.run("first", session.id, "user", null, "first turn", "completed", "2026-01-01T00:00:00.000Z");
     insert.run("second", session.id, "assistant", null, "later turn", "completed", "2026-01-01T00:00:01.000Z");
@@ -104,10 +134,69 @@ describe("SessionStore", () => {
     expect(store.get(session.id)?.status).toBe("idle");
   });
 
+  it("rewinds sequenced local memory and allows the next append to reuse the released sequence", async () => {
+    const db = openDb(":memory:");
+    const store = new SessionStore(db);
+    db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w','/w','/w','h','w','now','now')").run();
+    const session = store.create({
+      title: "Memory",
+      mode: "single_agent",
+      workspaceId: "w",
+      primaryAgentId: "a",
+      agents: [{ agentId: "a", snapshot: {}, executionEligible: true }],
+    });
+    const memory = new ConversationMemoryStore(db);
+    const thread = memory.ensureDefaultThread(session.id);
+    const user = await memory.appendMessage({
+      roomId: session.id,
+      threadId: thread.id,
+      runId: "run",
+      turnId: "turn",
+      agentId: null,
+      role: "user",
+      kind: "text",
+      content: "question",
+      parts: [{ type: "text", text: "question" }],
+      status: "completed",
+      idempotencyKey: "user",
+    });
+    const answer = await memory.appendMessage({
+      roomId: session.id,
+      threadId: thread.id,
+      runId: "run",
+      turnId: "turn",
+      agentId: "a",
+      role: "assistant",
+      kind: "text",
+      content: "answer",
+      parts: [{ type: "text", text: "answer" }],
+      status: "completed",
+      idempotencyKey: "answer",
+    });
+    store.rewind(session.id, answer.messageId);
+    const replacement = await memory.appendMessage({
+      roomId: session.id,
+      threadId: thread.id,
+      runId: "replacement-run",
+      turnId: "replacement-turn",
+      agentId: "a",
+      role: "assistant",
+      kind: "text",
+      content: "replacement",
+      parts: [{ type: "text", text: "replacement" }],
+      status: "completed",
+      idempotencyKey: "replacement",
+    });
+    expect(user.sequence).toBe(1);
+    expect(replacement.sequence).toBe(2);
+    expect((await memory.listThreadMessages(thread.id)).map((message) => message.content))
+      .toEqual(["question", "replacement"]);
+  });
+
   it("removes local conversation records only when the session is inactive", () => {
     const db = openDb(":memory:");
     const store = new SessionStore(db);
-    const session = store.create({ title: "Disposable", mode: "chat", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
+    const session = store.create({ title: "Disposable", mode: "chat", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
     store.remove(session.id);
     expect(store.get(session.id)).toBeNull();
   });

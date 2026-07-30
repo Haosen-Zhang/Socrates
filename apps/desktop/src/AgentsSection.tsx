@@ -25,6 +25,7 @@ function newForm(agents: Agent[]): AgentForm {
     role: "",
     systemPrompt: "",
     temperature: "",
+    contextWindowTokens: "",
     reasoningCapabilityKnown: false,
     reasoningEfforts: [],
     reasoningEffort: "",
@@ -68,6 +69,9 @@ export default function AgentsSection() {
       role: agent.role,
       systemPrompt: agent.systemPrompt,
       temperature: agent.temperature?.toString() ?? "",
+      contextWindowTokens: typeof agent.modelCapabilities?.contextWindowTokens === "number"
+        ? String(agent.modelCapabilities.contextWindowTokens)
+        : "",
       reasoningCapabilityKnown: agent.modelCapabilities?.reasoningEfforts !== "unknown" && Array.isArray(agent.modelCapabilities?.reasoningEfforts),
       reasoningEfforts: Array.isArray(agent.modelCapabilities?.reasoningEfforts) ? agent.modelCapabilities.reasoningEfforts : [],
       reasoningEffort: agent.reasoningEffort ?? "",
@@ -314,6 +318,19 @@ export default function AgentsSection() {
                 <label className="text-sm">
                   {t("temperature_optional")}
                   <input className={input} type="number" step="0.1" min="0" max="2" value={form.temperature} onChange={(e) => setForm({ ...form, temperature: e.target.value })} />
+                </label>
+                <label className="text-sm">
+                  {t("context_window_tokens")}
+                  <input
+                    className={input}
+                    type="number"
+                    step="1024"
+                    min="1024"
+                    max="4000000"
+                    placeholder={t("context_window_tokens_unknown")}
+                    value={form.contextWindowTokens}
+                    onChange={(event) => setForm({ ...form, contextWindowTokens: event.target.value })}
+                  />
                 </label>
                 <div className="col-span-2 pixel-card space-y-3 p-3">
                   <label className="flex items-center gap-2 text-sm font-bold">

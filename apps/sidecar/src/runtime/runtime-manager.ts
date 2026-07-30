@@ -1,5 +1,11 @@
 import type { Database } from "bun:sqlite";
-import type { AgentRuntime, MessagePart, RuntimeEvent, RuntimeStatus } from "@socrates/core";
+import type {
+  AgentRuntime,
+  MessagePart,
+  RuntimeConversationMessage,
+  RuntimeEvent,
+  RuntimeStatus,
+} from "@socrates/core";
 import type { EventStore } from "../store/event-store";
 
 export interface RuntimeSessionHandle {
@@ -63,14 +69,26 @@ export class RuntimeManager {
     }
   }
 
-  async run(runtimeSessionId: string, input: { taskId: string; prompt: string; parts?: MessagePart[]; signal?: AbortSignal; onEvent?: (event: RuntimeEvent) => void | Promise<void> }): Promise<RuntimeEvent[]> {
+  async run(runtimeSessionId: string, input: {
+    taskId: string;
+    prompt: string;
+    parts?: MessagePart[];
+    messages?: RuntimeConversationMessage[];
+    signal?: AbortSignal;
+    onEvent?: (event: RuntimeEvent) => void | Promise<void>;
+  }): Promise<RuntimeEvent[]> {
     const active = this.active.get(runtimeSessionId);
     if (!active) throw new Error("runtime_not_active");
     this.updateStatus(runtimeSessionId, "running");
     const seen: RuntimeEvent[] = [];
     let ordinal = 0;
     try {
-      for await (const event of active.runtime.start({ prompt: input.prompt, parts: input.parts, signal: input.signal })) {
+      for await (const event of active.runtime.start({
+        prompt: input.prompt,
+        parts: input.parts,
+        messages: input.messages,
+        signal: input.signal,
+      })) {
         ordinal += 1;
         this.events.append({
           eventId: `${runtimeSessionId}:${ordinal}`,
@@ -97,6 +115,13 @@ export class RuntimeManager {
       });
       throw error;
     }
+  }
+
+  contextOverheadTokens(runtimeSessionId: string): number {
+    const active = this.active.get(runtimeSessionId);
+    if (!active) throw new Error("runtime_not_active");
+    const value = active.runtime.contextOverheadTokens?.() ?? 0;
+    return Number.isSafeInteger(value) && value >= 0 ? value : 0;
   }
 
   async interrupt(runtimeSessionId: string): Promise<void> {

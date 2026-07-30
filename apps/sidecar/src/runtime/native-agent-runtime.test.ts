@@ -8,12 +8,151 @@ import { createWorkspaceWriteBuiltins } from "../tools/workspace-write-builtins"
 import { ToolExecutor } from "../tools/executor";
 import { ToolRegistry } from "../tools/registry";
 import { WorkspacePathPolicy } from "../workspace/path-policy";
-import { NativeAgentRuntime, type NativeStreamFactory } from "./native-agent-runtime";
+import {
+  NativeAgentRuntime,
+  toAiSdkModelMessages,
+  type NativeStreamFactory,
+} from "./native-agent-runtime";
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
 describe("NativeAgentRuntime", () => {
+  it("converts durable text and tool history into an AI SDK model transcript", () => {
+    expect(toAiSdkModelMessages([
+      {
+        messageId: "u1",
+        role: "user",
+        content: "read it",
+        parts: [{ type: "text", text: "read it" }],
+        sequence: 1,
+      },
+      {
+        messageId: "call",
+        role: "assistant",
+        content: "",
+        parts: [{ type: "tool_call", callId: "c1", name: "read_file", input: { path: "a.txt" } }],
+        sequence: 2,
+      },
+      {
+        messageId: "result",
+        role: "tool",
+        content: "hello",
+        parts: [{
+          type: "tool_result",
+          callId: "c1",
+          output: { preview: "hello", byteSize: 5, truncated: false },
+          isError: false,
+        }],
+        sequence: 3,
+      },
+      {
+        messageId: "a1",
+        role: "assistant",
+        content: "It says hello.",
+        parts: [{ type: "text", text: "It says hello." }],
+        sequence: 4,
+      },
+    ])).toEqual([
+      { role: "user", content: "read it" },
+      {
+        role: "assistant",
+        content: [{
+          type: "tool-call",
+          toolCallId: "c1",
+          toolName: "read_file",
+          input: { path: "a.txt" },
+        }],
+      },
+      {
+        role: "tool",
+        content: [{
+          type: "tool-result",
+          toolCallId: "c1",
+          toolName: "read_file",
+          output: { type: "text", value: "hello" },
+        }],
+      },
+      { role: "assistant", content: "It says hello." },
+    ]);
+  });
+
+  it("reconstructs parallel tool calls/results as provider-valid grouped messages", () => {
+    expect(toAiSdkModelMessages([
+      {
+        messageId: "text",
+        role: "assistant",
+        content: "I will inspect both.",
+        parts: [{ type: "text", text: "I will inspect both." }],
+        sequence: 1,
+      },
+      {
+        messageId: "call-1",
+        role: "assistant",
+        content: "",
+        parts: [{ type: "tool_call", callId: "c1", name: "read_file", input: { path: "a" } }],
+        sequence: 2,
+      },
+      {
+        messageId: "call-2",
+        role: "assistant",
+        content: "",
+        parts: [{ type: "tool_call", callId: "c2", name: "read_file", input: { path: "b" } }],
+        sequence: 3,
+      },
+      {
+        messageId: "result-1",
+        role: "tool",
+        content: "a",
+        parts: [{
+          type: "tool_result",
+          callId: "c1",
+          output: { preview: "a", byteSize: 1, truncated: false },
+          isError: false,
+        }],
+        sequence: 4,
+      },
+      {
+        messageId: "result-2",
+        role: "tool",
+        content: "b failed",
+        parts: [{
+          type: "tool_result",
+          callId: "c2",
+          output: { preview: "b failed", byteSize: 8, truncated: false },
+          isError: true,
+        }],
+        sequence: 5,
+      },
+    ])).toEqual([
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "I will inspect both." },
+          { type: "tool-call", toolCallId: "c1", toolName: "read_file", input: { path: "a" } },
+          { type: "tool-call", toolCallId: "c2", toolName: "read_file", input: { path: "b" } },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "c1",
+            toolName: "read_file",
+            output: { type: "text", value: "a" },
+          },
+          {
+            type: "tool-result",
+            toolCallId: "c2",
+            toolName: "read_file",
+            output: { type: "error-text", value: "b failed" },
+          },
+        ],
+      },
+    ]);
+  });
+
   it("completes a bounded read-only search and read tool loop", async () => {
     const root = `${tmpdir()}/socrates-native-${crypto.randomUUID()}`;
     roots.push(root);
@@ -51,6 +190,7 @@ describe("NativeAgentRuntime", () => {
       resolveWorkspaceRef: () => ({ text: "workspace text" }),
     });
     await runtime.open();
+    expect(runtime.contextOverheadTokens()).toBeGreaterThan(0);
     const events = [];
     for await (const event of runtime.start({
       prompt: "Find the answer",
@@ -126,6 +266,36 @@ describe("NativeAgentRuntime", () => {
     await expect(consume()).rejects.toThrow("native_runtime_image_not_supported");
   });
 
+  it("aborts the active provider stream when a separate cancel request interrupts it", async () => {
+    const db = openDb(":memory:");
+    const registry = new ToolRegistry();
+    let providerSignal: AbortSignal | undefined;
+    const runtime = new NativeAgentRuntime({
+      sessionId: "session", taskId: "task", agentId: "agent", workspaceId: "workspace", workspaceIdentity: "hash",
+      registry,
+      executor: new ToolExecutor(db, registry, new ApprovalManager(db)),
+      stream: async function* (input) {
+        providerSignal = input.signal;
+        yield { type: "text_delta", text: "partial" };
+        await new Promise<never>((_resolve, reject) => {
+          input.signal?.addEventListener(
+            "abort",
+            () => reject(new Error("provider_aborted")),
+            { once: true },
+          );
+        });
+      },
+    });
+    await runtime.open();
+    const iterator = runtime.start({ prompt: "wait" })[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toEqual({ type: "status", status: "running" });
+    expect((await iterator.next()).value).toEqual({ type: "text_delta", text: "partial" });
+    const pending = iterator.next();
+    await runtime.interrupt();
+    expect(providerSignal?.aborted).toBe(true);
+    await expect(pending).rejects.toThrow();
+  });
+
   it("pauses an ask MCP tool until the exact runtime approval resumes it", async () => {
     const db = openDb(":memory:");
     let executions = 0;
@@ -163,7 +333,11 @@ describe("NativeAgentRuntime", () => {
     expect((await iterator.next()).value).toEqual({ type: "approval_required", requestId: "approval-1", callId: "call-1", risk: "medium", kind: "tool" });
     expect(executions).toBe(0);
     await runtime.answerApproval("approval-1", "allow_once");
-    expect((await iterator.next()).value).toMatchObject({ type: "extension", name: "tool_result" });
+    expect((await iterator.next()).value).toMatchObject({
+      type: "tool_result",
+      callId: "call-1",
+      name: "mcp__demo__lookup",
+    });
     expect(executions).toBe(1);
     expect((await iterator.next()).value).toEqual({ type: "status", status: "completed" });
   });

@@ -195,9 +195,14 @@ SSE 用 Hono 的 `streamSSE`，事件形如 `{ event: type, data: JSON }`（见 
 003 runtime_foundation     007 usage_and_recovery
 004 p2_conversations       008 project_conversation_organization
                            009 room_kind  ← Chat/Co-work 模型迁移
+                           010 phase1_runtime
+                           011 conversation_memory  ← 本地 Thread/Turn 记忆
 ```
 
-主要表：`providers` `agents` `workspaces` `sessions` `session_agents` `session_messages` `message_parts` `rooms` `multi_tasks` `multi_turns` `plan_versions` `runtime_sessions` `usage_records` `events` `mcp_servers` `approvals` `workspace_leases`。
+主要表：`providers` `agents` `workspaces` `sessions` `session_agents`
+`conversation_threads` `conversation_turns` `session_messages` `message_parts`
+`rooms` `multi_tasks` `multi_turns` `plan_versions` `runtime_sessions`
+`usage_records` `events` `mcp_servers` `approvals` `workspace_leases`。
 
 **密钥永不进库**：`secrets.ts`（`KeychainSecrets`）存 macOS Keychain，库里只存 `api_key_ref` 引用。
 
@@ -358,7 +363,37 @@ graph TB
 >
 > **写能力接线（易错点，见 #78）**：`NativeAgentRuntime.start()` 曾硬编码 `allowedCapabilities: ["workspace_read","mcp"]`，把写工具过滤掉——导致 workspace-write 却只有只读。现在由 `index.ts` 按 sandbox 传入 `allowedCapabilities`（含 `workspace_write`），写工具才到得了模型。缺省仍退回只读，绝不擅自开放写。
 
-### 7.2 执行内核（ExecutionRunner）
+### 7.2 单 Agent 的本地会话记忆
+
+`ConversationMemoryStore`（`store/conversation-memory-store.ts`）是单 Agent
+房间可见历史的产品级唯一真源，数据保存在 Socrates SQLite：
+
+```mermaid
+sequenceDiagram
+  participant U as Desktop
+  participant R as SingleAgentRunner
+  participant M as ConversationMemoryStore
+  participant N as native_ai_sdk
+  U->>R: prompt + clientTurnKey
+  R->>M: 原子创建/重试 Turn + 保存 user
+  R->>M: 按稳定 threadId 重载最近历史
+  M-->>R: 严格 sequence 的 typed messages
+  R->>R: token budget（工具调用/结果不拆开）
+  R->>N: 完整 bounded history
+  N-->>R: delta / tool_call / tool_result
+  R->>M: 保存工具交换与最终 assistant
+  R->>M: 保存 Turn terminal state
+```
+
+- 每个 Room 有稳定默认 Thread；新 Thread/不同 Room 的历史严格隔离。
+- `sessions.primary_agent_id` 是明确落库的默认执行 Agent，不从成员顺序动态推导。
+- `clientTurnKey`、输入哈希和消息 idempotency key 防止命令重放、重试和事件回放重复写入。
+- 上下文窗口已知时读取 Agent 的 `modelCapabilities.contextWindowTokens`；未知时使用保守 4K
+  fallback。超限会记录 `memory.context_truncated`；当前工作单元本身超限时在调用 Provider
+  前明确失败，不发送越界 payload。
+- LangGraph checkpoint、Zustand 和 Provider 均不是产品会话记录；API Key 仍只在 Keychain。
+
+### 7.3 执行内核（ExecutionRunner）
 
 `runtime/execution-runner.ts`：多 Agent 任务拿到**已批准**的计划后——
 1. 校验计划哈希与状态（`approved_plan_required`）。
@@ -367,7 +402,7 @@ graph TB
 4. **每个高风险工具调用**：走 `ApprovalManager` 请求审批；`plan-scope.ts` 判断是否在计划范围内（超范围 = `plan_scope_expansion`，强制人工）。
 5. 完成 → `complete`；失败 → `fail(reason)`（reason 存 `terminalReason`，前端会展示）。
 
-### 7.3 下一步（roadmap）
+### 7.4 下一步（roadmap）
 
 seam 已就绪且已被用上（execution-runner 现在指向 `native_ai_sdk`）。后续按 [native-runtime-and-langgraph-roadmap.md](native-runtime-and-langgraph-roadmap.md)：把 `LangGraphAgentRuntime` register 进生产做治理编排（Phase 2），以及可选的 Rust 执行辅助进程强化沙箱/资源限制（Phase 6）。当前的沙箱是**软沙箱**（工作区路径策略 `path-policy.ts` + 写锁 + 逐工具审批），跨平台但非内核级隔离。
 

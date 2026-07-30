@@ -11,7 +11,7 @@ export function sessionRoutes(sessions: SessionStore, events: EventStore, usage?
   app.get("/", (c) => c.json(sessions.list()));
   app.post("/", async (c) => {
     const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
-    if (!body || typeof body.title !== "string" || typeof body.mode !== "string" || !MODES.has(body.mode as ConversationMode) || !Array.isArray(body.agents)) {
+    if (!body || typeof body.title !== "string" || typeof body.mode !== "string" || !MODES.has(body.mode as ConversationMode) || !Array.isArray(body.agents) || typeof body.primaryAgentId !== "string") {
       return c.json({ error: "invalid_session_input" }, 400);
     }
     try {
@@ -21,6 +21,7 @@ export function sessionRoutes(sessions: SessionStore, events: EventStore, usage?
         // kind 缺省时由 store 从 mode 推导；chat 的 workspaceId 也在 store 里强制置空
         kind: body.kind === "chat" || body.kind === "cowork" ? body.kind : undefined,
         workspaceId: typeof body.workspaceId === "string" ? body.workspaceId : null,
+        primaryAgentId: body.primaryAgentId,
         agents: body.agents as Array<{ agentId: string; snapshot: Record<string, unknown>; executionEligible: boolean }>,
       }), 201);
     } catch (error) {

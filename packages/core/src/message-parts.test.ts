@@ -6,7 +6,13 @@ describe("structured message parts", () => {
     expect(validateMessageParts([
       { type: "text", text: "hello" },
       { type: "image", attachmentId: "a", mediaType: "image/png" },
-      { type: "workspace_ref", refId: "r", relativePath: "src/a.ts" },
+      {
+        type: "workspace_ref",
+        refId: "r",
+        relativePath: "src/a.ts",
+        snapshotHash: "hash",
+        attachmentId: "snapshot",
+      },
     ])).toEqual([]);
   });
 

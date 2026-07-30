@@ -77,6 +77,7 @@ export function agentRoutes(db: Database) {
       temperature?: number;
       reasoningEfforts?: ReasoningEffort[];
       reasoningEffort?: ReasoningEffort;
+      contextWindowTokens?: number;
     }>();
     if (!b.nickname?.trim()) return c.json({ error: "昵称不能为空" }, 400);
     if (!b.modelId?.trim()) return c.json({ error: "模型不能为空" }, 400);
@@ -84,6 +85,8 @@ export function agentRoutes(db: Database) {
     if (!provider) return c.json({ error: "供应商不存在" }, 400);
     const reasoning = validateReasoning(b.reasoningEfforts, b.reasoningEffort);
     if (reasoning.error) return c.json({ error: reasoning.error }, 400);
+    const contextWindow = validateContextWindow(b.contextWindowTokens);
+    if (contextWindow.error) return c.json({ error: contextWindow.error }, 400);
     if (reasoning.efforts !== "unknown" && reasoning.efforts.length > 0 && provider.type !== "openai_compatible") return c.json({ error: "reasoning_effort_adapter_unsupported" }, 400);
     const nickname = b.nickname.trim();
     if (nicknameTaken(nickname)) return c.json({ error: "昵称已被使用" }, 409);
@@ -105,7 +108,11 @@ export function agentRoutes(db: Database) {
         b.systemPrompt ?? "",
         b.temperature ?? null,
         reasoning.effort,
-        JSON.stringify({ ...UNKNOWN_MODEL_CAPABILITIES, reasoningEfforts: reasoning.efforts }),
+        JSON.stringify({
+          ...UNKNOWN_MODEL_CAPABILITIES,
+          reasoningEfforts: reasoning.efforts,
+          contextWindowTokens: contextWindow.value,
+        }),
         now,
         now,
       ],
@@ -126,6 +133,7 @@ export function agentRoutes(db: Database) {
       temperature: number | null;
       reasoningEfforts: ReasoningEffort[];
       reasoningEffort: ReasoningEffort | null;
+      contextWindowTokens: number | null;
     }>>();
     if (b.providerId !== undefined && !providerById(b.providerId)) {
       return c.json({ error: "供应商不存在" }, 400);
@@ -134,6 +142,12 @@ export function agentRoutes(db: Database) {
     const currentCapabilities = row.model_capabilities_json ? JSON.parse(row.model_capabilities_json) as ModelCapabilities : UNKNOWN_MODEL_CAPABILITIES;
     const reasoning = validateReasoning(b.reasoningEfforts ?? (currentCapabilities.reasoningEfforts === "unknown" ? undefined : currentCapabilities.reasoningEfforts), b.reasoningEffort === undefined ? row.reasoning_effort as ReasoningEffort | undefined : b.reasoningEffort ?? undefined);
     if (reasoning.error) return c.json({ error: reasoning.error }, 400);
+    const contextWindow = validateContextWindow(
+      b.contextWindowTokens === undefined
+        ? currentCapabilities.contextWindowTokens
+        : b.contextWindowTokens ?? undefined,
+    );
+    if (contextWindow.error) return c.json({ error: contextWindow.error }, 400);
     const nextProvider = providerById(b.providerId ?? row.provider_id);
     if (reasoning.efforts !== "unknown" && reasoning.efforts.length > 0 && nextProvider?.type !== "openai_compatible") return c.json({ error: "reasoning_effort_adapter_unsupported" }, 400);
     const nickname = b.nickname?.trim() || row.nickname || agentIdentityFromSeed(row.id).nickname;
@@ -151,7 +165,11 @@ export function agentRoutes(db: Database) {
         b.systemPrompt ?? row.system_prompt,
         b.temperature === undefined ? row.temperature : b.temperature,
         reasoning.effort,
-        JSON.stringify({ ...currentCapabilities, reasoningEfforts: reasoning.efforts }),
+        JSON.stringify({
+          ...currentCapabilities,
+          reasoningEfforts: reasoning.efforts,
+          contextWindowTokens: contextWindow.value,
+        }),
         new Date().toISOString(),
         row.id,
       ],
@@ -176,4 +194,15 @@ function validateReasoning(efforts: ReasoningEffort[] | undefined, effort: Reaso
   if (!Array.isArray(efforts) || efforts.some((item) => !REASONING_EFFORTS.has(item)) || new Set(efforts).size !== efforts.length) return { efforts: "unknown", effort: null, error: "reasoning_efforts_invalid" };
   if (effort && !efforts.includes(effort)) return { efforts, effort: null, error: "reasoning_effort_unsupported" };
   return { efforts, effort: effort ?? null };
+}
+
+function validateContextWindow(value: number | "unknown" | undefined): {
+  value: number | "unknown";
+  error?: string;
+} {
+  if (value === undefined || value === "unknown") return { value: "unknown" };
+  if (!Number.isSafeInteger(value) || value < 1_024 || value > 4_000_000) {
+    return { value: "unknown", error: "context_window_tokens_invalid" };
+  }
+  return { value };
 }

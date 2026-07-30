@@ -8,5 +8,6 @@ import { usageAndRecoveryMigration } from "./007_usage_and_recovery";
 import { projectConversationOrganizationMigration } from "./008_project_conversation_organization";
 import { roomKindMigration } from "./009_room_kind";
 import { phase1RuntimeMigration } from "./010_phase1_runtime";
+import { conversationMemoryMigration } from "./011_conversation_memory";
 
-export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration, usageAndRecoveryMigration, projectConversationOrganizationMigration, roomKindMigration, phase1RuntimeMigration] as const;
+export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration, usageAndRecoveryMigration, projectConversationOrganizationMigration, roomKindMigration, phase1RuntimeMigration, conversationMemoryMigration] as const;

@@ -15,6 +15,7 @@ type SessionRow = {
   kind: RoomKind | null;
   collaboration_json: string | null;
   workspace_id: string | null;
+  primary_agent_id: string | null;
   archived: number;
   status: string;
   legacy_room_id: string | null;
@@ -36,6 +37,7 @@ export class SessionStore {
     /** 新模型：chat | cowork。省略时由 legacy mode 推导，兼容旧调用方。 */
     kind?: RoomKind;
     workspaceId?: string | null;
+    primaryAgentId: string;
     legacyRoomId?: string | null;
     agents: Array<{ agentId: string; snapshot: Record<string, unknown>; executionEligible: boolean }>;
   }): ConversationSession {
@@ -43,6 +45,8 @@ export class SessionStore {
     const errors = validateConversation({ mode: input.mode, agentIds });
     if (errors.length) throw new Error(errors[0]);
     if (new Set(agentIds).size !== agentIds.length) throw new Error("duplicate_session_agent");
+    const primaryAgentId = input.primaryAgentId;
+    if (!primaryAgentId || !agentIds.includes(primaryAgentId)) throw new Error("primary_agent_must_be_room_member");
     // 房间形状由 core 统一裁决：chat 不得绑定 workspace，cowork 必须绑定
     const kind: RoomKind = input.kind ?? (input.mode === "chat" ? "chat" : "cowork");
     const workspaceId = kind === "chat" ? null : input.workspaceId ?? null;
@@ -64,9 +68,22 @@ export class SessionStore {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.query(`
-        INSERT INTO sessions (id, title, mode, kind, workspace_id, collaboration_json, archived, status, legacy_room_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 0, 'idle', ?, ?, ?)
-      `).run(id, input.title.trim() || "Untitled", input.mode, kind, workspaceId, collaborationJson, input.legacyRoomId ?? null, now, now);
+        INSERT INTO sessions
+          (id, title, mode, kind, workspace_id, primary_agent_id, collaboration_json,
+           archived, status, legacy_room_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'idle', ?, ?, ?)
+      `).run(
+        id,
+        input.title.trim() || "Untitled",
+        input.mode,
+        kind,
+        workspaceId,
+        primaryAgentId,
+        collaborationJson,
+        input.legacyRoomId ?? null,
+        now,
+        now,
+      );
       const insertAgent = this.db.query(`
         INSERT INTO session_agents (session_id, agent_id, snapshot_json, position, execution_eligible)
         VALUES (?, ?, ?, ?, ?)
@@ -95,6 +112,7 @@ export class SessionStore {
       position: agent.position,
       executionEligible: agent.execution_eligible === 1,
     }));
+    if (!row.primary_agent_id) throw new Error("session_primary_agent_missing");
     return {
       id: row.id,
       title: row.title,
@@ -102,6 +120,7 @@ export class SessionStore {
       kind: row.kind ?? (row.mode === "chat" ? "chat" : "cowork"),
       collaboration: normalizeCollaborationSettings(row.collaboration_json ? JSON.parse(row.collaboration_json) : null),
       workspaceId: row.workspace_id,
+      primaryAgentId: row.primary_agent_id,
       archived: row.archived === 1,
       status: row.status,
       legacyRoomId: row.legacy_room_id,
@@ -118,7 +137,11 @@ export class SessionStore {
   }
 
   listMessages(sessionId: string): SessionMessage[] {
-    return this.db.query<MessageRow, [string]>("SELECT * FROM session_messages WHERE session_id = ? ORDER BY created_at, id").all(sessionId).map((row) => ({
+    return this.db.query<MessageRow, [string]>(`
+      SELECT * FROM session_messages
+      WHERE session_id = ? AND (kind IS NULL OR kind IN ('text', 'summary', 'error'))
+      ORDER BY COALESCE(sequence, 2147483647), created_at, id
+    `).all(sessionId).map((row) => ({
       id: row.id,
       sessionId: row.session_id,
       role: row.role,
@@ -196,6 +219,12 @@ export class SessionStore {
     if (!SessionStore.INACTIVE.includes(session.status)) throw new Error("active_session_members_locked");
     if (!session.agents.some((agent) => agent.agentId === agentId)) throw new Error("session_agent_not_member");
     if (session.agents.length <= 1) throw new Error("session_requires_at_least_one_member");
+    if (session.primaryAgentId === agentId) {
+      const replacement = session.agents.find((agent) => agent.agentId !== agentId && agent.executionEligible)
+        ?? session.agents.find((agent) => agent.agentId !== agentId);
+      if (!replacement) throw new Error("primary_agent_replacement_required");
+      this.db.query("UPDATE sessions SET primary_agent_id = ? WHERE id = ?").run(replacement.agentId, sessionId);
+    }
     this.db.query("DELETE FROM session_agents WHERE session_id = ? AND agent_id = ?").run(sessionId, agentId);
     // 重排 position，保持连续（发言顺序等依赖它）
     this.get(sessionId)!.agents.forEach((agent, index) => {
@@ -252,19 +281,84 @@ export class SessionStore {
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
     if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) throw new Error("active_session_rewind_locked");
-    const target = this.db.query<{ rid: number; created_at: string }, [string, string]>(
-      "SELECT rowid AS rid, created_at FROM session_messages WHERE id = ? AND session_id = ?",
+    const target = this.db.query<{
+      rid: number;
+      created_at: string;
+      thread_id: string | null;
+      sequence: number | null;
+    }, [string, string]>(
+      "SELECT rowid AS rid, created_at, thread_id, sequence FROM session_messages WHERE id = ? AND session_id = ?",
     ).get(messageId, sessionId);
     if (!target) throw new Error("session_message_not_found");
+    const sequenced = target.thread_id !== null && target.sequence !== null;
+    const affected = sequenced
+      ? this.db.query<{ id: string; run_id: string | null; turn_id: string | null }, [string, number]>(`
+          SELECT id, run_id, turn_id
+          FROM session_messages
+          WHERE thread_id = ? AND sequence >= ?
+          ORDER BY sequence
+        `).all(target.thread_id!, target.sequence!)
+      : [];
+    const messageIds = affected.map((message) => message.id);
+    const runIds = [...new Set(affected.flatMap((message) => message.run_id ? [message.run_id] : []))];
+    const turnIds = [...new Set(affected.flatMap((message) => message.turn_id ? [message.turn_id] : []))];
+    const marks = (values: string[]) => values.map(() => "?").join(",");
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.db.query("DELETE FROM usage_records WHERE session_id = ? AND created_at >= ?").run(sessionId, target.created_at);
-      this.db.query("DELETE FROM multi_tasks WHERE session_id = ? AND created_at >= ?").run(sessionId, target.created_at);
-      this.db.query("DELETE FROM agent_runs WHERE session_id = ? AND created_at >= ?").run(sessionId, target.created_at);
-      this.db.query("DELETE FROM task_events WHERE session_id = ? AND occurred_at >= ?").run(sessionId, target.created_at);
-      this.db.query("DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM session_messages WHERE session_id = ? AND rowid >= ?)").run(sessionId, target.rid);
-      this.db.query("DELETE FROM message_parts WHERE message_id IN (SELECT id FROM session_messages WHERE session_id = ? AND rowid >= ?)").run(sessionId, target.rid);
-      this.db.query("DELETE FROM session_messages WHERE session_id = ? AND rowid >= ?").run(sessionId, target.rid);
+      if (sequenced) {
+        if (runIds.length) {
+          this.db.query(`DELETE FROM usage_records WHERE task_id IN (${marks(runIds)})`).run(...runIds);
+          this.db.query(`DELETE FROM task_events WHERE task_id IN (${marks(runIds)})`).run(...runIds);
+          this.db.query(`DELETE FROM tool_outputs WHERE tool_call_id IN (
+            SELECT id FROM tool_calls WHERE task_id IN (${marks(runIds)})
+          )`).run(...runIds);
+          this.db.query(`DELETE FROM tool_calls WHERE task_id IN (${marks(runIds)})`).run(...runIds);
+          this.db.query(`DELETE FROM agent_runs WHERE id IN (${marks(runIds)})`).run(...runIds);
+        }
+        if (messageIds.length) {
+          this.db.query(`DELETE FROM message_attachments WHERE message_id IN (${marks(messageIds)})`).run(...messageIds);
+          this.db.query(`DELETE FROM message_parts WHERE message_id IN (${marks(messageIds)})`).run(...messageIds);
+          this.db.query(`DELETE FROM session_messages WHERE id IN (${marks(messageIds)})`).run(...messageIds);
+        }
+        if (turnIds.length) {
+          const now = new Date().toISOString();
+          this.db.query(`
+            UPDATE conversation_turns
+            SET status = 'interrupted', updated_at = ?, completed_at = ?
+            WHERE id IN (${marks(turnIds)})
+              AND EXISTS (
+                SELECT 1 FROM session_messages
+                WHERE session_messages.turn_id = conversation_turns.id
+              )
+          `).run(now, now, ...turnIds);
+          this.db.query(`
+            DELETE FROM conversation_turns
+            WHERE id IN (${marks(turnIds)})
+              AND NOT EXISTS (
+                SELECT 1 FROM session_messages
+                WHERE session_messages.turn_id = conversation_turns.id
+              )
+          `).run(...turnIds);
+        }
+        this.db.query(`
+          UPDATE conversation_threads
+          SET latest_sequence = COALESCE((
+                SELECT MAX(sequence) FROM session_messages
+                WHERE thread_id = conversation_threads.id
+              ), 0),
+              updated_at = ?
+          WHERE id = ?
+        `).run(new Date().toISOString(), target.thread_id!);
+      } else {
+        // Compatibility for pre-migration/unsequenced records.
+        this.db.query("DELETE FROM usage_records WHERE session_id = ? AND created_at >= ?").run(sessionId, target.created_at);
+        this.db.query("DELETE FROM multi_tasks WHERE session_id = ? AND created_at >= ?").run(sessionId, target.created_at);
+        this.db.query("DELETE FROM agent_runs WHERE session_id = ? AND created_at >= ?").run(sessionId, target.created_at);
+        this.db.query("DELETE FROM task_events WHERE session_id = ? AND occurred_at >= ?").run(sessionId, target.created_at);
+        this.db.query("DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM session_messages WHERE session_id = ? AND rowid >= ?)").run(sessionId, target.rid);
+        this.db.query("DELETE FROM message_parts WHERE message_id IN (SELECT id FROM session_messages WHERE session_id = ? AND rowid >= ?)").run(sessionId, target.rid);
+        this.db.query("DELETE FROM session_messages WHERE session_id = ? AND rowid >= ?").run(sessionId, target.rid);
+      }
       this.db.query("UPDATE sessions SET status = 'idle', updated_at = ? WHERE id = ?").run(new Date().toISOString(), sessionId);
       this.db.exec("COMMIT");
     } catch (error) {
