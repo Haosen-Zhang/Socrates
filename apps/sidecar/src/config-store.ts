@@ -2,7 +2,12 @@ import { Hono } from "hono";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { parse, stringify } from "smol-toml";
-import { mergeConfig, normalizeConfig, type AppConfig } from "@socrates/core";
+import {
+  mergeConfig,
+  normalizeConfig,
+  validateCollaborationCapabilities,
+  type AppConfig,
+} from "@socrates/core";
 import { MemorySecrets, type SecretStore } from "./secrets";
 
 const PROXY_USERNAME_REF = "proxy:username";
@@ -61,6 +66,10 @@ export class ConfigStore {
 
   update(patch: Partial<AppConfig>): AppConfig {
     const incoming = mergeConfig(this.cache, patch);
+    const collaborationErrors = validateCollaborationCapabilities(
+      incoming.collaborationDefaults,
+    );
+    if (collaborationErrors.length) throw new Error(collaborationErrors[0]);
     const extracted = this.extractProxyCredentials(incoming);
     const oldUsername = this.secrets.get(PROXY_USERNAME_REF);
     const oldPassword = this.secrets.get(PROXY_PASSWORD_REF);

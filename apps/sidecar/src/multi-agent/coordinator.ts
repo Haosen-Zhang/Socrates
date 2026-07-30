@@ -86,15 +86,25 @@ export class MultiAgentCoordinator {
         await this.stateEvent(taskId, task.sessionId, "discussing", emit);
       }
       const collabRow = this.db.query<{ collaboration_json: string | null }, [string]>("SELECT collaboration_json FROM sessions WHERE id = ?").get(task.sessionId);
-      const collab = normalizeCollaborationSettings(collabRow?.collaboration_json ? JSON.parse(collabRow.collaboration_json) : null);
+      const rawCollaboration = collabRow?.collaboration_json
+        ? JSON.parse(collabRow.collaboration_json) as unknown
+        : null;
+      const collab = normalizeCollaborationSettings(rawCollaboration);
       const completed: Array<{ agentId: string; agentName: string; round: number; content: string }> = [];
       let ordinal = 0;
-      // 只有**显式**存了 discussionMode="off" 才跳过讨论；未配置过的会话保持历史行为（总是讨论）。
-      // （默认值是 "off"，不能拿它当"已关闭"，否则新房间会莫名其妙不讨论。）
-      const discussionOff = !!collabRow?.collaboration_json && collab.discussionMode === "off";
-      const discussionRounds = discussionOff ? 0 : task.config.maxRounds;
+      const legacyUnconfigured = !collabRow?.collaboration_json;
+      const legacyShape = rawCollaboration !== null
+        && typeof rawCollaboration === "object"
+        && !("discussion" in rawCollaboration);
+      const discussionEnabled = legacyUnconfigured || collab.discussion.enabled;
+      const discussionRounds = discussionEnabled
+        ? legacyUnconfigured || legacyShape ? task.config.maxRounds : collab.discussion.maxRounds
+        : 0;
+      const speakingOrder = discussionEnabled && !legacyShape && collab.discussion.speakerOrder.length
+        ? collab.discussion.speakerOrder
+        : task.config.speakingOrder;
       for (let round = 1; round <= discussionRounds; round += 1) {
-        for (const agentId of task.config.speakingOrder) {
+        for (const agentId of speakingOrder) {
           if (controller.signal.aborted) throw new Error("multi_task_cancelled");
           const prior = this.store.completedTurnAtPosition({ taskId, phase: "discussing", round, participantIndex: ordinal });
           if (prior) {
@@ -160,8 +170,7 @@ export class MultiAgentCoordinator {
         this.store.transition(taskId, { type: "discussion_complete" });
         await this.stateEvent(taskId, task.sessionId, "synthesizing", emit);
       }
-      this.assertBossExecutionAllowed(task.config, collab);
-      // Boss 整合：Boss 开启时由 Boss 产出计划（替代原 synthesizerId）
+      this.assertLegacyBossExecutionAllowed(task.config, rawCollaboration);
       const synthesizerId = this.effectiveSynthesizerId(task.config, collab);
       let plan = await this.synthesize(taskId, synthesizerId, ordinal, completed, null, controller.signal, emit);
       this.store.transition(taskId, { type: "plan_ready" });
@@ -358,21 +367,39 @@ export class MultiAgentCoordinator {
     return normalizeCollaborationSettings(row?.collaboration_json ? JSON.parse(row.collaboration_json) : null);
   }
 
-  /** Boss 开启即由 Boss 整合出计划；否则用配置里的 synthesizer。 */
   private effectiveSynthesizerId(config: MultiTaskConfig, collab: RoomCollaborationSettings): string {
-    return collab.boss.enabled && collab.boss.bossAgentId ? collab.boss.bossAgentId : config.synthesizerId;
+    if (collab.discussion.enabled && collab.discussion.summaryAgentId) {
+      return collab.discussion.summaryAgentId;
+    }
+    if (collab.strategy === "team" && collab.assignment.coordinatorAgentId) {
+      return collab.assignment.coordinatorAgentId;
+    }
+    return config.synthesizerId;
   }
 
-  /** 审批模式决定谁来审计划：自检→执行者，指定审核→指定人，人工→无（回到人工审批）。 */
   private effectiveReviewerId(config: MultiTaskConfig, collab: RoomCollaborationSettings): string | null {
-    if (collab.approvalMode === "executor_self_check") return config.executionAgentId;
-    if (collab.approvalMode === "designated_reviewer") return collab.designatedReviewerId;
+    if (collab.planConfirmation.mode === "coordinator") {
+      return collab.assignment.coordinatorAgentId ?? config.synthesizerId;
+    }
+    if (collab.planConfirmation.mode === "reviewer") {
+      return collab.planConfirmation.reviewerAgentId;
+    }
     return null;
   }
 
-  /** Boss 默认不执行：未显式允许时，Boss 不得同时是执行者。 */
-  private assertBossExecutionAllowed(config: MultiTaskConfig, collab: RoomCollaborationSettings): void {
-    if (collab.boss.enabled && !collab.boss.allowBossExecution && config.executionAgentId === collab.boss.bossAgentId) {
+  private assertLegacyBossExecutionAllowed(
+    config: MultiTaskConfig,
+    raw: unknown,
+  ): void {
+    const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+    const boss = record.boss && typeof record.boss === "object"
+      ? record.boss as Record<string, unknown>
+      : {};
+    if (
+      boss.enabled === true
+      && boss.allowBossExecution !== true
+      && boss.bossAgentId === config.executionAgentId
+    ) {
       throw new Error("boss_must_not_execute");
     }
   }

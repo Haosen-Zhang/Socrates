@@ -88,7 +88,9 @@ describe("009 room_kind migration", () => {
     const raw = db
       .query<{ collaboration_json: string | null }, []>("SELECT collaboration_json FROM sessions WHERE id = 's-multi'")
       .get();
-    expect(JSON.parse(raw?.collaboration_json ?? "{}")).toMatchObject({ discussionMode: "round_robin" });
+    expect(JSON.parse(raw?.collaboration_json ?? "{}")).toMatchObject({
+      discussion: { enabled: true, mode: "round_robin" },
+    });
   });
 
   it("treats legacy group rooms as chat and clears any workspace on them", () => {

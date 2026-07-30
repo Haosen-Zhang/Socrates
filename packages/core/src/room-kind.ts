@@ -13,42 +13,104 @@
 export type RoomKind = "chat" | "cowork";
 
 export type DiscussionMode = "off" | "round_robin" | "debate";
-export type CollaborationMode = "single_executor" | "human_directed_multi_agent" | "agent_directed_multi_agent";
-export type ApprovalMode = "human" | "executor_self_check" | "designated_reviewer";
-export type SupervisionMode = "off" | "final_only" | "key_stages" | "every_work_package";
+export type ExecutionStrategy = "single" | "adaptive" | "team";
+export type RoutingMode = "automatic" | "manual";
+export type AutomaticRoutingPolicy = "cost" | "balanced" | "quality";
+export type PlanConfirmationMode = "coordinator" | "user" | "reviewer";
 
-export type BossConfig = {
-  enabled: boolean;
-  bossAgentId: string | null;
-  /** 默认 false：Boss 只做拆解/分配/监控/整合，不直接执行 */
-  allowBossExecution: boolean;
+export type CollaborationRuntimeCapabilities = {
+  supportedStrategies: ExecutionStrategy[];
+  discussion: boolean;
+  routing: boolean;
+  planConfirmation: PlanConfirmationMode[];
 };
 
+export const COLLABORATION_RUNTIME_CAPABILITIES: CollaborationRuntimeCapabilities = {
+  supportedStrategies: ["single", "team"],
+  discussion: true,
+  routing: false,
+  planConfirmation: ["user"],
+};
+
+export function validateCollaborationCapabilities(
+  settings: RoomCollaborationSettings,
+  capabilities: CollaborationRuntimeCapabilities =
+    COLLABORATION_RUNTIME_CAPABILITIES,
+): string[] {
+  const errors: string[] = [];
+  if (!capabilities.supportedStrategies.includes(settings.strategy)) {
+    errors.push("collaboration_strategy_unavailable");
+  }
+  if (settings.discussion.enabled && !capabilities.discussion) {
+    errors.push("discussion_runtime_unavailable");
+  }
+  const routingConfigured =
+    settings.assignment.routing.mode !== "automatic"
+    || settings.assignment.routing.automaticPolicy !== "balanced";
+  if (routingConfigured && !capabilities.routing) {
+    errors.push("routing_runtime_unavailable");
+  }
+  if (!capabilities.planConfirmation.includes(settings.planConfirmation.mode)) {
+    errors.push("plan_confirmation_unavailable");
+  }
+  return errors;
+}
+
 export type RoomCollaborationSettings = {
-  discussionMode: DiscussionMode;
-  collaborationMode: CollaborationMode;
-  boss: BossConfig;
-  approvalMode: ApprovalMode;
-  designatedReviewerId: string | null;
-  supervisionMode: SupervisionMode;
-  supervisorAgentId: string | null;
+  strategy: ExecutionStrategy;
+  assignment: {
+    coordinatorAgentId: string | null;
+    callableAgentIds: string[];
+    routing: {
+      mode: RoutingMode;
+      automaticPolicy: AutomaticRoutingPolicy;
+      lightweightAgentId: string | null;
+      complexAgentId: string | null;
+      criticalAgentId: string | null;
+    };
+  };
+  discussion: {
+    enabled: boolean;
+    mode: Exclude<DiscussionMode, "off">;
+    maxRounds: number;
+    speakerOrder: string[];
+    summaryAgentId: string | null;
+  };
+  planConfirmation: {
+    mode: PlanConfirmationMode;
+    reviewerAgentId: string | null;
+  };
 };
 
 export const DEFAULT_COLLABORATION_SETTINGS: RoomCollaborationSettings = {
-  discussionMode: "off",
-  collaborationMode: "single_executor",
-  boss: { enabled: false, bossAgentId: null, allowBossExecution: false },
-  approvalMode: "human",
-  designatedReviewerId: null,
-  supervisionMode: "off",
-  supervisorAgentId: null,
+  strategy: "single",
+  assignment: {
+    coordinatorAgentId: null,
+    callableAgentIds: [],
+    routing: {
+      mode: "automatic",
+      automaticPolicy: "balanced",
+      lightweightAgentId: null,
+      complexAgentId: null,
+      criticalAgentId: null,
+    },
+  },
+  discussion: {
+    enabled: false,
+    mode: "round_robin",
+    maxRounds: 2,
+    speakerOrder: [],
+    summaryAgentId: null,
+  },
+  planConfirmation: { mode: "user", reviewerAgentId: null },
 };
 
 const ROOM_KINDS = ["chat", "cowork"] as const;
-const DISCUSSION_MODES = ["off", "round_robin", "debate"] as const;
-const COLLABORATION_MODES = ["single_executor", "human_directed_multi_agent", "agent_directed_multi_agent"] as const;
-const APPROVAL_MODES = ["human", "executor_self_check", "designated_reviewer"] as const;
-const SUPERVISION_MODES = ["off", "final_only", "key_stages", "every_work_package"] as const;
+const DISCUSSION_MODES = ["round_robin", "debate"] as const;
+const EXECUTION_STRATEGIES = ["single", "adaptive", "team"] as const;
+const ROUTING_MODES = ["automatic", "manual"] as const;
+const ROUTING_POLICIES = ["cost", "balanced", "quality"] as const;
+const PLAN_CONFIRMATION_MODES = ["coordinator", "user", "reviewer"] as const;
 
 export function isRoomKind(value: unknown): value is RoomKind {
   return typeof value === "string" && (ROOM_KINDS as readonly string[]).includes(value);
@@ -61,20 +123,64 @@ function pickEnum<T extends readonly string[]>(values: T, raw: unknown, fallback
 /** 把（可能来自旧数据或手工编辑的）输入规整成合法设置；非法值回退默认。 */
 export function normalizeCollaborationSettings(raw: unknown): RoomCollaborationSettings {
   const r = (raw ?? {}) as Record<string, unknown>;
+  const assignment = (r.assignment ?? {}) as Record<string, unknown>;
+  const routing = (assignment.routing ?? {}) as Record<string, unknown>;
+  const discussion = (r.discussion ?? {}) as Record<string, unknown>;
+  const planConfirmation = (r.planConfirmation ?? {}) as Record<string, unknown>;
   const boss = (r.boss ?? {}) as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" && v ? v : null);
+  const strings = (v: unknown) =>
+    Array.isArray(v) ? [...new Set(v.filter((item): item is string => typeof item === "string" && !!item))] : [];
+  const legacyStrategy = r.collaborationMode === "agent_directed_multi_agent"
+    || r.collaborationMode === "human_directed_multi_agent"
+    ? "team"
+    : "single";
+  const legacyDiscussionEnabled = r.discussionMode === "round_robin" || r.discussionMode === "debate";
+  const rounds = Number(discussion.maxRounds);
   return {
-    discussionMode: pickEnum(DISCUSSION_MODES, r.discussionMode, DEFAULT_COLLABORATION_SETTINGS.discussionMode),
-    collaborationMode: pickEnum(COLLABORATION_MODES, r.collaborationMode, DEFAULT_COLLABORATION_SETTINGS.collaborationMode),
-    boss: {
-      enabled: boss.enabled === true,
-      bossAgentId: str(boss.bossAgentId),
-      allowBossExecution: boss.allowBossExecution === true,
+    strategy: pickEnum(EXECUTION_STRATEGIES, r.strategy, legacyStrategy),
+    assignment: {
+      coordinatorAgentId: str(assignment.coordinatorAgentId) ?? str(boss.bossAgentId),
+      callableAgentIds: strings(assignment.callableAgentIds),
+      routing: {
+        mode: pickEnum(ROUTING_MODES, routing.mode, DEFAULT_COLLABORATION_SETTINGS.assignment.routing.mode),
+        automaticPolicy: pickEnum(
+          ROUTING_POLICIES,
+          routing.automaticPolicy,
+          DEFAULT_COLLABORATION_SETTINGS.assignment.routing.automaticPolicy,
+        ),
+        lightweightAgentId: str(routing.lightweightAgentId),
+        complexAgentId: str(routing.complexAgentId),
+        criticalAgentId: str(routing.criticalAgentId),
+      },
     },
-    approvalMode: pickEnum(APPROVAL_MODES, r.approvalMode, DEFAULT_COLLABORATION_SETTINGS.approvalMode),
-    designatedReviewerId: str(r.designatedReviewerId),
-    supervisionMode: pickEnum(SUPERVISION_MODES, r.supervisionMode, DEFAULT_COLLABORATION_SETTINGS.supervisionMode),
-    supervisorAgentId: str(r.supervisorAgentId),
+    discussion: {
+      enabled: typeof discussion.enabled === "boolean"
+        ? discussion.enabled
+        : legacyDiscussionEnabled,
+      mode: pickEnum(
+        DISCUSSION_MODES,
+        discussion.mode ?? r.discussionMode,
+        DEFAULT_COLLABORATION_SETTINGS.discussion.mode,
+      ),
+      maxRounds: Number.isSafeInteger(rounds) && rounds >= 1 && rounds <= 20
+        ? rounds
+        : DEFAULT_COLLABORATION_SETTINGS.discussion.maxRounds,
+      speakerOrder: strings(discussion.speakerOrder),
+      summaryAgentId: str(discussion.summaryAgentId),
+    },
+    planConfirmation: {
+      mode: pickEnum(
+        PLAN_CONFIRMATION_MODES,
+        planConfirmation.mode,
+        r.approvalMode === "designated_reviewer"
+          ? "reviewer"
+          : r.approvalMode === "executor_self_check"
+            ? "coordinator"
+            : DEFAULT_COLLABORATION_SETTINGS.planConfirmation.mode,
+      ),
+      reviewerAgentId: str(planConfirmation.reviewerAgentId) ?? str(r.designatedReviewerId),
+    },
   };
 }
 
@@ -82,6 +188,7 @@ export type RoomShape = {
   kind: RoomKind;
   workspaceId: string | null;
   agentIds: string[];
+  primaryAgentId?: string | null;
 };
 
 /** 房间本身的结构约束（与协作设置无关）。返回错误码数组，空数组表示合法。 */
@@ -104,38 +211,96 @@ export function validateCollaborationSettings(room: RoomShape, settings: RoomCol
   const multiMember = room.agentIds.length >= 2;
 
   if (room.kind === "chat") {
-    // Chat 不参与协作治理：只允许保持默认（讨论仍可用，但不得配置执行相关字段）
-    if (settings.collaborationMode !== "single_executor") errors.push("chat_room_has_no_collaboration_mode");
-    if (settings.boss.enabled) errors.push("chat_room_has_no_boss");
-    if (settings.approvalMode !== "human") errors.push("chat_room_has_no_approval_delegation");
-    if (settings.supervisionMode !== "off") errors.push("chat_room_has_no_supervision");
+    if (settings.strategy !== "single") errors.push("chat_room_has_no_execution_strategy");
+    if (settings.planConfirmation.mode !== "user") {
+      errors.push("chat_room_has_no_plan_confirmation");
+    }
   }
 
-  if (settings.discussionMode !== "off" && !multiMember) errors.push("discussion_requires_multiple_members");
-  if (settings.collaborationMode !== "single_executor" && !multiMember) {
-    errors.push("multi_agent_collaboration_requires_multiple_members");
+  if (settings.strategy === "adaptive" && !multiMember) errors.push("adaptive_requires_multiple_members");
+  if (settings.strategy === "team" && !multiMember) errors.push("team_requires_multiple_members");
+  if (settings.strategy !== "single") {
+    if (!settings.assignment.coordinatorAgentId) errors.push("coordinator_required");
+    else if (!members.has(settings.assignment.coordinatorAgentId)) errors.push("coordinator_must_be_room_member");
   }
-
-  if (settings.collaborationMode === "agent_directed_multi_agent") {
-    if (!settings.boss.enabled) errors.push("agent_directed_requires_boss");
-    if (!settings.boss.bossAgentId) errors.push("boss_agent_required");
-    else if (!members.has(settings.boss.bossAgentId)) errors.push("boss_must_be_room_member");
-    if (!multiMember) errors.push("boss_requires_multiple_members");
-  } else if (settings.boss.enabled) {
-    errors.push("boss_requires_agent_directed_collaboration");
+  if (settings.assignment.callableAgentIds.some((id) => !members.has(id))) {
+    errors.push("callable_agents_must_be_room_members");
   }
-
-  if (settings.approvalMode === "designated_reviewer") {
-    if (!settings.designatedReviewerId) errors.push("reviewer_required");
-    else if (!members.has(settings.designatedReviewerId)) errors.push("reviewer_must_be_room_member");
+  if (settings.assignment.routing.mode === "manual" && settings.strategy === "team") {
+    for (const [role, id] of [
+      ["lightweight", settings.assignment.routing.lightweightAgentId],
+      ["complex", settings.assignment.routing.complexAgentId],
+      ["critical", settings.assignment.routing.criticalAgentId],
+    ] as const) {
+      if (id && !members.has(id)) errors.push(`${role}_agent_must_be_room_member`);
+    }
   }
-
-  if (settings.supervisionMode !== "off") {
-    if (!settings.supervisorAgentId) errors.push("supervisor_required");
-    else if (!members.has(settings.supervisorAgentId)) errors.push("supervisor_must_be_room_member");
+  if (settings.discussion.enabled) {
+    if (!multiMember) errors.push("discussion_requires_multiple_members");
+    if (settings.discussion.speakerOrder.length === 0) errors.push("discussion_speaker_order_required");
+    if (settings.discussion.speakerOrder.some((id) => !members.has(id))) {
+      errors.push("discussion_speakers_must_be_room_members");
+    }
+    if (!settings.discussion.summaryAgentId) errors.push("discussion_summary_agent_required");
+    else if (!members.has(settings.discussion.summaryAgentId)) {
+      errors.push("discussion_summary_agent_must_be_room_member");
+    }
+  }
+  if (settings.planConfirmation.mode === "reviewer") {
+    if (!settings.planConfirmation.reviewerAgentId) errors.push("reviewer_required");
+    else if (!members.has(settings.planConfirmation.reviewerAgentId)) {
+      errors.push("reviewer_must_be_room_member");
+    }
   }
 
   return errors;
+}
+
+export function resolveCollaborationDefaults(
+  defaults: RoomCollaborationSettings,
+  room: RoomShape,
+  primaryAgentId: string,
+): RoomCollaborationSettings {
+  const normalized = normalizeCollaborationSettings(defaults);
+  const members = new Set(room.agentIds);
+  const coordinator = normalized.assignment.coordinatorAgentId
+    && members.has(normalized.assignment.coordinatorAgentId)
+    ? normalized.assignment.coordinatorAgentId
+    : primaryAgentId;
+  const role = (id: string | null) => id && members.has(id) ? id : coordinator;
+  const speakerOrder = normalized.discussion.speakerOrder.filter((id) => members.has(id));
+  return {
+    ...normalized,
+    strategy: room.agentIds.length < 2 ? "single" : normalized.strategy,
+    assignment: {
+      ...normalized.assignment,
+      coordinatorAgentId: coordinator,
+      callableAgentIds: normalized.assignment.callableAgentIds.length
+        ? normalized.assignment.callableAgentIds.filter((id) => members.has(id))
+        : [...room.agentIds],
+      routing: {
+        ...normalized.assignment.routing,
+        lightweightAgentId: role(normalized.assignment.routing.lightweightAgentId),
+        complexAgentId: role(normalized.assignment.routing.complexAgentId),
+        criticalAgentId: role(normalized.assignment.routing.criticalAgentId),
+      },
+    },
+    discussion: {
+      ...normalized.discussion,
+      enabled: room.agentIds.length >= 2 && normalized.discussion.enabled,
+      speakerOrder: speakerOrder.length ? speakerOrder : [...room.agentIds],
+      summaryAgentId: role(normalized.discussion.summaryAgentId),
+    },
+    planConfirmation: {
+      ...normalized.planConfirmation,
+      reviewerAgentId: normalized.planConfirmation.reviewerAgentId
+        && members.has(normalized.planConfirmation.reviewerAgentId)
+        ? normalized.planConfirmation.reviewerAgentId
+        : normalized.planConfirmation.mode === "reviewer"
+          ? coordinator
+          : null,
+    },
+  };
 }
 
 /**
@@ -154,5 +319,5 @@ export function resolveRoomRuntime(
   settings: RoomCollaborationSettings,
 ): RoomRuntimeKind {
   if (room.kind === "chat") return room.agentIds.length === 1 ? "single_chat" : "multi_chat";
-  return settings.collaborationMode === "single_executor" ? "single_agent" : "multi_agent";
+  return settings.strategy === "single" ? "single_agent" : "multi_agent";
 }

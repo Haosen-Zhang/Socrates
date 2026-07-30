@@ -1,3 +1,9 @@
+import {
+  DEFAULT_COLLABORATION_SETTINGS,
+  normalizeCollaborationSettings,
+  type RoomCollaborationSettings,
+} from "./room-kind";
+
 /** 应用配置（config.toml 的形状）。只放非敏感项——API Key 仍在 Keychain（NFR-001）。 */
 export type ProxyMode = "off" | "auto" | "custom";
 export type ProxyType = "http" | "https" | "socks5" | "socks5h";
@@ -27,6 +33,7 @@ export type AppConfig = {
   sidebar: { collapsed: boolean; width: number };
   proxy: ProxyConfig;
   appearance: { fontSize: number; fontFamily: string; uiTheme: UiTheme };
+  collaborationDefaults: RoomCollaborationSettings;
 };
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -46,6 +53,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     noProxy: "localhost,127.0.0.1,.local",
   },
   appearance: { fontSize: 14, fontFamily: "system", uiTheme: "socrates-classic" },
+  collaborationDefaults: DEFAULT_COLLABORATION_SETTINGS,
 };
 
 const LANGS = ["zh-CN", "zh-TW", "en"] as const;
@@ -94,6 +102,7 @@ export function normalizeConfig(raw: unknown): AppConfig {
       fontFamily: typeof appearance.fontFamily === "string" ? appearance.fontFamily : DEFAULT_CONFIG.appearance.fontFamily,
       uiTheme: pick(UI_THEMES, appearance.uiTheme, DEFAULT_CONFIG.appearance.uiTheme),
     },
+    collaborationDefaults: normalizeCollaborationSettings(r.collaborationDefaults),
   };
 }
 
@@ -132,11 +141,34 @@ export function isHostBypassed(noProxy: string, hostname: string): boolean {
 
 /** 深合并补丁到配置（proxy/appearance 为浅层子对象）。 */
 export function mergeConfig(base: AppConfig, patch: Partial<AppConfig>): AppConfig {
+  const collaboration = patch.collaborationDefaults;
   return normalizeConfig({
     ...base,
     ...patch,
     proxy: { ...base.proxy, ...(patch.proxy ?? {}) },
     sidebar: { ...base.sidebar, ...(patch.sidebar ?? {}) },
     appearance: { ...base.appearance, ...(patch.appearance ?? {}) },
+    collaborationDefaults: collaboration
+      ? {
+          ...base.collaborationDefaults,
+          ...collaboration,
+          assignment: {
+            ...base.collaborationDefaults.assignment,
+            ...(collaboration.assignment ?? {}),
+            routing: {
+              ...base.collaborationDefaults.assignment.routing,
+              ...(collaboration.assignment?.routing ?? {}),
+            },
+          },
+          discussion: {
+            ...base.collaborationDefaults.discussion,
+            ...(collaboration.discussion ?? {}),
+          },
+          planConfirmation: {
+            ...base.collaborationDefaults.planConfirmation,
+            ...(collaboration.planConfirmation ?? {}),
+          },
+        }
+      : base.collaborationDefaults,
   });
 }

@@ -21,6 +21,12 @@ describe("agent runtime capability handshake", () => {
         hardDenials: ["outside.write", "secret.read"],
         freshHumanRisks: ["destructive"],
       },
+      collaboration: {
+        supportedStrategies: ["single", "team"],
+        discussion: true,
+        routing: false,
+        planConfirmation: ["user"],
+      },
     });
   });
 });
