@@ -3,10 +3,16 @@ import { isToolApprovalMode, type ConversationMode, type RoomCollaborationSettin
 import type { SessionStore } from "../store/session-store";
 import type { EventStore } from "../store/event-store";
 import type { UsageCollector } from "../services/usage-collector";
+import type { WorkspaceManager } from "../workspace/manager";
 
 const MODES = new Set<ConversationMode>(["chat", "single_agent", "multi_agent"]);
 
-export function sessionRoutes(sessions: SessionStore, events: EventStore, usage?: UsageCollector): Hono {
+export function sessionRoutes(
+  sessions: SessionStore,
+  events: EventStore,
+  usage?: UsageCollector,
+  workspaces?: WorkspaceManager,
+): Hono {
   const app = new Hono();
   app.get("/", (c) => c.json(sessions.list()));
   app.post("/", async (c) => {
@@ -14,17 +20,37 @@ export function sessionRoutes(sessions: SessionStore, events: EventStore, usage?
     if (!body || typeof body.title !== "string" || typeof body.mode !== "string" || !MODES.has(body.mode as ConversationMode) || !Array.isArray(body.agents) || typeof body.primaryAgentId !== "string") {
       return c.json({ error: "invalid_session_input" }, 400);
     }
+    const workspaceSelection = body.workspaceSelection && typeof body.workspaceSelection === "object"
+      ? body.workspaceSelection as Record<string, unknown>
+      : null;
+    if (!workspaceSelection) {
+      return c.json({ error: "workspace_selection_required" }, 400);
+    }
+    const sessionId = crypto.randomUUID();
+    let managedWorkspaceCreated = false;
     try {
+      let workspaceId: string;
+      if (workspaceSelection?.kind === "managed") {
+        if (!workspaces) throw new Error("managed_workspace_unavailable");
+        workspaceId = workspaces.createManaged(sessionId, body.title).id;
+        managedWorkspaceCreated = true;
+      } else if (workspaceSelection?.kind === "existing") {
+        if (typeof workspaceSelection.workspaceId !== "string") throw new Error("workspace_required");
+        workspaceId = workspaceSelection.workspaceId;
+      } else {
+        throw new Error("invalid_workspace_selection");
+      }
       return c.json(sessions.create({
+        id: sessionId,
         title: body.title,
         mode: body.mode as ConversationMode,
-        // kind 缺省时由 store 从 mode 推导；chat 的 workspaceId 也在 store 里强制置空
-        kind: body.kind === "chat" || body.kind === "cowork" ? body.kind : undefined,
-        workspaceId: typeof body.workspaceId === "string" ? body.workspaceId : null,
+        kind: "cowork",
+        workspaceId,
         primaryAgentId: body.primaryAgentId,
         agents: body.agents as Array<{ agentId: string; snapshot: Record<string, unknown>; executionEligible: boolean }>,
       }), 201);
     } catch (error) {
+      if (managedWorkspaceCreated) workspaces?.discardManaged(sessionId);
       return c.json({ error: error instanceof Error ? error.message : "session_create_failed" }, 400);
     }
   });
@@ -114,7 +140,30 @@ export function sessionRoutes(sessions: SessionStore, events: EventStore, usage?
   });
   app.delete("/:id", (c) => {
     try {
-      sessions.remove(c.req.param("id"));
+      const sessionId = c.req.param("id");
+      const session = sessions.get(sessionId);
+      if (!session) throw new Error("session_not_found");
+      const workspace = session.workspaceId ? workspaces?.get(session.workspaceId) : null;
+      const owned = workspace?.ownership === "managed" && workspace.ownerSessionId === sessionId;
+      const workspaceFiles = c.req.query("workspaceFiles");
+      if (owned && workspaceFiles !== "keep" && workspaceFiles !== "delete") {
+        throw new Error("managed_workspace_retention_required");
+      }
+      if (owned && workspaceFiles === "delete") {
+        const staged = workspaces!.stageManagedDeletion(workspace.id, sessionId);
+        try {
+          sessions.remove(sessionId, staged.forgetRecord);
+        } catch (error) {
+          staged.rollback();
+          throw error;
+        }
+        staged.finalize();
+      } else {
+        sessions.remove(
+          sessionId,
+          owned ? () => { workspaces!.releaseManaged(workspace.id, sessionId); } : undefined,
+        );
+      }
       return c.json({ ok: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : "session_delete_failed";

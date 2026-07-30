@@ -173,7 +173,7 @@ app.route("/providers", providerRoutes(db, secrets, proxiedFetch));
 app.route("/agents", agentRoutes(db));
 app.route("/rooms", roomRoutes(db, secrets, gateway, usage));
 app.route("/workspaces", workspaceRoutes(workspaces));
-app.route("/sessions", sessionRoutes(sessions, events, usage));
+app.route("/sessions", sessionRoutes(sessions, events, usage, workspaces));
 app.route("/agent", agentRunRoutes(agentRuns, approvals));
 app.route("/content", contentRoutes(db, workspaces, attachments));
 app.route("/mcp", mcpRoutes(mcpStore, mcp));

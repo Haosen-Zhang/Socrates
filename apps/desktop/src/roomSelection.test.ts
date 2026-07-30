@@ -1,56 +1,56 @@
 import { describe, expect, it } from "bun:test";
-import { roomCreatePayload, roomDraftBlocker, toggleRoomAgentSelection } from "./roomSelection";
+import {
+  isOwnedManagedWorkspace,
+  roomCreatePayload,
+  roomDraftBlocker,
+  toggleRoomAgentSelection,
+} from "./roomSelection";
 
 const draft = (over: Partial<Parameters<typeof roomDraftBlocker>[0]> = {}) => ({
-  kind: "chat" as const,
   title: "t",
   agentIds: ["a"],
-  primaryAgentId: null,
-  workspaceId: null,
+  primaryAgentId: "a",
+  workspaceSelection: { kind: "managed" as const },
   ...over,
 });
 
 describe("room draft", () => {
-  it("both kinds accept 1..N members", () => {
+  it("accepts 1..N members for one unified working-room shape", () => {
     expect(roomDraftBlocker(draft({ agentIds: ["a", "b", "c"] }))).toBeNull();
-    expect(roomDraftBlocker(draft({ kind: "cowork", agentIds: ["a"], primaryAgentId: "a", workspaceId: "w" }))).toBeNull();
-    expect(roomDraftBlocker(draft({ kind: "cowork", agentIds: ["a", "b"], primaryAgentId: "b", workspaceId: "w" }))).toBeNull();
+    expect(roomDraftBlocker(draft({
+      agentIds: ["a", "b"],
+      primaryAgentId: "b",
+      workspaceSelection: { kind: "existing", workspaceId: "w" },
+    }))).toBeNull();
   });
 
-  it("blocks an empty room and a workspace-less co-work room", () => {
+  it("blocks an empty room, an invalid primary Agent, and a missing existing workspace", () => {
     expect(roomDraftBlocker(draft({ agentIds: [] }))).toBe("room_requires_member");
-    expect(roomDraftBlocker(draft({ kind: "cowork", primaryAgentId: "a", workspaceId: null }))).toBe("cowork_room_requires_workspace");
-    expect(roomDraftBlocker(draft({ kind: "cowork", primaryAgentId: null, workspaceId: "w" }))).toBe("cowork_room_requires_primary_agent");
-  });
-
-  it("chat never needs a workspace", () => {
-    expect(roomDraftBlocker(draft({ workspaceId: null }))).toBeNull();
+    expect(roomDraftBlocker(draft({ primaryAgentId: null }))).toBe("room_requires_primary_agent");
+    expect(roomDraftBlocker(draft({
+      workspaceSelection: { kind: "existing", workspaceId: null },
+    }))).toBe("room_requires_workspace");
   });
 });
 
 describe("create payload", () => {
-  it("sends workspaceId: null explicitly for chat, even if one was picked", () => {
-    const payload = roomCreatePayload(draft({ workspaceId: "w" }));
-    expect(payload.workspaceId).toBeNull();
-    expect("workspaceId" in payload).toBeTrue();
-    expect(payload.mode).toBe("chat");
+  it("derives runtime mode from member count without exposing a room type", () => {
+    expect(roomCreatePayload(draft()).mode).toBe("single_agent");
+    expect(roomCreatePayload(draft({ agentIds: ["a", "b"], primaryAgentId: "b" })).mode).toBe("multi_agent");
+    expect(roomCreatePayload(draft()).kind).toBe("cowork");
   });
 
-  it("derives co-work runtime mode from member count", () => {
-    expect(roomCreatePayload(draft({ kind: "cowork", agentIds: ["a"], primaryAgentId: "a", workspaceId: "w" })).mode).toBe("single_agent");
-    expect(roomCreatePayload(draft({ kind: "cowork", agentIds: ["a", "b"], primaryAgentId: "b", workspaceId: "w" })).mode).toBe("multi_agent");
+  it("keeps the explicit managed or existing workspace choice", () => {
+    expect(roomCreatePayload(draft()).workspaceSelection).toEqual({ kind: "managed" });
+    expect(roomCreatePayload(draft({
+      workspaceSelection: { kind: "existing", workspaceId: "w2" },
+    })).workspaceSelection).toEqual({ kind: "existing", workspaceId: "w2" });
   });
 
-  it("keeps the explicitly chosen co-work workspace", () => {
-    expect(roomCreatePayload(draft({ kind: "cowork", primaryAgentId: "a", workspaceId: "w2" })).workspaceId).toBe("w2");
-  });
-
-  it("keeps the explicit primary Agent independent of member order", () => {
+  it("persists the explicit primary Agent independent of member order", () => {
     const payload = roomCreatePayload(draft({
-      kind: "cowork",
       agentIds: ["second", "primary"],
       primaryAgentId: "primary",
-      workspaceId: "w",
     }));
     expect(payload.primaryAgentId).toBe("primary");
   });
@@ -60,5 +60,26 @@ describe("member toggle", () => {
   it("adds then removes", () => {
     expect(toggleRoomAgentSelection(["a"], "b")).toEqual(["a", "b"]);
     expect(toggleRoomAgentSelection(["a", "b"], "a")).toEqual(["b"]);
+  });
+});
+
+describe("managed workspace ownership", () => {
+  const workspace = {
+    id: "w",
+    canonicalPath: "/w",
+    displayPath: "/w",
+    identityHash: "hash",
+    label: "w",
+    ownership: "managed" as const,
+    ownerSessionId: "room",
+    archived: false,
+    createdAt: "now",
+    lastOpenedAt: "now",
+  };
+  it("requires both managed ownership and the matching room", () => {
+    expect(isOwnedManagedWorkspace(workspace, "room")).toBe(true);
+    expect(isOwnedManagedWorkspace(workspace, "other")).toBe(false);
+    expect(isOwnedManagedWorkspace({ ...workspace, ownership: "external", ownerSessionId: null }, "room"))
+      .toBe(false);
   });
 });

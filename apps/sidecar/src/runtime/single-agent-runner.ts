@@ -31,6 +31,8 @@ type WorkspaceRow = {
   display_path: string;
   identity_hash: string;
   label: string;
+  ownership: WorkspaceRecord["ownership"];
+  owner_session_id: string | null;
   archived: number;
   created_at: string;
   last_opened_at: string;
@@ -256,6 +258,8 @@ export class SingleAgentRunner {
         displayPath: row.display_path,
         identityHash: row.identity_hash,
         label: row.label,
+        ownership: row.ownership,
+        ownerSessionId: row.owner_session_id,
         archived: row.archived === 1,
         createdAt: row.created_at,
         lastOpenedAt: row.last_opened_at,
@@ -393,7 +397,11 @@ export class SingleAgentRunner {
       const configuredWindow = capabilities.contextWindowTokens ?? snapshot.contextWindowTokens;
       contextWindowTokens = typeof configuredWindow === "number" && Number.isFinite(configuredWindow)
         ? Math.min(4_000_000, Math.max(1_024, Math.floor(configuredWindow)))
-        : 4_096;
+        // "unknown" is not evidence for a 4K limit. The native tool catalog
+        // itself is now larger than that legacy fallback, which prevented even
+        // a one-word prompt from reaching the Provider. Known limits still take
+        // the exact guarded path above.
+        : 32_768;
       outputReserveTokens = Math.min(
         4_096,
         Math.max(256, Math.floor(contextWindowTokens * 0.2)),

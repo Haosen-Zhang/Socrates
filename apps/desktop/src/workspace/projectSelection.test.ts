@@ -8,6 +8,8 @@ const workspace = (id: string): WorkspaceRecord => ({
   displayPath: `/${id}`,
   identityHash: id,
   label: id,
+  ownership: "external",
+  ownerSessionId: null,
   archived: false,
   createdAt: "2026-01-01T00:00:00.000Z",
   lastOpenedAt: "2026-01-01T00:00:00.000Z",

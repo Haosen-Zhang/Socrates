@@ -10,5 +10,6 @@ import { roomKindMigration } from "./009_room_kind";
 import { phase1RuntimeMigration } from "./010_phase1_runtime";
 import { conversationMemoryMigration } from "./011_conversation_memory";
 import { roomApprovalPolicyMigration } from "./012_room_approval_policy";
+import { managedWorkspacesMigration } from "./013_managed_workspaces";
 
-export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration, usageAndRecoveryMigration, projectConversationOrganizationMigration, roomKindMigration, phase1RuntimeMigration, conversationMemoryMigration, roomApprovalPolicyMigration] as const;
+export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration, usageAndRecoveryMigration, projectConversationOrganizationMigration, roomKindMigration, phase1RuntimeMigration, conversationMemoryMigration, roomApprovalPolicyMigration, managedWorkspacesMigration] as const;

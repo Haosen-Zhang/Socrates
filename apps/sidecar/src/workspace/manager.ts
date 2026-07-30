@@ -1,7 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { realpathSync, statSync } from "node:fs";
-import { basename } from "node:path";
+import { existsSync, mkdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
 import type { WorkspaceRecord } from "@socrates/core";
 
 type WorkspaceRow = {
@@ -10,6 +11,8 @@ type WorkspaceRow = {
   display_path: string;
   identity_hash: string;
   label: string;
+  ownership: "external" | "managed";
+  owner_session_id: string | null;
   archived: number;
   created_at: string;
   last_opened_at: string;
@@ -22,6 +25,8 @@ function toRecord(row: WorkspaceRow): WorkspaceRecord {
     displayPath: row.display_path,
     identityHash: row.identity_hash,
     label: row.label,
+    ownership: row.ownership,
+    ownerSessionId: row.owner_session_id,
     archived: row.archived === 1,
     createdAt: row.created_at,
     lastOpenedAt: row.last_opened_at,
@@ -29,7 +34,10 @@ function toRecord(row: WorkspaceRow): WorkspaceRecord {
 }
 
 export class WorkspaceManager {
-  constructor(private readonly db: Database) {}
+  constructor(
+    private readonly db: Database,
+    private readonly managedRoot = join(homedir(), "Documents", "Socrates", "Workspaces"),
+  ) {}
 
   select(displayPath: string): WorkspaceRecord {
     let canonicalPath: string;
@@ -48,10 +56,116 @@ export class WorkspaceManager {
     }
     const id = crypto.randomUUID();
     this.db.query(`
-      INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, archived, created_at, last_opened_at)
-      VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+      INSERT INTO workspaces
+        (id, canonical_path, display_path, identity_hash, label, ownership,
+         owner_session_id, archived, created_at, last_opened_at)
+      VALUES (?, ?, ?, ?, ?, 'external', NULL, 0, ?, ?)
     `).run(id, canonicalPath, displayPath, identityHash, basename(canonicalPath) || canonicalPath, now, now);
     return toRecord(this.db.query<WorkspaceRow, [string]>("SELECT * FROM workspaces WHERE id = ?").get(id)!);
+  }
+
+  createManaged(ownerSessionId: string, label: string): WorkspaceRecord {
+    if (!/^[A-Za-z0-9_-]+$/u.test(ownerSessionId)) throw new Error("managed_workspace_owner_invalid");
+    const existing = this.db.query<WorkspaceRow, [string]>(
+      "SELECT * FROM workspaces WHERE owner_session_id = ?",
+    ).get(ownerSessionId);
+    if (existing) return toRecord(existing);
+
+    mkdirSync(this.managedRoot, { recursive: true });
+    const displayPath = join(this.managedRoot, ownerSessionId);
+    mkdirSync(displayPath, { recursive: false });
+    const canonicalPath = realpathSync(displayPath).normalize("NFC");
+    const identityHash = createHash("sha256").update(canonicalPath).digest("hex");
+    const now = new Date().toISOString();
+    const id = crypto.randomUUID();
+    try {
+      this.db.query(`
+        INSERT INTO workspaces
+          (id, canonical_path, display_path, identity_hash, label, ownership,
+           owner_session_id, archived, created_at, last_opened_at)
+        VALUES (?, ?, ?, ?, ?, 'managed', ?, 0, ?, ?)
+      `).run(
+        id,
+        canonicalPath,
+        canonicalPath,
+        identityHash,
+        label.trim() || "Untitled",
+        ownerSessionId,
+        now,
+        now,
+      );
+    } catch (error) {
+      try {
+        rmdirSync(canonicalPath);
+      } catch {
+        // Never recursively clean up a path whose contents changed unexpectedly.
+      }
+      throw error;
+    }
+    return this.get(id)!;
+  }
+
+  discardManaged(ownerSessionId: string): void {
+    const workspace = this.db.query<WorkspaceRow, [string]>(
+      "SELECT * FROM workspaces WHERE owner_session_id = ? AND ownership = 'managed'",
+    ).get(ownerSessionId);
+    if (!workspace) return;
+    this.db.query("DELETE FROM workspaces WHERE id = ?").run(workspace.id);
+    try {
+      rmdirSync(workspace.canonical_path);
+    } catch {
+      // A failed creation cleanup must never recursively delete unexpected data.
+    }
+  }
+
+  releaseManaged(workspaceId: string, ownerSessionId: string): WorkspaceRecord {
+    const workspace = this.db.query<WorkspaceRow, [string, string]>(
+      "SELECT * FROM workspaces WHERE id = ? AND ownership = 'managed' AND owner_session_id = ?",
+    ).get(workspaceId, ownerSessionId);
+    if (!workspace) throw new Error("managed_workspace_owner_mismatch");
+    this.db.query(
+      "UPDATE workspaces SET ownership = 'external', owner_session_id = NULL WHERE id = ?",
+    ).run(workspaceId);
+    return this.get(workspaceId)!;
+  }
+
+  stageManagedDeletion(workspaceId: string, ownerSessionId: string): {
+    forgetRecord: () => void;
+    rollback: () => void;
+    finalize: () => boolean;
+  } {
+    const workspace = this.db.query<WorkspaceRow, [string, string]>(
+      "SELECT * FROM workspaces WHERE id = ? AND ownership = 'managed' AND owner_session_id = ?",
+    ).get(workspaceId, ownerSessionId);
+    if (!workspace) throw new Error("managed_workspace_owner_mismatch");
+    const root = realpathSync(this.managedRoot).normalize("NFC");
+    const expected = join(root, ownerSessionId).normalize("NFC");
+    if (workspace.canonical_path !== expected) throw new Error("managed_workspace_path_mismatch");
+    const staged = join(root, `.delete-${ownerSessionId}-${crypto.randomUUID()}`);
+    renameSync(workspace.canonical_path, staged);
+    return {
+      forgetRecord: () => {
+        const changes = this.db.query(
+          "DELETE FROM workspaces WHERE id = ? AND ownership = 'managed' AND owner_session_id = ?",
+        ).run(workspaceId, ownerSessionId).changes;
+        if (changes !== 1) throw new Error("managed_workspace_owner_mismatch");
+      },
+      rollback: () => {
+        if (existsSync(staged) && !existsSync(workspace.canonical_path)) {
+          renameSync(staged, workspace.canonical_path);
+        }
+      },
+      finalize: () => {
+        try {
+          rmSync(staged, { recursive: true, force: true });
+          return true;
+        } catch {
+          // The room deletion is already committed. Keep the isolated tombstone
+          // recoverable instead of reporting a false whole-operation failure.
+          return false;
+        }
+      },
+    };
   }
 
   get(id: string): WorkspaceRecord | null {

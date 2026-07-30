@@ -151,7 +151,7 @@ export type Store = {
   updateCollaboration: (id: string, collaboration: RoomCollaborationSettings) => Promise<void>;
   updateApprovalPolicy: (id: string, mode: ToolApprovalMode) => Promise<void>;
   archiveSession: (id: string, archived: boolean) => Promise<void>;
-  removeSession: (id: string) => Promise<void>;
+  removeSession: (id: string, workspaceFiles?: "keep" | "delete") => Promise<void>;
   rewindSessionTo: (messageId: string) => Promise<void>;
   sendAgentPrompt: (prompt: string) => Promise<boolean>;
   decideAgentApproval: (requestId: string, decision: ApprovalDecision) => Promise<void>;
@@ -553,9 +553,10 @@ export const useStore = create<Store>((set, get) => {
         set({ currentSessionId: null, sessionMessages: [], agentEvents: [], agentStreamText: "", pendingApprovals: [] });
       }
     },
-    removeSession: async (id) => {
-      await requireOk(await sidecarFetch(hs(), `/sessions/${id}`, { method: "DELETE" }));
-      await get().loadSessions();
+    removeSession: async (id, workspaceFiles) => {
+      const query = workspaceFiles ? `?workspaceFiles=${workspaceFiles}` : "";
+      await requireOk(await sidecarFetch(hs(), `/sessions/${id}${query}`, { method: "DELETE" }));
+      await Promise.all([get().loadSessions(), get().loadWorkspaces()]);
       if (get().currentSessionId === id) {
         set({ currentSessionId: null, sessionMessages: [], agentEvents: [], agentStreamText: "", pendingApprovals: [], multiTasks: [], currentMultiTask: null });
       }
@@ -997,16 +998,6 @@ export const useStore = create<Store>((set, get) => {
       if (blocker) throw new Error(blocker);
       const payload = roomCreatePayload(draft);
       const title = draft.title;
-      if (payload.kind === "chat") {
-        // Chat 走 rooms；workspaceId 显式为 null，不再继承 activeWorkspace
-        const room = await requireOk<Room>(await sidecarFetch(hs(), "/rooms", {
-          method: "POST",
-          body: JSON.stringify({ name: title, agentIds: payload.agentIds, workspaceId: null }),
-        }));
-        await get().loadRooms();
-        await get().selectRoom(room.id);
-        return;
-      }
       const agents = payload.agentIds.map((id) => get().agents.find((item) => item.id === id));
       if (agents.some((agent) => !agent)) throw new Error("unknown_agent");
       const session = await requireOk<ConversationSession>(await sidecarFetch(hs(), "/sessions", {
@@ -1015,12 +1006,12 @@ export const useStore = create<Store>((set, get) => {
           title,
           kind: payload.kind,
           mode: payload.mode,
-          workspaceId: payload.workspaceId,
+          workspaceSelection: payload.workspaceSelection,
           primaryAgentId: payload.primaryAgentId,
           agents: agents.map((agent) => ({ agentId: agent!.id, snapshot: agent, executionEligible: true })),
         }),
       }));
-      await get().loadSessions();
+      await Promise.all([get().loadSessions(), get().loadWorkspaces()]);
       await get().selectAgentSession(session.id);
     },
     renameRoom: async (id, name) => {

@@ -4,6 +4,8 @@ export interface WorkspaceRecord {
   displayPath: string;
   identityHash: string;
   label: string;
+  ownership: "external" | "managed";
+  ownerSessionId: string | null;
   archived: boolean;
   createdAt: string;
   lastOpenedAt: string;
