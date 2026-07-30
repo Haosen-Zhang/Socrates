@@ -1,3 +1,9 @@
+import type {
+  ConversationTurnStatus,
+  StoredMessageKind,
+  StoredMessageRole,
+} from "./conversation-memory";
+
 export type ConversationMode = "chat" | "single_agent" | "multi_agent";
 
 export type AgentRunPhase =
@@ -45,9 +51,14 @@ export interface ConversationSession {
 export interface SessionMessage {
   id: string;
   sessionId: string;
-  role: "user" | "assistant" | "system";
+  role: StoredMessageRole;
   authorId: string | null;
+  kind: StoredMessageKind;
   content: string;
+  sequence: number;
+  runId: string | null;
+  turnId: string | null;
+  turnStatus: ConversationTurnStatus | null;
   status: string;
   createdAt: string;
   parts: import("./message-parts").MessagePart[];

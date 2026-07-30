@@ -24,6 +24,7 @@ import {
   type McpServerRecord,
   type ReasoningEffort,
   type NormalizedUsage,
+  type ToolRisk,
 } from "@socrates/core";
 import { relativeWorkspacePath } from "./workspace/workspacePath";
 import { resolveActiveWorkspace } from "./workspace/projectSelection";
@@ -70,9 +71,9 @@ export type PendingApproval = {
   id: string;
   kind: string;
   subjectId: string;
-  risk: string;
+  risk: ToolRisk;
   freshHumanRequired: boolean;
-  status: string;
+  status: "pending" | "allowed" | "denied" | "expired";
 };
 export type UsageSummaryView = { agentId: string | null; current: NormalizedUsage; cumulative: NormalizedUsage; records: number };
 export type WorkspacePathResult = { relativePath: string; kind: "file" | "directory" };
@@ -564,7 +565,12 @@ export const useStore = create<Store>((set, get) => {
         sessionId,
         role: "user",
         authorId: null,
+        kind: "text",
         content: prompt,
+        sequence: Number.MAX_SAFE_INTEGER,
+        runId: null,
+        turnId: null,
+        turnStatus: null,
         status: "sending",
         createdAt: new Date().toISOString(),
         parts: [],
