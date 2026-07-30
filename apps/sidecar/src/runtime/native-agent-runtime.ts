@@ -23,6 +23,19 @@ type NativeTool = {
   execute: (input: unknown, callId: string, permission: PermissionEvaluation, signal?: AbortSignal) => Promise<unknown>;
 };
 
+export function estimateNativeContextOverhead(
+  system: string,
+  definitions: readonly ToolDefinition[],
+): number {
+  const payload = definitions.map((definition) => ({
+    name: definition.name,
+    description: definition.description,
+    inputSchema: definition.inputSchema,
+  }));
+  return new TextEncoder().encode(JSON.stringify({ system, tools: payload })).byteLength
+    + payload.length * 64;
+}
+
 type NativeStreamPart =
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; callId: string; name: string; input: unknown }
@@ -331,16 +344,7 @@ export class NativeAgentRuntime implements AgentRuntime {
   }
 
   contextOverheadTokens(): number {
-    const payload = this.availableDefinitions().map((definition) => ({
-      name: definition.name,
-      description: definition.description,
-      inputSchema: definition.inputSchema,
-    }));
-    return new TextEncoder().encode(JSON.stringify({
-      system: this.input.system ?? "",
-      tools: payload,
-    })).byteLength
-      + payload.length * 64;
+    return estimateNativeContextOverhead(this.input.system ?? "", this.availableDefinitions());
   }
 
   async *start(input: {

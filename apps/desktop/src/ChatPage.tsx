@@ -7,11 +7,11 @@ import { DEFAULT_WINDOW_SIZE, expandWindow, windowTail } from "./listWindow";
 import { useTransientFlag } from "./useTransientFlag";
 import { agentLabel, normalizeCollaborationSettings, validateCollaborationSettings, type Agent, type AppMode,
   type ConversationSession, type RoomCollaborationSettings, type WorkspaceRecord,
-  type RoomKind, type ReasoningEffort, type SessionMessage, type StoredMessage, type TaskSummary,
+  type ReasoningEffort, type SessionMessage, type StoredMessage, type TaskSummary,
   type ToolApprovalMode } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
-import { roomDraftBlocker, toggleRoomAgentSelection } from "./roomSelection";
+import { isOwnedManagedWorkspace, roomDraftBlocker, toggleRoomAgentSelection } from "./roomSelection";
 import ModeSegmented from "./sidebar/ModeSegmented";
 import { chatRooms, coworkGroups, searchSidebar, type SidebarRoom } from "./sidebar/sidebarLists";
 import { useT, type MultiPlan, type StreamingTurn } from "./store";
@@ -31,6 +31,7 @@ import {
 import { projectPublicReasoning, projectToolActivities, toolActivityId } from "./tooling/toolActivity";
 import { approvalModeOptions } from "./approvalPolicyUi";
 import { resolveSidebarRevealPath, revealResolvedSidebarTarget } from "./sidebar/revealInFinder";
+import { agentRunErrorKey } from "./agentRunErrorUi";
 
 const DUTY_CLS: Record<string, string> = {
   propose: "bg-blue-100 text-blue-800",
@@ -719,7 +720,6 @@ function SingleAgentSession() {
         </div>
       </header>
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
-        {agentError && <div role="alert" className="border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">{agentError}</div>}
         {sessionWindow.hiddenCount > 0 && (
           <button className="pixel-button mx-auto block px-3 py-1 text-xs" onClick={() => setSessionLimit((limit) => expandWindow(limit, sessionMessages.length))}>
             {t("show_earlier", { n: sessionWindow.hiddenCount })}
@@ -765,6 +765,12 @@ function SingleAgentSession() {
         {agentRunning && streamingText && <div className="pixel-card max-w-[78%] whitespace-pre-wrap bg-white p-3 text-sm">{streamingText}</div>}
       </div>
       <form className="composer-dock" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        {agentError && (
+          <div role="alert" className="pixel-card mb-2 border-red-400 bg-red-50 px-3 py-2 text-xs text-red-800">
+            <div className="font-bold">{t("agent_run_failed")}</div>
+            <div className="mt-1">{t(agentRunErrorKey(agentError))}</div>
+          </div>
+        )}
         <ApprovalShelf
           approvals={pendingApprovals}
           activities={toolActivities}
@@ -960,14 +966,13 @@ function MultiAgentSession() {
 function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; presetWorkspaceId?: string | null }) {
   const { agents, workspaces, createRoomFromDraft } = useStorePick("agents", "workspaces", "createRoomFromDraft");
   const t = useT();
-  // 从某个工作区分组的「＋」进来时，直接锁定为该工作区的 Co-work 房间——不再让用户重选工作区
+  // 从某个工作区分组的「＋」进入时，沿用该 existing workspace。
   const locked = presetWorkspaceId != null && workspaces.some((w) => w.id === presetWorkspaceId && !w.archived);
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [primaryAgentId, setPrimaryAgentId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [kind, setKind] = useState<RoomKind>(locked ? "cowork" : "chat");
-  // Co-work 的工作区必须在这里明确选，不从全局 activeWorkspace 继承
+  const [workspaceKind, setWorkspaceKind] = useState<"managed" | "existing">(locked ? "existing" : "managed");
   const [workspaceId, setWorkspaceId] = useState<string | null>(locked ? presetWorkspaceId! : null);
   const dialog = useAnimatedDialogClose(onClose);
 
@@ -976,7 +981,7 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
     setSelected(next);
     setPrimaryAgentId((current) => {
       if (current && next.includes(current)) return current;
-      return next.length === 1 ? next[0]! : null;
+      return next[0] ?? null;
     });
     setError(null);
   };
@@ -993,11 +998,12 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
     e.preventDefault();
     try {
       await createRoomFromDraft({
-        kind,
         title: roomTitleOrFallback(name, t("room_untitled")),
         agentIds: selected,
         primaryAgentId,
-        workspaceId: kind === "cowork" ? workspaceId : null,
+        workspaceSelection: workspaceKind === "managed"
+          ? { kind: "managed" }
+          : { kind: "existing", workspaceId },
       });
       dialog.close();
     } catch (err) {
@@ -1048,28 +1054,30 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
           />
         </label>
 
-        <div className="mt-5 grid grid-cols-2 gap-2" role="radiogroup" aria-label={t("room_kind")}>
-          {(["chat", "cowork"] as const).map((value) => (
+        <div className="mt-5">
+          <h3 className="mb-2 text-sm font-bold">{t("room_workspace")}</h3>
+          <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label={t("room_workspace")}>
+          {(["managed", "existing"] as const).map((value) => (
             <button
               key={value}
               type="button"
               role="radio"
-              aria-checked={kind === value}
+              aria-checked={workspaceKind === value}
               disabled={locked}
-              className={`pixel-mode-card p-3 text-left ${kind === value ? "is-selected" : ""} ${locked ? "cursor-not-allowed opacity-50" : ""}`}
+              className={`pixel-mode-card p-3 text-left ${workspaceKind === value ? "is-selected" : ""} ${locked ? "cursor-not-allowed opacity-50" : ""}`}
               onClick={() => {
-                setKind(value);
+                setWorkspaceKind(value);
                 setError(null);
               }}
             >
-              <span className="block text-sm font-bold">{t(`room_kind_${value}`)}</span>
-              <span className="mt-1 block text-[11px] text-neutral-500">{t(`room_kind_${value}_desc`)}</span>
+              <span className="block text-sm font-bold">{t(`workspace_choice_${value}`)}</span>
+              <span className="mt-1 block text-[11px] text-neutral-500">{t(`workspace_choice_${value}_desc`)}</span>
             </button>
           ))}
-        </div>
-        {kind === "cowork" && (
+          </div>
+        {workspaceKind === "existing" && (
           <label className="mt-3 block text-sm font-bold">
-            {t("room_workspace")}
+            {t("workspace_choice_existing_select")}
             <select
               className={`pixel-input mt-1 w-full px-3 py-2 text-sm ${locked ? "cursor-not-allowed opacity-70" : ""}`}
               value={workspaceId ?? ""}
@@ -1084,9 +1092,9 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
                 <option key={workspace.id} value={workspace.id}>{workspace.label || workspace.displayPath}</option>
               ))}
             </select>
-            {!workspaceId && <span className="mt-1 block text-xs text-amber-700">{t("workspace_required_hint")}</span>}
           </label>
         )}
+        </div>
 
         <div className="mb-2 mt-5 flex items-center justify-between">
           <h3 className="text-sm font-bold">{t("choose_agents")}</h3>
@@ -1117,26 +1125,6 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
             })}
           </div>
         )}
-        {kind === "cowork" && selected.length > 0 && (
-          <label className="mt-3 block text-sm font-bold">
-            {t("primary_agent")}
-            <select
-              className="pixel-input mt-1 w-full px-3 py-2 text-sm"
-              value={primaryAgentId ?? ""}
-              onChange={(event) => {
-                setPrimaryAgentId(event.target.value || null);
-                setError(null);
-              }}
-            >
-              <option value="">{t("primary_agent_placeholder")}</option>
-              {selected.map((id) => {
-                const agent = agents.find((item) => item.id === id);
-                return agent ? <option key={id} value={id}>{agent.nickname}</option> : null;
-              })}
-            </select>
-          </label>
-        )}
-
         {error && <p className="mt-3 text-sm text-red-700">{error}</p>}
         <footer className="mt-5 flex items-center justify-between gap-4 border-t border-neutral-200 pt-4">
           <div className="flex min-w-0 items-center">
@@ -1154,11 +1142,12 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
               className="pixel-button pixel-button--primary px-5 py-2 text-sm"
               type="submit"
               disabled={roomDraftBlocker({
-                kind,
                 title: name,
                 agentIds: selected,
                 primaryAgentId,
-                workspaceId,
+                workspaceSelection: workspaceKind === "managed"
+                  ? { kind: "managed" }
+                  : { kind: "existing", workspaceId },
               }) !== null}
             >
               {t("create_room")}
@@ -1224,6 +1213,11 @@ function SidebarEntityMenu({
   if (!entity) return null;
   const value = "name" in entity ? entity.name : "title" in entity ? entity.title : entity.label;
   const archived = entity.archived;
+  const managedSessionWorkspace = menu.kind === "session" && "workspaceId" in entity
+    ? workspaces.find((workspace) => (
+      workspace.id === entity.workspaceId && isOwnedManagedWorkspace(workspace, entity.id)
+    ))
+    : null;
   const revealTarget = resolveSidebarRevealPath(menu, sessions, workspaces);
   const item = "block w-full px-3 py-2 text-left text-sm hover:bg-neutral-100";
   const run = async (operation: () => Promise<void>) => {
@@ -1286,23 +1280,37 @@ function SidebarEntityMenu({
       >
         {archived ? t("unarchive") : t("archive")}
       </button>
-      <button
-        className={`${item} ${confirming ? "font-medium text-red-700" : "text-red-600"}`}
-        onClick={() => {
-          if (!confirming) {
-            setConfirming(true);
-            return;
-          }
-          sfx.delete();
-          void run(() => menu.kind === "room"
-            ? removeRoom(menu.id)
-            : menu.kind === "session"
-              ? removeSession(menu.id)
-              : removeWorkspace(menu.id));
-        }}
-      >
-        {confirming ? t("confirm_delete") : menu.kind === "workspace" ? t("remove_from_socrates") : t("delete")}
-      </button>
+      {confirming && managedSessionWorkspace ? (
+        <>
+          <div className="px-3 py-2 text-xs text-neutral-600">{t("managed_workspace_delete_prompt")}</div>
+          <button className={`${item} text-red-700`} onClick={() => {
+            sfx.delete();
+            void run(() => removeSession(menu.id, "keep"));
+          }}>{t("delete_room_keep_files")}</button>
+          <button className={`${item} font-medium text-red-700`} onClick={() => {
+            sfx.delete();
+            void run(() => removeSession(menu.id, "delete"));
+          }}>{t("delete_room_and_files")}</button>
+        </>
+      ) : (
+        <button
+          className={`${item} ${confirming ? "font-medium text-red-700" : "text-red-600"}`}
+          onClick={() => {
+            if (!confirming) {
+              setConfirming(true);
+              return;
+            }
+            sfx.delete();
+            void run(() => menu.kind === "room"
+              ? removeRoom(menu.id)
+              : menu.kind === "session"
+                ? removeSession(menu.id)
+                : removeWorkspace(menu.id));
+          }}
+        >
+          {confirming ? t("confirm_delete") : menu.kind === "workspace" ? t("remove_from_socrates") : t("delete")}
+        </button>
+      )}
     </div>
   );
 }

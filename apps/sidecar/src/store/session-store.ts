@@ -314,7 +314,7 @@ export class SessionStore {
     return this.get(sessionId)!;
   }
 
-  remove(sessionId: string): void {
+  remove(sessionId: string, withinTransaction?: () => void): void {
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
     if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) throw new Error("active_session_delete_locked");
@@ -330,6 +330,7 @@ export class SessionStore {
       this.db.query("DELETE FROM session_messages WHERE session_id = ?").run(sessionId);
       this.db.query("DELETE FROM session_agents WHERE session_id = ?").run(sessionId);
       this.db.query("DELETE FROM sessions WHERE id = ?").run(sessionId);
+      withinTransaction?.();
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");

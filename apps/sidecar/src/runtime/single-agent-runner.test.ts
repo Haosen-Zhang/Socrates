@@ -15,8 +15,12 @@ import { SessionStore } from "../store/session-store";
 import { ConversationMemoryStore } from "../store/conversation-memory-store";
 import { RuntimeManager } from "./runtime-manager";
 import { SingleAgentRunner } from "./single-agent-runner";
+import { estimateNativeContextOverhead } from "./native-agent-runtime";
 import { AttachmentResolver } from "../attachments/resolver";
 import { tmpdir } from "node:os";
+import { WorkspacePathPolicy } from "../workspace/path-policy";
+import { createReadOnlyBuiltins } from "../tools/read-only-builtins";
+import { createWorkspaceWriteBuiltins } from "../tools/workspace-write-builtins";
 
 class ApprovalRuntime implements AgentRuntime {
   readonly kind = "fake";
@@ -68,7 +72,9 @@ class RecordingRuntime implements AgentRuntime {
     private readonly seen: RuntimeConversationMessage[][],
     private readonly response: string,
     private readonly withTool = false,
+    private readonly overheadTokens = 0,
   ) {}
+  contextOverheadTokens(): number { return this.overheadTokens; }
   async open() {}
   async *start(input: { messages?: RuntimeConversationMessage[] }): AsyncIterable<RuntimeEvent> {
     this.seen.push(input.messages ?? []);
@@ -146,6 +152,8 @@ function setupRecording(
     withTool?: boolean;
     seen?: RuntimeConversationMessage[][];
     attachmentRoot?: string;
+    contextOverheadTokens?: number;
+    unknownContextWindow?: boolean;
   } = {},
 ) {
   const db = openDb(options.dbPath ?? ":memory:");
@@ -160,7 +168,10 @@ function setupRecording(
     primaryAgentId: "a",
     agents: [{
       agentId: "a",
-      snapshot: { nickname: "A", modelCapabilities: { contextWindowTokens: 32_768 } },
+      snapshot: {
+        nickname: "A",
+        modelCapabilities: options.unknownContextWindow ? {} : { contextWindowTokens: 32_768 },
+      },
       executionEligible: true,
     }],
   });
@@ -172,6 +183,7 @@ function setupRecording(
     seen,
     options.response ?? `answer-${seen.length + 1}`,
     options.withTool ?? false,
+    options.contextOverheadTokens ?? 0,
   ));
   const attachmentRoot = options.attachmentRoot
     ?? `${tmpdir()}/socrates-runner-attachments-${crypto.randomUUID()}`;
@@ -209,6 +221,50 @@ function setContextWindow(db: ReturnType<typeof openDb>, sessionId: string, toke
 }
 
 describe("SingleAgentRunner", () => {
+  it("samples an unknown-window model with the complete registered native tool set", async () => {
+    const root = `${tmpdir()}/socrates-context-tools-${crypto.randomUUID()}`;
+    mkdirSync(root, { recursive: true });
+    try {
+      const policy = new WorkspacePathPolicy(root);
+      const definitions = [
+        ...createReadOnlyBuiltins(policy),
+        ...createWorkspaceWriteBuiltins(policy),
+      ];
+      const overhead = estimateNativeContextOverhead("", definitions);
+      expect(overhead).toBeGreaterThan(4_096);
+      const { session, seen, runner } = setupRecording({
+        unknownContextWindow: true,
+        contextOverheadTokens: overhead,
+      });
+
+      expect((await runner.run({
+        sessionId: session.id,
+        runtimeKind: "recording",
+        clientTurnKey: "unknown-window-tools",
+        prompt: "hello",
+      })).status).toBe("completed");
+      expect(seen).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("continues to enforce a known context-window limit", async () => {
+    const { db, session, seen, runner } = setupRecording({ contextOverheadTokens: 5_061 });
+    setContextWindow(db, session.id, 4_096);
+
+    expect(await runner.run({
+      sessionId: session.id,
+      runtimeKind: "recording",
+      clientTurnKey: "known-small-window",
+      prompt: "hello",
+    })).toMatchObject({
+      status: "failed",
+      error: "context_current_unit_exceeds_budget",
+    });
+    expect(seen).toHaveLength(0);
+  });
+
   it("reloads the complete same-Thread transcript for the second Turn", async () => {
     const { db, session, seen, runner } = setupRecording();
     expect((await runner.run({
