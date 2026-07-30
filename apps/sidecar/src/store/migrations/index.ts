@@ -9,5 +9,6 @@ import { projectConversationOrganizationMigration } from "./008_project_conversa
 import { roomKindMigration } from "./009_room_kind";
 import { phase1RuntimeMigration } from "./010_phase1_runtime";
 import { conversationMemoryMigration } from "./011_conversation_memory";
+import { roomApprovalPolicyMigration } from "./012_room_approval_policy";
 
-export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration, usageAndRecoveryMigration, projectConversationOrganizationMigration, roomKindMigration, phase1RuntimeMigration, conversationMemoryMigration] as const;
+export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration, usageAndRecoveryMigration, projectConversationOrganizationMigration, roomKindMigration, phase1RuntimeMigration, conversationMemoryMigration, roomApprovalPolicyMigration] as const;

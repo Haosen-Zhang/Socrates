@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { HANDSHAKE_PROTOCOL, serializeHandshake } from "@socrates/core";
+import { evaluatePermission, HANDSHAKE_PROTOCOL, serializeHandshake } from "@socrates/core";
 import { defaultDataDir, defaultDbPath, openDb } from "./db";
 import { KeychainSecrets } from "./secrets";
 import { providerRoutes } from "./providers";
@@ -27,7 +27,7 @@ import { createReadOnlyBuiltins } from "./tools/read-only-builtins";
 import { createWorkspaceWriteBuiltins } from "./tools/workspace-write-builtins";
 import { ToolRegistry } from "./tools/registry";
 import { ToolExecutor } from "./tools/executor";
-import type { ProviderType, ToolCapability } from "@socrates/core";
+import type { PermissionAction, ProviderType, ToolCapability, ToolDefinition } from "@socrates/core";
 import { McpStore } from "./mcp/store";
 import { McpManager } from "./mcp/manager";
 import { OfficialMcpClientAdapter } from "./mcp/adapter";
@@ -96,8 +96,7 @@ runtimes.register("native_ai_sdk", (input) => {
   if (!apiKey) throw new Error("native_provider_key_missing");
   const policy = new WorkspacePathPolicy(workspace.canonicalPath);
   const mcpDefinitions = mcp.definitionsFor(workspace.id, { effects: ["allow", "ask"] });
-  const sandboxMode: string = typeof input.runtimeOptions?.sandbox === "string" ? input.runtimeOptions.sandbox : "read-only";
-  const workspaceWriteTools = sandboxMode === "workspace-write" ? createWorkspaceWriteBuiltins(policy) : [];
+  const workspaceWriteTools = createWorkspaceWriteBuiltins(policy);
   const registry = new ToolRegistry([...createReadOnlyBuiltins(policy), ...workspaceWriteTools, ...mcpDefinitions]);
   const executor = new ToolExecutor(db, registry, approvals);
   const model = createAiSdkModel({
@@ -107,10 +106,15 @@ runtimes.register("native_ai_sdk", (input) => {
     modelId: agent.model_id,
     fetchImpl: proxiedFetch,
   });
-  const writeCapabilities: ToolCapability[] = sandboxMode === "workspace-write" ? ["workspace_read", "workspace_write", "mcp"] : ["workspace_read", "mcp"];
-  const availableDefs = registry.available({ mode: "single_agent", phase: "executing", allowedCapabilities: writeCapabilities as any });
-  const approvalEffect = (def: typeof availableDefs[number]) =>
-    (def.risk === "high" || def.risk === "destructive") ? "ask" : "allow";
+  const allowedCapabilities: ToolCapability[] = ["workspace_read", "workspace_write", "shell", "mcp"];
+  if (!sessions.get(input.sessionId)) throw new Error("native_session_not_found");
+  const actionFor = (definition: ToolDefinition): PermissionAction => {
+    if (definition.name === "run_shell" || definition.capability === "shell") return "shell.execute";
+    if (definition.capability === "workspace_read") return "workspace.read";
+    if (definition.capability === "workspace_write") return "workspace.write";
+    if (definition.capability === "network") return "network.request";
+    return "mcp.invoke";
+  };
 
   return new NativeAgentRuntime({
     sessionId: input.sessionId,
@@ -122,8 +126,22 @@ runtimes.register("native_ai_sdk", (input) => {
     registry,
     executor,
     stream: createAiSdkNativeStream(model),
-    allowedCapabilities: writeCapabilities,
-    permissionForTool: (definition) => approvalEffect(definition) === "ask" ? "ask" : "allow",
+    allowedCapabilities,
+    permissionForTool: (definition) => {
+      const currentSession = sessions.get(input.sessionId);
+      if (!currentSession) throw new Error("native_session_not_found");
+      return evaluatePermission({
+        action: actionFor(definition),
+        resource: definition.name,
+        risk: definition.risk,
+        mode: "single_agent",
+        phase: "executing",
+        capabilityAllowed: allowedCapabilities.includes(definition.capability),
+        policyVersion: currentSession.approvalPolicy.version,
+        approvalMode: currentSession.approvalPolicy.mode,
+        rules: [],
+      });
+    },
   });
 });
 const agentRuns = new SingleAgentRunner(db, runtimes, approvals, events, attachments);

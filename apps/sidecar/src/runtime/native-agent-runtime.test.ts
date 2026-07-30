@@ -10,6 +10,8 @@ import { ToolRegistry } from "../tools/registry";
 import { WorkspacePathPolicy } from "../workspace/path-policy";
 import {
   NativeAgentRuntime,
+  shouldContinueNativeSampling,
+  takeBoundToolPermission,
   toAiSdkModelMessages,
   type NativeStreamFactory,
 } from "./native-agent-runtime";
@@ -18,6 +20,44 @@ const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
 describe("NativeAgentRuntime", () => {
+  it("continues after an auto-approved tool step so the next sample can consume its result", () => {
+    expect(shouldContinueNativeSampling({
+      pendingApprovals: 0,
+      hadToolActivity: true,
+      remainingSteps: 7,
+    })).toBe(true);
+    expect(shouldContinueNativeSampling({
+      pendingApprovals: 0,
+      hadToolActivity: false,
+      remainingSteps: 7,
+    })).toBe(false);
+    expect(shouldContinueNativeSampling({
+      pendingApprovals: 1,
+      hadToolActivity: true,
+      remainingSteps: 0,
+    })).toBe(false);
+  });
+
+  it("keeps a pending call bound to its original policy evidence after the room policy changes", () => {
+    const original = {
+      effect: "ask" as const,
+      risk: "high" as const,
+      matchedRuleIds: [],
+      reasonCode: "approval_mode_ask",
+      freshHumanRequired: false,
+      policyVersion: 4,
+    };
+    const current = {
+      ...original,
+      effect: "allow" as const,
+      reasonCode: "approval_mode_workspace_full",
+      policyVersion: 5,
+    };
+    const captured = new Map([["call", original]]);
+    expect(takeBoundToolPermission(captured, "call", current)).toEqual(original);
+    expect(captured.has("call")).toBe(false);
+  });
+
   it("converts durable text and tool history into an AI SDK model transcript", () => {
     expect(toAiSdkModelMessages([
       {
@@ -168,10 +208,12 @@ describe("NativeAgentRuntime", () => {
       offeredTools = Object.keys(input.tools).sort();
       maxSteps = input.maxSteps;
       receivedPrompt = input.prompt;
-      const search = await input.tools.search_files!.execute({ query: "answer" }, "search-call", input.signal);
+      const searchTool = input.tools.search_files!;
+      const search = await searchTool.execute({ query: "answer" }, "search-call", searchTool.permission(), input.signal);
       yield { type: "tool_call", callId: "search-call", name: "search_files", input: { query: "answer" } };
       yield { type: "tool_result", callId: "search-call", name: "search_files", output: search, isError: false };
-      const read = await input.tools.read_file!.execute({ path: "src/answer.txt" }, "read-call", input.signal);
+      const readTool = input.tools.read_file!;
+      const read = await readTool.execute({ path: "src/answer.txt" }, "read-call", readTool.permission(), input.signal);
       yield { type: "tool_call", callId: "read-call", name: "read_file", input: { path: "src/answer.txt" } };
       yield { type: "tool_result", callId: "read-call", name: "read_file", output: read, isError: false };
       yield { type: "text_delta", text: "The answer is forty two." };
@@ -299,6 +341,8 @@ describe("NativeAgentRuntime", () => {
   it("pauses an ask MCP tool until the exact runtime approval resumes it", async () => {
     const db = openDb(":memory:");
     let executions = 0;
+    let policyEffect: "ask" | "allow" = "ask";
+    let policyVersion = 7;
     const registry = new ToolRegistry([{
       name: "mcp__demo__lookup",
       description: "lookup",
@@ -310,27 +354,51 @@ describe("NativeAgentRuntime", () => {
       execute: async () => ({ value: ++executions }),
     }]);
     const stream: NativeStreamFactory = async function* (input) {
-      const request = { requestId: "approval-1", callId: "call-1", name: "mcp__demo__lookup", input: { query: "answer" } };
+      const nativeTool = input.tools.mcp__demo__lookup!;
+      const request = {
+        requestId: "approval-1",
+        callId: "call-1",
+        name: "mcp__demo__lookup",
+        input: { query: "answer" },
+        permission: nativeTool.permission(),
+      };
       yield { type: "tool_call", callId: request.callId, name: request.name, input: request.input };
       const decision = input.requestApproval(request);
       yield { type: "approval_required", ...request };
       if ((await decision).approved) {
-        const output = await input.tools[request.name]!.execute(request.input, request.callId, input.signal);
+        const output = await nativeTool.execute(request.input, request.callId, request.permission, input.signal);
         yield { type: "tool_result", callId: request.callId, name: request.name, output, isError: false };
       }
+      const nextPermission = nativeTool.permission();
+      yield { type: "text_delta", text: `${nextPermission.effect}:${nextPermission.policyVersion}` };
     };
     const runtime = new NativeAgentRuntime({
       sessionId: "session", taskId: "task", agentId: "agent", workspaceId: "workspace", workspaceIdentity: "hash",
       registry,
       executor: new ToolExecutor(db, registry, new ApprovalManager(db)),
       stream,
-      permissionForTool: () => "ask",
+      permissionForTool: () => ({
+        effect: policyEffect,
+        risk: "medium",
+        matchedRuleIds: [],
+        reasonCode: "test_policy",
+        freshHumanRequired: false,
+        policyVersion,
+      }),
     });
     await runtime.open();
     const iterator = runtime.start({ prompt: "lookup" })[Symbol.asyncIterator]();
     expect((await iterator.next()).value).toEqual({ type: "status", status: "running" });
     expect((await iterator.next()).value).toMatchObject({ type: "tool_call", callId: "call-1" });
-    expect((await iterator.next()).value).toEqual({ type: "approval_required", requestId: "approval-1", callId: "call-1", risk: "medium", kind: "tool" });
+    expect((await iterator.next()).value).toEqual({
+      type: "approval_required",
+      requestId: "approval-1",
+      callId: "call-1",
+      risk: "medium",
+      kind: "tool",
+      policyVersion: 7,
+      freshHumanRequired: false,
+    });
     expect(executions).toBe(0);
     await runtime.answerApproval("approval-1", "allow_once");
     expect((await iterator.next()).value).toMatchObject({
@@ -339,6 +407,67 @@ describe("NativeAgentRuntime", () => {
       name: "mcp__demo__lookup",
     });
     expect(executions).toBe(1);
+    policyEffect = "allow";
+    policyVersion = 8;
+    expect((await iterator.next()).value).toEqual({ type: "text_delta", text: "allow:8" });
     expect((await iterator.next()).value).toEqual({ type: "status", status: "completed" });
+  });
+
+  it("rejects an approved call when its exact input changes before execution", async () => {
+    const db = openDb(":memory:");
+    let executions = 0;
+    const registry = new ToolRegistry([{
+      name: "mutate",
+      description: "mutate",
+      inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false },
+      risk: "high",
+      idempotency: "non_idempotent",
+      capability: "workspace_write",
+      generation: 1,
+      execute: async () => ({ executions: ++executions }),
+    }]);
+    const stream: NativeStreamFactory = async function* (input) {
+      const nativeTool = input.tools.mutate!;
+      const request = {
+        requestId: "approval",
+        callId: "call",
+        name: "mutate",
+        input: { path: "approved.txt" },
+        permission: nativeTool.permission(),
+      };
+      yield { type: "tool_call", callId: request.callId, name: request.name, input: request.input };
+      const decision = input.requestApproval(request);
+      yield { type: "approval_required", ...request };
+      if ((await decision).approved) {
+        await nativeTool.execute({ path: "different.txt" }, request.callId, request.permission, input.signal);
+      }
+    };
+    const runtime = new NativeAgentRuntime({
+      sessionId: "session",
+      taskId: "task",
+      agentId: "agent",
+      workspaceId: "workspace",
+      workspaceIdentity: "hash",
+      registry,
+      executor: new ToolExecutor(db, registry, new ApprovalManager(db)),
+      stream,
+      allowedCapabilities: ["workspace_write"],
+      permissionForTool: (definition) => ({
+        effect: "ask",
+        risk: definition.risk,
+        matchedRuleIds: [],
+        reasonCode: "test_policy",
+        freshHumanRequired: false,
+        policyVersion: 3,
+      }),
+    });
+    await runtime.open();
+    const iterator = runtime.start({ prompt: "mutate" })[Symbol.asyncIterator]();
+    await iterator.next();
+    await iterator.next();
+    await iterator.next();
+    await runtime.answerApproval("approval", "allow_once");
+    await expect(iterator.next()).rejects.toThrow("native_tool_approval_evidence_mismatch");
+    expect(executions).toBe(0);
   });
 });

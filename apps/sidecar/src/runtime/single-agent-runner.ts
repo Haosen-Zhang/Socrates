@@ -456,9 +456,6 @@ export class SingleAgentRunner {
         agentId: agent.agent_id,
         workspaceId: session.workspace_id,
         runtimeOptions: {
-          sandbox: input.runtimeOptions?.sandbox === "workspace-write"
-            ? "workspace-write"
-            : "read-only",
           contextWindowTokens,
           outputReserveTokens,
         },
@@ -571,9 +568,10 @@ export class SingleAgentRunner {
               inputHash: hashToolInput(call.input),
               workspaceIdentity: workspace.identity_hash,
               attemptId: prepared.runId,
-              policyVersion: 1,
+              policyVersion: event.policyVersion ?? 1,
               risk: event.risk ?? (call.name === "file_change" ? "high" : "medium"),
-              freshHumanRequired: call.name === "file_change" || event.risk === "high" || event.risk === "destructive",
+              freshHumanRequired: event.freshHumanRequired
+                ?? (call.name === "file_change" || event.risk === "high" || event.risk === "destructive"),
             });
             this.db.query("UPDATE agent_runs SET status = 'awaiting_approval' WHERE id = ?").run(prepared.runId);
             this.memory.updateTurnStatus(prepared.turnId, "awaiting_approval");

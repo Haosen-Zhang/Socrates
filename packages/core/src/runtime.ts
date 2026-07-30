@@ -28,7 +28,7 @@ export type RuntimeEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; callId: string; name: string; input: unknown }
   | { type: "tool_result"; callId: string; name: string; output: ToolOutputRef; isError: boolean }
-  | { type: "approval_required"; requestId: string; callId: string; risk?: ToolRisk; kind?: string }
+  | { type: "approval_required"; requestId: string; callId: string; risk?: ToolRisk; kind?: string; policyVersion?: number; freshHumanRequired?: boolean }
   | { type: "usage"; usage: NormalizedUsage }
   | { type: "status"; status: RuntimeStatus; message?: string }
   | { type: "extension"; name: string; payload: unknown };

@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { validateConversation, type ConversationMode, type ConversationSession, type MessagePart, type SessionAgentSnapshot, type SessionMessage,
   type ToolOutputRef,
+  type ToolApprovalMode,
+  normalizeToolApprovalMode,
   type ConversationTurnStatus,
   validateRoomShape,
   type RoomKind,
@@ -18,6 +20,8 @@ type SessionRow = {
   collaboration_json: string | null;
   workspace_id: string | null;
   primary_agent_id: string | null;
+  approval_policy: ToolApprovalMode;
+  approval_policy_version: number;
   archived: number;
   status: string;
   legacy_room_id: string | null;
@@ -140,6 +144,10 @@ export class SessionStore {
       mode: row.mode,
       kind: row.kind ?? (row.mode === "chat" ? "chat" : "cowork"),
       collaboration: normalizeCollaborationSettings(row.collaboration_json ? JSON.parse(row.collaboration_json) : null),
+      approvalPolicy: {
+        mode: normalizeToolApprovalMode(row.approval_policy),
+        version: row.approval_policy_version,
+      },
       workspaceId: row.workspace_id,
       primaryAgentId: row.primary_agent_id,
       archived: row.archived === 1,
@@ -229,6 +237,18 @@ export class SessionStore {
     if (errors.length) throw new Error(errors[0]);
     this.db.query("UPDATE sessions SET collaboration_json = ?, updated_at = ? WHERE id = ?")
       .run(JSON.stringify(normalized), new Date().toISOString(), sessionId);
+    return this.get(sessionId)!;
+  }
+
+  updateApprovalPolicy(sessionId: string, mode: ToolApprovalMode): ConversationSession {
+    const session = this.get(sessionId);
+    if (!session) throw new Error("session_not_found");
+    if (session.approvalPolicy.mode === mode) return session;
+    this.db.query(`
+      UPDATE sessions
+      SET approval_policy = ?, approval_policy_version = approval_policy_version + 1, updated_at = ?
+      WHERE id = ?
+    `).run(mode, new Date().toISOString(), sessionId);
     return this.get(sessionId)!;
   }
 

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { ConversationMode, RoomCollaborationSettings } from "@socrates/core";
+import { isToolApprovalMode, type ConversationMode, type RoomCollaborationSettings } from "@socrates/core";
 import type { SessionStore } from "../store/session-store";
 import type { EventStore } from "../store/event-store";
 import type { UsageCollector } from "../services/usage-collector";
@@ -78,6 +78,18 @@ export function sessionRoutes(sessions: SessionStore, events: EventStore, usage?
     } catch (error) {
       const message = error instanceof Error ? error.message : "collaboration_update_failed";
       return c.json({ error: message }, message === "session_not_found" ? 404 : 400);
+    }
+  });
+  app.put("/:id/approval-policy", async (c) => {
+    const body = await c.req.json().catch(() => null) as { mode?: unknown } | null;
+    if (!isToolApprovalMode(body?.mode)) {
+      return c.json({ error: "invalid_approval_policy" }, 400);
+    }
+    try {
+      return c.json(sessions.updateApprovalPolicy(c.req.param("id"), body.mode));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "approval_policy_update_failed";
+      return c.json({ error: message }, message === "session_not_found" ? 404 : 409);
     }
   });
   app.put("/:id", async (c) => {

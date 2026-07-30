@@ -6,7 +6,8 @@ import { migrations } from "./index";
 describe("011 conversation memory migration", () => {
   it("backfills a stable default thread, strict sequences, and one explicit primary Agent", () => {
     const db = new Database(":memory:");
-    runMigrations(db, migrations.slice(0, 10));
+    const throughConversationMemory = migrations.filter((migration) => migration.version <= 11);
+    runMigrations(db, throughConversationMemory.slice(0, 10));
     const now = "2026-07-30T00:00:00.000Z";
     db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, archived, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)")
       .run("w", "/tmp/w", "/tmp/w", "hash", "W", now, now);
@@ -19,7 +20,7 @@ describe("011 conversation memory migration", () => {
     db.query("INSERT INTO session_messages (id, session_id, role, content, status, created_at) VALUES ('m1', 's', 'user', 'question', 'completed', ?)")
       .run(now);
 
-    expect(runMigrations(db, migrations)).toEqual([11]);
+    expect(runMigrations(db, throughConversationMemory)).toEqual([11]);
     expect(db.query("SELECT primary_agent_id FROM sessions WHERE id = 's'").get()).toEqual({ primary_agent_id: "primary" });
     expect(db.query("SELECT id, room_id, latest_sequence FROM conversation_threads WHERE room_id = 's'").get()).toEqual({
       id: "thread:s",
@@ -30,6 +31,6 @@ describe("011 conversation memory migration", () => {
       { id: "m2", thread_id: "thread:s", agent_id: "primary", kind: "text", sequence: 1 },
       { id: "m1", thread_id: "thread:s", agent_id: null, kind: "text", sequence: 2 },
     ]);
-    expect(runMigrations(db, migrations)).toEqual([]);
+    expect(runMigrations(db, throughConversationMemory)).toEqual([]);
   });
 });
