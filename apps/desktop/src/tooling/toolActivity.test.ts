@@ -121,7 +121,7 @@ describe("tool activity projection", () => {
       type: "tool_call",
       callId: "call-3",
       name: "run_shell",
-      input: { command: "git", args: "status --short" },
+      input: { executable: "git", argv: ["status", "--short"] },
     };
     expect(projectToolActivities({
       messages: [],
@@ -201,11 +201,18 @@ describe("human-readable and safe tool details", () => {
       subject: "TODO",
       readOnly: true,
     });
-    expect(describeToolCall("run_shell", { command: "git", args: "status --short" })).toEqual({
+    expect(describeToolCall("run_shell", { executable: "git", argv: ["status", "--short"] })).toEqual({
       operation: "command",
       subject: "git status --short",
       readOnly: false,
     });
+    expect(describeToolCall("delete_path", { path: "tmp/output.txt" })).toEqual({
+      operation: "delete",
+      subject: "tmp/output.txt",
+      readOnly: false,
+    });
+    expect(describeToolCall("run_shell", { executable: "echo", argv: ["hello world"] }).subject)
+      .toBe('echo "hello world"');
   });
 
   it("explains why the concrete operation requires approval", () => {

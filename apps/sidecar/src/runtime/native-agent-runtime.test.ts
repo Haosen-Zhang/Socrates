@@ -13,6 +13,7 @@ import {
   shouldContinueNativeSampling,
   takeBoundToolPermission,
   toAiSdkModelMessages,
+  validateNativeToolInput,
   type NativeStreamFactory,
 } from "./native-agent-runtime";
 
@@ -20,6 +21,54 @@ const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
 describe("NativeAgentRuntime", () => {
+  it("rejects semantic tool input before an approval request can be emitted", async () => {
+    const root = `${tmpdir()}/socrates-native-${crypto.randomUUID()}`;
+    roots.push(root);
+    mkdirSync(root, { recursive: true });
+    const definitions = createWorkspaceWriteBuiltins(new WorkspacePathPolicy(root));
+    const shell = definitions.find((definition) => definition.name === "run_shell")!;
+    expect(() => validateNativeToolInput(shell, {
+      executable: "git",
+      argv: ["status; rm", "-rf"],
+    })).toThrow("invalid_tool_input:shell_metacharacter_denied");
+
+    const db = openDb(":memory:");
+    const events: unknown[] = [];
+    const stream: NativeStreamFactory = async function* (input) {
+      const request = {
+        requestId: "approval-invalid",
+        callId: "call-invalid",
+        name: "run_shell",
+        input: { executable: "git", argv: ["status; rm", "-rf"] },
+        permission: input.tools.run_shell!.permission(),
+      };
+      const decision = input.requestApproval(request);
+      yield { type: "approval_required", ...request };
+      await decision;
+    };
+    const runtime = new NativeAgentRuntime({
+      sessionId: "session",
+      taskId: "task",
+      agentId: "agent",
+      workspaceId: "workspace",
+      workspaceIdentity: "identity",
+      registry: new ToolRegistry(definitions),
+      executor: new ToolExecutor(db, new ToolRegistry(definitions), new ApprovalManager(db)),
+      stream,
+      allowedCapabilities: ["workspace_write", "shell"],
+    });
+    await runtime.open();
+    const drain = async () => {
+      for await (const event of runtime.start({ prompt: "invalid" })) events.push(event);
+    };
+    await expect(drain()).rejects.toThrow("invalid_tool_input:shell_metacharacter_denied");
+    expect(events.some((event) => (
+      Boolean(event)
+      && typeof event === "object"
+      && (event as { type?: string }).type === "approval_required"
+    ))).toBe(false);
+  });
+
   it("continues after an auto-approved tool step so the next sample can consume its result", () => {
     expect(shouldContinueNativeSampling({
       pendingApprovals: 0,
@@ -267,7 +316,7 @@ describe("NativeAgentRuntime", () => {
       offered = Object.keys(input.tools).sort();
       yield { type: "text_delta", text: "ok" };
     };
-    const make = (allowedCapabilities: ("workspace_read" | "workspace_write" | "mcp")[]) => new NativeAgentRuntime({
+    const make = (allowedCapabilities: ("workspace_read" | "workspace_write" | "shell" | "mcp")[]) => new NativeAgentRuntime({
       sessionId: "s", taskId: "t", agentId: "a", workspaceId: "w", workspaceIdentity: "h",
       registry, executor, stream, allowedCapabilities,
     });
@@ -277,14 +326,105 @@ describe("NativeAgentRuntime", () => {
     await ro.open();
     for await (const _ of ro.start({ prompt: "x" })) { /* drain */ }
     expect(offered).not.toContain("write_file");
+    expect(offered).not.toContain("delete_path");
     expect(offered).not.toContain("run_shell");
 
-    // 授予 workspace_write：写工具必须出现
+    // 仅授予 workspace_write：文件写入/删除出现，命令仍由独立 shell 能力控制
     const rw = make(["workspace_read", "workspace_write", "mcp"]);
     await rw.open();
     for await (const _ of rw.start({ prompt: "x" })) { /* drain */ }
     expect(offered).toContain("write_file");
+    expect(offered).toContain("delete_path");
+    expect(offered).not.toContain("run_shell");
+
+    const shell = make(["workspace_read", "workspace_write", "shell", "mcp"]);
+    await shell.open();
+    for await (const _ of shell.start({ prompt: "x" })) { /* drain */ }
     expect(offered).toContain("run_shell");
+  });
+
+  it("keeps delete_path unchanged until a fresh exact approval allows it once", async () => {
+    const root = `${tmpdir()}/socrates-native-${crypto.randomUUID()}`;
+    roots.push(root);
+    mkdirSync(root, { recursive: true });
+    const target = `${root}/delete-me.txt`;
+    writeFileSync(target, "keep until approved\n");
+    const db = openDb(":memory:");
+    const definitions = createWorkspaceWriteBuiltins(new WorkspacePathPolicy(root));
+    const registry = new ToolRegistry(definitions);
+    let sequence = 0;
+    const makeRuntime = () => {
+      const suffix = String(++sequence);
+      const stream: NativeStreamFactory = async function* (input) {
+        const tool = input.tools.delete_path!;
+        const request = {
+          requestId: `delete-approval-${suffix}`,
+          callId: `delete-call-${suffix}`,
+          name: "delete_path",
+          input: { path: "delete-me.txt" },
+          permission: tool.permission(),
+        };
+        yield { type: "tool_call", callId: request.callId, name: request.name, input: request.input };
+        const decision = input.requestApproval(request);
+        yield { type: "approval_required", ...request };
+        if ((await decision).approved) {
+          const output = await tool.execute(request.input, request.callId, request.permission, input.signal);
+          yield { type: "tool_result", callId: request.callId, name: request.name, output, isError: false };
+        }
+      };
+      return new NativeAgentRuntime({
+        sessionId: "session",
+        taskId: `task-${suffix}`,
+        agentId: "agent",
+        workspaceId: "workspace",
+        workspaceIdentity: "identity",
+        registry,
+        executor: new ToolExecutor(db, registry, new ApprovalManager(db)),
+        stream,
+        allowedCapabilities: ["workspace_write"],
+        permissionForTool: () => ({
+          effect: "ask",
+          risk: "destructive",
+          matchedRuleIds: [],
+          reasonCode: "fresh_human_required",
+          freshHumanRequired: true,
+          policyVersion: 1,
+        }),
+      });
+    };
+
+    const denied = makeRuntime();
+    await denied.open();
+    const deniedIterator = denied.start({ prompt: "delete" })[Symbol.asyncIterator]();
+    await deniedIterator.next();
+    await deniedIterator.next();
+    expect((await deniedIterator.next()).value).toMatchObject({
+      type: "approval_required",
+      risk: "destructive",
+      freshHumanRequired: true,
+    });
+    expect(Bun.file(target).size).toBeGreaterThan(0);
+    await denied.answerApproval("delete-approval-1", "deny");
+    await deniedIterator.next();
+    expect(Bun.file(target).size).toBeGreaterThan(0);
+
+    const allowed = makeRuntime();
+    await allowed.open();
+    const allowedIterator = allowed.start({ prompt: "delete" })[Symbol.asyncIterator]();
+    await allowedIterator.next();
+    await allowedIterator.next();
+    expect((await allowedIterator.next()).value).toMatchObject({
+      type: "approval_required",
+      risk: "destructive",
+      freshHumanRequired: true,
+    });
+    await allowed.answerApproval("delete-approval-2", "allow_once");
+    expect((await allowedIterator.next()).value).toMatchObject({
+      type: "tool_result",
+      callId: "delete-call-2",
+      name: "delete_path",
+    });
+    expect(await Bun.file(target).exists()).toBe(false);
   });
 
   it("fails closed for unsupported images instead of silently dropping them", async () => {

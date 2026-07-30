@@ -1,8 +1,15 @@
 import type { ConversationMode, AgentRunPhase } from "./conversation";
 
+export type JsonSchemaProperty = {
+  type: "string" | "number" | "integer" | "boolean" | "array" | "object";
+  items?: Pick<JsonSchemaProperty, "type">;
+  minimum?: number;
+  maximum?: number;
+};
+
 export type JsonSchema = {
   type: "object";
-  properties?: Record<string, { type: "string" | "number" | "integer" | "boolean" | "array" | "object" }>;
+  properties?: Record<string, JsonSchemaProperty>;
   required?: string[];
   additionalProperties?: boolean;
 };
@@ -19,6 +26,7 @@ export interface ToolDefinition<I = unknown, O = unknown> {
   idempotency: ToolIdempotency;
   capability: "workspace_read" | "workspace_write" | "shell" | "network" | "mcp";
   generation: number;
+  validateInput?: (input: unknown) => string[];
   execute?: (input: I, context: ToolContext) => Promise<O>;
 }
 
@@ -47,6 +55,15 @@ export function validateJsonSchemaInput(schema: JsonSchema, input: unknown): str
     const value = record[key];
     const valid = spec.type === "array" ? Array.isArray(value) : spec.type === "integer" ? Number.isInteger(value) : spec.type === "object" ? Boolean(value) && typeof value === "object" && !Array.isArray(value) : typeof value === spec.type;
     if (!valid) errors.push(`type:${key}:${spec.type}`);
+    if (valid && spec.type === "array" && spec.items) {
+      for (const [index, item] of (value as unknown[]).entries()) {
+        if (typeof item !== spec.items.type) errors.push(`type:${key}[${index}]:${spec.items.type}`);
+      }
+    }
+    if (valid && typeof value === "number") {
+      if (spec.minimum !== undefined && value < spec.minimum) errors.push(`minimum:${key}:${spec.minimum}`);
+      if (spec.maximum !== undefined && value > spec.maximum) errors.push(`maximum:${key}:${spec.maximum}`);
+    }
   }
   return errors;
 }

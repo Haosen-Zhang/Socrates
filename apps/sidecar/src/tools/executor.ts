@@ -46,21 +46,26 @@ export class ToolExecutor {
     context: ToolContext,
     permission: PermissionEvaluation,
   ): Promise<ToolExecutionRecord> {
-    const tool = this.registry.resolve(request.name, request.generation);
-    const validation = validateJsonSchemaInput(tool.inputSchema, request.input);
-    if (validation.length) throw new Error(`invalid_tool_input:${validation.join(",")}`);
     const inputHash = hashToolInput(request.input);
     const existing = this.db.query<ToolCallRow, [string]>("SELECT * FROM tool_calls WHERE stable_key = ?").get(request.stableKey);
     if (existing) {
       if (existing.input_hash !== inputHash) throw new Error("tool_call_key_input_mismatch");
+      if (existing.name !== request.name || existing.generation !== request.generation) {
+        throw new Error("tool_call_key_definition_mismatch");
+      }
       return this.toRecord(existing);
     }
+    const tool = this.registry.resolve(request.name, request.generation);
+    const validation = validateJsonSchemaInput(tool.inputSchema, request.input);
+    if (validation.length) throw new Error(`invalid_tool_input:${validation.join(",")}`);
+    const semanticValidation = tool.validateInput?.(request.input) ?? [];
+    if (semanticValidation.length) throw new Error(`invalid_tool_input:${semanticValidation.join(",")}`);
 
     const id = context.callId || crypto.randomUUID();
     if (this.db.query("SELECT id FROM tool_calls WHERE id = ?").get(id)) throw new Error("tool_call_id_reused");
     const now = new Date().toISOString();
     const status: ToolCallStatus = permission.effect === "ask" ? "awaiting_approval" : permission.effect === "deny" ? "failed" : "queued";
-    const error = permission.effect === "deny" ? permission.reasonCode : null;
+    const error = permission.effect === "deny" ? permissionDenialError(permission) : null;
     this.db.query(`
       INSERT INTO tool_calls
       (id, stable_key, session_id, task_id, attempt_id, turn_id, agent_id, name, generation, input_json, input_hash,
@@ -112,7 +117,12 @@ export class ToolExecutor {
       this.updateStatus(id, "succeeded");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.db.query("UPDATE tool_calls SET status = 'failed', error = ?, updated_at = ? WHERE id = ?").run(message, new Date().toISOString(), id);
+      const status: ToolCallStatus = message === "tool_cancelled"
+        ? "cancelled"
+        : message === "tool_timed_out"
+          ? "timed_out"
+          : "failed";
+      this.db.query("UPDATE tool_calls SET status = ?, error = ?, updated_at = ? WHERE id = ?").run(status, message, new Date().toISOString(), id);
     }
     return this.get(id)!;
   }
@@ -133,4 +143,10 @@ export class ToolExecutor {
       output: output ? { preview: output.preview_text, byteSize: output.byte_size, truncated: output.truncated === 1, isError: output.is_error === 1 } : undefined,
     };
   }
+}
+
+function permissionDenialError(permission: PermissionEvaluation): string {
+  const capabilityReasons = new Set(["capability_ceiling", "mode_ceiling", "phase_ceiling"]);
+  const category = capabilityReasons.has(permission.reasonCode) ? "capability_denied" : "policy_denied";
+  return `${category}:${permission.reasonCode}`;
 }

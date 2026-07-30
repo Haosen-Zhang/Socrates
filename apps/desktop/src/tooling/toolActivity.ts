@@ -2,7 +2,7 @@ import type { RuntimeEvent, SessionMessage, ToolOutputRef, ToolRisk } from "@soc
 import type { PendingApproval } from "../store";
 
 export type ToolActivityStatus = "requested" | "running" | "succeeded" | "failed" | "cancelled";
-export type ToolOperation = "workspace" | "list" | "search" | "read" | "write" | "command" | "tool";
+export type ToolOperation = "workspace" | "list" | "search" | "read" | "write" | "delete" | "command" | "tool";
 
 export type ToolActivity = {
   id: string;
@@ -55,7 +55,10 @@ function objectValue(input: unknown, key: string): unknown {
 }
 
 function displayValue(value: unknown): string {
-  if (Array.isArray(value)) return value.map(String).join(" ");
+  if (Array.isArray(value)) return value.map((item) => {
+    const text = String(item);
+    return /^[A-Za-z0-9_./:=+@%-]+$/.test(text) ? text : JSON.stringify(text);
+  }).join(" ");
   return typeof value === "string" ? value : "";
 }
 
@@ -71,8 +74,8 @@ export function describeToolCall(
 ): Pick<ToolActivity, "operation" | "subject" | "readOnly"> {
   const path = displayValue(objectValue(input, "path") ?? objectValue(input, "relativePath"));
   const query = displayValue(objectValue(input, "query") ?? objectValue(input, "pattern"));
-  const command = displayValue(objectValue(input, "command"));
-  const args = displayValue(objectValue(input, "args"));
+  const executable = displayValue(objectValue(input, "executable") ?? objectValue(input, "command"));
+  const argv = displayValue(objectValue(input, "argv") ?? objectValue(input, "args"));
   if (name === "workspace_info") return { operation: "workspace", subject: ".", readOnly: true };
   if (name === "list_directory") return { operation: "list", subject: limitSubject(path), readOnly: true };
   if (name === "search_files" || name === "search_text") {
@@ -80,12 +83,13 @@ export function describeToolCall(
   }
   if (name === "read_file") return { operation: "read", subject: limitSubject(path), readOnly: true };
   if (name === "write_file") return { operation: "write", subject: limitSubject(path), readOnly: false };
+  if (name === "delete_path") return { operation: "delete", subject: limitSubject(path), readOnly: false };
   if (name === "run_shell") {
-    return { operation: "command", subject: limitSubject([command, args].filter(Boolean).join(" ")), readOnly: false };
+    return { operation: "command", subject: limitSubject([executable, argv].filter(Boolean).join(" ")), readOnly: false };
   }
   return {
     operation: "tool",
-    subject: limitSubject(path || query || command || name),
+    subject: limitSubject(path || query || executable || name),
     readOnly: READ_ONLY_TOOLS.has(name),
   };
 }

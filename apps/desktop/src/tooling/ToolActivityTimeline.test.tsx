@@ -48,7 +48,7 @@ describe("ToolActivityTimeline accessibility", () => {
           id: "run:call",
           callId: "call",
           name: "run_shell",
-          input: { command: "git", args: "status --short" },
+          input: { executable: "git", argv: ["status", "--short"] },
           operation: "command",
           subject: "git status --short",
           readOnly: false,
@@ -72,5 +72,7 @@ describe("ToolActivityTimeline accessibility", () => {
     expect(markup).toContain("允许一次");
     expect(markup).toContain("本会话允许");
     expect(markup).toContain("拒绝");
+    expect(markup).toContain('class="approval-shelf-technical" open=""');
+    expect(markup).toContain("&quot;argv&quot;");
   });
 });

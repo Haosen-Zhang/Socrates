@@ -158,7 +158,10 @@ export function ApprovalShelf({
               </div>
             </div>
             {activity && (
-              <details className="approval-shelf-technical">
+              <details
+                className="approval-shelf-technical"
+                open={activity.operation === "command" || activity.operation === "delete"}
+              >
                 <summary>{t("tool_detail_request")}</summary>
                 <pre>{safeTechnicalJson(activity.input)}</pre>
               </details>
