@@ -30,6 +30,7 @@ import {
 } from "./tooling/ToolActivityTimeline";
 import { projectPublicReasoning, projectToolActivities, toolActivityId } from "./tooling/toolActivity";
 import { approvalModeOptions } from "./approvalPolicyUi";
+import { resolveSidebarRevealPath, revealResolvedSidebarTarget } from "./sidebar/revealInFinder";
 
 const DUTY_CLS: Record<string, string> = {
   propose: "bg-blue-100 text-blue-800",
@@ -1223,13 +1224,16 @@ function SidebarEntityMenu({
   if (!entity) return null;
   const value = "name" in entity ? entity.name : "title" in entity ? entity.title : entity.label;
   const archived = entity.archived;
+  const revealTarget = resolveSidebarRevealPath(menu, sessions, workspaces);
   const item = "block w-full px-3 py-2 text-left text-sm hover:bg-neutral-100";
   const run = async (operation: () => Promise<void>) => {
     try {
       await operation();
       onClose();
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      onError(error instanceof Error && error.message === "workspace_not_found"
+        ? t("reveal_workspace_missing")
+        : error instanceof Error ? error.message : String(error));
       onClose();
     }
   };
@@ -1250,6 +1254,14 @@ function SidebarEntityMenu({
       >
         {t("rename")}
       </button>
+      {revealTarget && (
+        <button
+          className={item}
+          onClick={() => void run(() => revealResolvedSidebarTarget(revealTarget))}
+        >
+          {t("reveal_in_finder")}
+        </button>
+      )}
       {menu.kind === "session" && "kind" in entity && entity.kind === "cowork" && (
         <button
           className={item}
