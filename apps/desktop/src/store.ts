@@ -25,11 +25,14 @@ import {
   type ReasoningEffort,
   type NormalizedUsage,
   type ToolRisk,
+  type ToolApprovalCapabilities,
+  type ToolApprovalMode,
 } from "@socrates/core";
 import { relativeWorkspacePath } from "./workspace/workspacePath";
 import { resolveActiveWorkspace } from "./workspace/projectSelection";
 import { sidecarFetch, requireOk, streamSseEvents } from "./transport";
 import { decodeRuntimeEvent } from "./protocol";
+import { commitApprovalPolicyUpdate } from "./approvalPolicyUi";
 
 type Handshake = { port: number; token: string };
 export type ConnStatus = "connecting" | "connected" | "disconnected";
@@ -138,6 +141,7 @@ export type Store = {
   /** 累积的流式文本；text_delta 经 rAF 批处理写入，UI 直接读取，不再每帧 filter/join */
   agentStreamText: string;
   pendingApprovals: PendingApproval[];
+  agentCapabilities: { approvalPolicy: ToolApprovalCapabilities } | null;
   agentRunning: boolean;
   agentError: string | null;
   activeAgentRunId: string | null;
@@ -145,10 +149,11 @@ export type Store = {
   selectAgentSession: (id: string) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<void>;
   updateCollaboration: (id: string, collaboration: RoomCollaborationSettings) => Promise<void>;
+  updateApprovalPolicy: (id: string, mode: ToolApprovalMode) => Promise<void>;
   archiveSession: (id: string, archived: boolean) => Promise<void>;
   removeSession: (id: string) => Promise<void>;
   rewindSessionTo: (messageId: string) => Promise<void>;
-  sendAgentPrompt: (prompt: string, sandbox: "read-only" | "workspace-write") => Promise<boolean>;
+  sendAgentPrompt: (prompt: string) => Promise<boolean>;
   decideAgentApproval: (requestId: string, decision: ApprovalDecision) => Promise<void>;
   cancelAgentRun: () => Promise<void>;
   usageSummaries: UsageSummaryView[];
@@ -386,6 +391,7 @@ export const useStore = create<Store>((set, get) => {
     sessionMessages: [],
     agentEvents: [], agentStreamText: "",
     pendingApprovals: [],
+    agentCapabilities: null,
     usageSummaries: [],
     agentRunning: false,
     agentError: null,
@@ -443,6 +449,10 @@ export const useStore = create<Store>((set, get) => {
               } catch {
                 // 配置加载失败不阻塞连接，沿用本地默认
               }
+              const capabilities = await requireOk<{ approvalPolicy: ToolApprovalCapabilities }>(
+                await sidecarFetch(handshake, "/agent/capabilities"),
+              );
+              set({ agentCapabilities: capabilities });
               await Promise.all([get().loadProviders(), get().loadAgents(), get().loadRooms(), get().loadWorkspaces(), get().loadSessions(), get().loadMcpServers()]);
               const first = get().rooms[0];
               if (first) void get().selectRoom(first.id);
@@ -524,6 +534,15 @@ export const useStore = create<Store>((set, get) => {
       }));
       await get().loadSessions();
     },
+    updateApprovalPolicy: async (id, mode) => {
+      const sessions = await commitApprovalPolicyUpdate(() => get().sessions, async () =>
+        requireOk<ConversationSession>(await sidecarFetch(hs(), `/sessions/${id}/approval-policy`, {
+          method: "PUT",
+          body: JSON.stringify({ mode }),
+        })),
+      );
+      set({ sessions });
+    },
     archiveSession: async (id, archived) => {
       await requireOk<ConversationSession>(await sidecarFetch(hs(), `/sessions/${id}/archive`, {
         method: "PUT",
@@ -556,7 +575,7 @@ export const useStore = create<Store>((set, get) => {
       await get().loadCurrentUsage();
       if (get().sessions.find((session) => session.id === id)?.mode === "multi_agent") await get().loadMultiTasks();
     },
-    sendAgentPrompt: async (prompt, sandbox) => {
+    sendAgentPrompt: async (prompt) => {
       const sessionId = get().currentSessionId;
       if (!sessionId || get().agentRunning) return false;
       const clientTurnKey = crypto.randomUUID();
@@ -593,7 +612,6 @@ export const useStore = create<Store>((set, get) => {
             attachmentIds: get().draftAttachments.map((attachment) => attachment.id),
             workspaceRefIds: get().draftWorkspaceRefs.map((reference) => reference.id),
             runtimeKind: "native_ai_sdk",
-            runtimeOptions: { sandbox },
           }),
         });
         if (!response.ok || !response.body) await requireOk(response);

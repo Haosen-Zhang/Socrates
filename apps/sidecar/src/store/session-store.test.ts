@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { openDb } from "../db";
 import { SessionStore } from "./session-store";
 import { ConversationMemoryStore } from "./conversation-memory-store";
+import { ApprovalManager } from "../approvals/manager";
 
 describe("SessionStore", () => {
   it("persists an explicit primary Agent independently of member position", () => {
@@ -119,6 +120,60 @@ describe("SessionStore", () => {
     expect(store.rename(session.id, "After").title).toBe("After");
     expect(store.archive(session.id, true).archived).toBe(true);
     expect(store.list().map((item) => item.id)).toEqual([session.id]);
+  });
+
+  it("persists room-scoped approval policy and increments its evidence version", () => {
+    const db = openDb(":memory:");
+    const store = new SessionStore(db);
+    const first = store.create({
+      title: "Policy",
+      mode: "chat",
+      primaryAgentId: "a",
+      agents: [{ agentId: "a", snapshot: {}, executionEligible: false }],
+    });
+    const other = store.create({
+      title: "Other",
+      mode: "chat",
+      primaryAgentId: "a",
+      agents: [{ agentId: "a", snapshot: {}, executionEligible: false }],
+    });
+    expect(first.approvalPolicy).toEqual({ mode: "ask", version: 1 });
+
+    const changed = store.updateApprovalPolicy(first.id, "workspace_full");
+    expect(changed.approvalPolicy).toEqual({ mode: "workspace_full", version: 2 });
+    expect(store.get(other.id)?.approvalPolicy).toEqual({ mode: "ask", version: 1 });
+    expect(store.updateApprovalPolicy(first.id, "workspace_full").approvalPolicy.version).toBe(2);
+  });
+
+  it("does not retroactively resolve pending approvals when the room policy changes", () => {
+    const db = openDb(":memory:");
+    const store = new SessionStore(db);
+    const session = store.create({
+      title: "Pending",
+      mode: "chat",
+      primaryAgentId: "a",
+      agents: [{ agentId: "a", snapshot: {}, executionEligible: false }],
+    });
+    const approvals = new ApprovalManager(db);
+    const request = approvals.request({
+      taskId: "task",
+      kind: "tool",
+      subjectId: "subject",
+      inputHash: "input",
+      workspaceIdentity: "workspace",
+      attemptId: "attempt",
+      policyVersion: session.approvalPolicy.version,
+      risk: "high",
+      freshHumanRequired: true,
+    });
+
+    store.updateApprovalPolicy(session.id, "workspace_full");
+
+    expect(approvals.getRequest(request.id)).toMatchObject({
+      status: "pending",
+      policyVersion: 1,
+    });
+    expect(store.get(session.id)?.approvalPolicy.version).toBe(2);
   });
 
   it("rewinds persisted context but never relies on reversing external workspace effects", () => {

@@ -2,6 +2,37 @@ import { modeToolCeiling, type AgentRunPhase, type ConversationMode, type ToolCa
 import type { ToolRisk } from "./tools";
 
 export type PermissionEffect = "allow" | "ask" | "deny";
+export type ToolApprovalMode = "ask" | "auto_safe" | "workspace_full";
+
+export interface ToolApprovalPolicy {
+  mode: ToolApprovalMode;
+  version: number;
+}
+
+export interface ToolApprovalCapabilities {
+  supportedModes: ToolApprovalMode[];
+  defaultMode: ToolApprovalMode;
+  policyVersion: number;
+  hardDenials: PermissionAction[];
+  freshHumanRisks: ToolRisk[];
+}
+
+export const TOOL_APPROVAL_CAPABILITIES: ToolApprovalCapabilities = {
+  supportedModes: ["ask", "auto_safe", "workspace_full"],
+  defaultMode: "ask",
+  policyVersion: 1,
+  hardDenials: ["outside.write", "secret.read"],
+  freshHumanRisks: ["destructive"],
+};
+
+export function isToolApprovalMode(value: unknown): value is ToolApprovalMode {
+  return typeof value === "string"
+    && TOOL_APPROVAL_CAPABILITIES.supportedModes.includes(value as ToolApprovalMode);
+}
+
+export function normalizeToolApprovalMode(value: unknown): ToolApprovalMode {
+  return isToolApprovalMode(value) ? value : TOOL_APPROVAL_CAPABILITIES.defaultMode;
+}
 export type PermissionAction =
   | "workspace.read"
   | "workspace.write"
@@ -31,6 +62,7 @@ export interface PermissionInput {
   rules: PermissionRule[];
   hardDenyReason?: string;
   exactGrant?: boolean;
+  approvalMode?: ToolApprovalMode;
 }
 
 export interface PermissionEvaluation {
@@ -83,6 +115,24 @@ export function evaluatePermission(input: PermissionInput): PermissionEvaluation
     if (strictest !== "allow") return result(strictest, "scoped_rule", matched.map((rule) => rule.id));
   }
   if (input.exactGrant && !freshHumanRequired) return result("allow", "exact_grant", matched.map((rule) => rule.id));
-  if (matched.some((rule) => rule.effect === "allow")) return result("allow", "scoped_rule", matched.map((rule) => rule.id));
-  return result("ask", "safe_default");
+  if (freshHumanRequired) return result("ask", "fresh_human_required", matched.map((rule) => rule.id));
+
+  const approvalMode = input.approvalMode ?? TOOL_APPROVAL_CAPABILITIES.defaultMode;
+  if (input.action === "workspace.read" && input.risk === "low") {
+    return result("allow", "safe_read", matched.map((rule) => rule.id));
+  }
+  switch (approvalMode) {
+    case "ask":
+      return result("ask", "approval_mode_ask", matched.map((rule) => rule.id));
+    case "auto_safe":
+      return input.risk === "low" && input.action === "workspace.write"
+        ? result("allow", "approval_mode_auto_safe", matched.map((rule) => rule.id))
+        : result("ask", "approval_mode_auto_safe_guard", matched.map((rule) => rule.id));
+    case "workspace_full":
+      return input.action === "workspace.write"
+        ? result("allow", "approval_mode_workspace_full", matched.map((rule) => rule.id))
+        : result("ask", "approval_mode_workspace_full_guard", matched.map((rule) => rule.id));
+    default:
+      return result("ask", "approval_mode_unknown", matched.map((rule) => rule.id));
+  }
 }

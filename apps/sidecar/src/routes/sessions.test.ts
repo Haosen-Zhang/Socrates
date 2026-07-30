@@ -33,6 +33,34 @@ describe("session routes", () => {
     expect((await archived.json()).archived).toBe(true);
   });
 
+  it("updates only the selected room approval policy through the API", async () => {
+    const db = openDb(":memory:");
+    const sessions = new SessionStore(db);
+    const app = new Hono().route("/sessions", sessionRoutes(sessions, new EventStore(db)));
+    const created = await (await app.request("/sessions", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Policy",
+        mode: "chat",
+        primaryAgentId: "a",
+        agents: [{ agentId: "a", snapshot: {}, executionEligible: false }],
+      }),
+    })).json() as { id: string };
+
+    const response = await app.request(`/sessions/${created.id}/approval-policy`, {
+      method: "PUT",
+      body: JSON.stringify({ mode: "auto_safe" }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).approvalPolicy).toEqual({ mode: "auto_safe", version: 2 });
+
+    const invalid = await app.request(`/sessions/${created.id}/approval-policy`, {
+      method: "PUT",
+      body: JSON.stringify({ mode: "unrestricted" }),
+    });
+    expect(invalid.status).toBe(400);
+  });
+
   it("rejects session creation without an explicit primary Agent", async () => {
     const db = openDb(":memory:");
     const app = new Hono().route(

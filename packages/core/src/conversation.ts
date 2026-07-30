@@ -37,6 +37,7 @@ export interface ConversationSession {
   kind: import("./room-kind").RoomKind;
   /** 协作治理设置（讨论/协作/Boss/审批/监督）；chat 恒为默认值 */
   collaboration: import("./room-kind").RoomCollaborationSettings;
+  approvalPolicy: import("./permissions").ToolApprovalPolicy;
   workspaceId: string | null;
   /** Explicit default executor. Never infer this from session_agents position. */
   primaryAgentId: string;

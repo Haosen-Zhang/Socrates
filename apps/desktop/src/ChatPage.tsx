@@ -7,7 +7,8 @@ import { DEFAULT_WINDOW_SIZE, expandWindow, windowTail } from "./listWindow";
 import { useTransientFlag } from "./useTransientFlag";
 import { agentLabel, normalizeCollaborationSettings, validateCollaborationSettings, type Agent, type AppMode,
   type ConversationSession, type RoomCollaborationSettings, type WorkspaceRecord,
-  type RoomKind, type ReasoningEffort, type SessionMessage, type StoredMessage, type TaskSummary } from "@socrates/core";
+  type RoomKind, type ReasoningEffort, type SessionMessage, type StoredMessage, type TaskSummary,
+  type ToolApprovalMode } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
 import { roomDraftBlocker, toggleRoomAgentSelection } from "./roomSelection";
@@ -28,6 +29,7 @@ import {
   ToolActivityTimeline,
 } from "./tooling/ToolActivityTimeline";
 import { projectPublicReasoning, projectToolActivities, toolActivityId } from "./tooling/toolActivity";
+import { approvalModeOptions } from "./approvalPolicyUi";
 
 const DUTY_CLS: Record<string, string> = {
   propose: "bg-blue-100 text-blue-800",
@@ -646,20 +648,20 @@ function SimpleComposer() {
 function SingleAgentSession() {
   const {
     sessions, currentSessionId, sessionMessages, agentEvents, agentStreamText, pendingApprovals,
-    agentRunning, activeAgentRunId, agentError, sendAgentPrompt, decideAgentApproval, cancelAgentRun, rewindSessionTo, workspacePathResults, searchWorkspacePaths, addWorkspaceRef, usageSummaries, workspaces,
-  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "agentEvents", "agentStreamText", "pendingApprovals", "agentRunning", "activeAgentRunId", "agentError", "sendAgentPrompt", "decideAgentApproval", "cancelAgentRun", "rewindSessionTo", "workspacePathResults", "searchWorkspacePaths", "addWorkspaceRef", "usageSummaries", "workspaces");
+    agentRunning, activeAgentRunId, agentError, agentCapabilities, sendAgentPrompt, updateApprovalPolicy, decideAgentApproval, cancelAgentRun, rewindSessionTo, workspacePathResults, searchWorkspacePaths, addWorkspaceRef, usageSummaries, workspaces,
+  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "agentEvents", "agentStreamText", "pendingApprovals", "agentRunning", "activeAgentRunId", "agentError", "agentCapabilities", "sendAgentPrompt", "updateApprovalPolicy", "decideAgentApproval", "cancelAgentRun", "rewindSessionTo", "workspacePathResults", "searchWorkspacePaths", "addWorkspaceRef", "usageSummaries", "workspaces");
   // 窗口化：长会话只渲染最近 N 条，更早的可展开
   const [sessionLimit, setSessionLimit] = useState(DEFAULT_WINDOW_SIZE);
   useEffect(() => setSessionLimit(DEFAULT_WINDOW_SIZE), [currentSessionId]);
   const sessionWindow = windowTail(sessionMessages, sessionLimit);
   const t = useT();
   const [draft, setDraft] = useState("");
-  const [sandbox, setSandbox] = useState<"read-only" | "workspace-write">("read-only");
   const [showMembers, setShowMembers] = useState(false);
   const session = sessions.find((item) => item.id === currentSessionId);
   const agentSnapshot = session?.agents[0]?.snapshot;
   const agentUsage = usageSummaries.find((item) => item.agentId === session?.agents[0]?.agentId);
   const workspaceLabel = workspaces.find((workspace) => workspace.id === session?.workspaceId)?.label ?? t("workspace_none");
+  const approvalOptions = approvalModeOptions(agentCapabilities?.approvalPolicy);
   const toolActivities = useMemo(
     () => projectToolActivities({
       messages: sessionMessages,
@@ -694,7 +696,7 @@ function SingleAgentSession() {
     // Local echo and an empty composer are committed before the network request
     // starts.  Waiting for the stream here made an Enter press look stuck.
     setDraft("");
-    void sendAgentPrompt(prompt, sandbox);
+    void sendAgentPrompt(prompt);
   };
   const updateDraft = (value: string) => {
     setDraft(value);
@@ -706,22 +708,18 @@ function SingleAgentSession() {
       <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
         <div>
           <div className="text-sm font-bold">{session?.title}</div>
-          <div className="text-[10px] uppercase tracking-wider text-neutral-500">Single Agent · {sandbox}</div>
+          <div className="text-[10px] uppercase tracking-wider text-neutral-500">Single Agent · {t(`approval_mode_${session?.approvalPolicy.mode ?? "ask"}`)}</div>
         </div>
         <div className="flex items-center gap-2">
           {agentSnapshot && <div className="pixel-card flex items-center gap-2 px-2 py-1"><AgentAvatar src={String(agentSnapshot.avatar ?? "")} label={String(agentSnapshot.nickname ?? "Agent")} size={28} lively={false} /><span className="text-[10px]">{t("usage_current")}: {usageText(agentUsage?.current.totalTokens)}<br />{t("usage_total")}: {usageText(agentUsage?.cumulative.totalTokens)}</span></div>}
           <WorkspaceChip workspaceId={session?.workspaceId} locked />
           {session && <button className="pixel-button flex items-center gap-1 px-2 py-1 text-xs" onClick={() => setShowMembers(true)} title={t("room_members_title")}><PixelIcon name="robot" size={14} />{session.agents.length}</button>}
-          <select className="pixel-input px-2 py-1 text-xs" value={sandbox} disabled={agentRunning} onChange={(event) => setSandbox(event.target.value as typeof sandbox)}>
-            <option value="read-only">{t("sandbox_read_only")}</option>
-            <option value="workspace-write">{t("sandbox_workspace_write")}</option>
-          </select>
           {agentRunning && <button className="pixel-button px-2 py-1 text-xs text-red-700" onClick={() => void cancelAgentRun()}>{t("cancel_task")}</button>}
         </div>
       </header>
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
         <div className="border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          {t("runtime_native_read_only")}
+          {t("runtime_native_policy_enforced")}
         </div>
         {agentError && <div role="alert" className="border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">{agentError}</div>}
         {sessionWindow.hiddenCount > 0 && (
@@ -792,6 +790,30 @@ function SingleAgentSession() {
           <ComposerTextarea placeholder={agentRunning ? t("replying") : t("message_placeholder")} value={draft} disabled={agentRunning} onChange={updateDraft} onSubmit={() => void submit()} />
           <button className="pixel-send shrink-0" type="submit" disabled={agentRunning || !draft.trim()} aria-label={t("send")}><PixelIcon name="send" size={18} /></button>
         </ResizableComposer>
+        {session && (
+          <label className="mt-2 flex items-center gap-2 px-1 text-[11px] text-neutral-600">
+            <span>{t("approval_policy_label")}</span>
+            <select
+              className="pixel-input min-w-44 px-2 py-1 text-xs"
+              value={session.approvalPolicy.mode}
+              title={t(`approval_mode_${session.approvalPolicy.mode}_description`)}
+              onChange={(event) => void updateApprovalPolicy(session.id, event.target.value as ToolApprovalMode)}
+            >
+              {approvalOptions.map(({ mode, supported, labelKey }) => (
+                <option
+                  key={mode}
+                  value={mode}
+                  disabled={!supported}
+                >
+                  {t(labelKey)}
+                </option>
+              ))}
+            </select>
+            <span className="truncate" title={t(`approval_mode_${session.approvalPolicy.mode}_description`)}>
+              {t(`approval_mode_${session.approvalPolicy.mode}_description`)}
+            </span>
+          </label>
+        )}
       </form>
       {showMembers && session && <SessionMembersDialog session={session} onClose={() => setShowMembers(false)} />}
     </div>

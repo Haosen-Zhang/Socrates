@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import type { ApprovalDecision, RuntimeEvent } from "@socrates/core";
+import { TOOL_APPROVAL_CAPABILITIES, type ApprovalDecision, type RuntimeEvent } from "@socrates/core";
 import type { ApprovalManager } from "../approvals/manager";
 import type { SingleAgentRunner } from "../runtime/single-agent-runner";
 
@@ -8,6 +8,9 @@ const DECISIONS = new Set<ApprovalDecision>(["allow_once", "allow_session", "den
 
 export function agentRunRoutes(runner: SingleAgentRunner, approvals: ApprovalManager): Hono {
   const app = new Hono();
+  app.get("/capabilities", (c) => c.json({
+    approvalPolicy: TOOL_APPROVAL_CAPABILITIES,
+  }));
   app.post("/sessions/:sessionId/runs", async (c) => {
     const body = await c.req.json().catch(() => null) as {
       prompt?: unknown;
@@ -20,14 +23,6 @@ export function agentRunRoutes(runner: SingleAgentRunner, approvals: ApprovalMan
     } | null;
     if (typeof body?.prompt !== "string" || !body.prompt.trim()) return c.json({ error: "prompt_required" }, 400);
     const runtimeKind = typeof body.runtimeKind === "string" ? body.runtimeKind : "native_ai_sdk";
-    const requestedRuntimeOptions = body.runtimeOptions && typeof body.runtimeOptions === "object"
-      ? body.runtimeOptions as Record<string, unknown>
-      : {};
-    const runtimeOptions = {
-      sandbox: requestedRuntimeOptions.sandbox === "workspace-write"
-        ? "workspace-write"
-        : "read-only",
-    };
     return streamSSE(c, async (stream) => {
       const emit = async (event: RuntimeEvent) => {
         await stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
@@ -43,7 +38,7 @@ export function agentRunRoutes(runner: SingleAgentRunner, approvals: ApprovalMan
         attachmentIds: Array.isArray(body.attachmentIds) && body.attachmentIds.every((id) => typeof id === "string") ? body.attachmentIds as string[] : [],
         workspaceRefIds: Array.isArray(body.workspaceRefIds) && body.workspaceRefIds.every((id) => typeof id === "string") ? body.workspaceRefIds as string[] : [],
         signal: c.req.raw.signal,
-        runtimeOptions,
+        runtimeOptions: {},
       }, emit);
       await stream.writeSSE({ event: "run_terminal", data: JSON.stringify(result) });
     });
