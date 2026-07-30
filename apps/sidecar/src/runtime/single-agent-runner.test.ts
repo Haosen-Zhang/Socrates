@@ -670,8 +670,17 @@ describe("SingleAgentRunner", () => {
       taskId: "orphan", kind: "tool", subjectId: "orphan:call", inputHash: "hash",
       workspaceIdentity: "workspace", attemptId: "orphan", policyVersion: 1, risk: "medium", freshHumanRequired: false,
     });
+    db.query(`
+      INSERT INTO tool_calls
+      (id, stable_key, session_id, task_id, attempt_id, turn_id, agent_id, name, generation, input_json, input_hash,
+       workspace_identity, policy_version, risk, idempotency, status, created_at, updated_at)
+      VALUES ('old-call', 'old-stable', ?, 'agent-session-id', 'orphan', 'turn', 'agent', 'run_shell', 1, '{}', 'hash',
+       'workspace', 1, 'destructive', 'non_idempotent', 'awaiting_approval', ?, ?)
+    `).run(session.id, now, now);
     expect(runner.recoverInterrupted()).toEqual({ runs: 1, approvals: 1 });
     expect(db.query("SELECT status, error FROM agent_runs WHERE id = 'orphan'").get()).toEqual({ status: "interrupted", error: "sidecar_restarted" });
     expect(approvals.recoverPending().pending).toEqual([]);
+    expect(db.query("SELECT status, error FROM tool_calls WHERE id = 'old-call'").get())
+      .toEqual({ status: "cancelled", error: "sidecar_restarted" });
   });
 });

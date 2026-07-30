@@ -12,6 +12,7 @@ import {
   type ToolDefinition,
   type ToolOutputRef,
   truncateToolOutput,
+  validateJsonSchemaInput,
 } from "@socrates/core";
 import { hashToolInput, type ToolExecutor } from "../tools/executor";
 import type { ToolRegistry } from "../tools/registry";
@@ -80,6 +81,14 @@ export function takeBoundToolPermission(
   return bound ?? fallback;
 }
 
+export function validateNativeToolInput(definition: ToolDefinition, input: unknown): void {
+  const errors = [
+    ...validateJsonSchemaInput(definition.inputSchema, input),
+    ...(definition.validateInput?.(input) ?? []),
+  ];
+  if (errors.length) throw new Error(`invalid_tool_input:${errors.join(",")}`);
+}
+
 export function createAiSdkNativeStream(model: LanguageModel): NativeStreamFactory {
   return async function* (input) {
     let messages: ModelMessage[] = input.messages.length
@@ -135,6 +144,9 @@ export function createAiSdkNativeStream(model: LanguageModel): NativeStreamFacto
           hadToolActivity = true;
           const permission = permissionByName.get(part.toolName);
           if (!permission) throw new Error("native_tool_permission_snapshot_missing");
+          const native = input.tools[part.toolName];
+          if (!native) throw new Error("native_tool_definition_missing");
+          validateNativeToolInput(native.definition, part.input);
           permissionByCallId.set(part.toolCallId, permission);
           yield { type: "tool_call", callId: part.toolCallId, name: part.toolName, input: part.input };
         }
@@ -425,7 +437,10 @@ export class NativeAgentRuntime implements AgentRuntime {
         signal: abortController.signal,
         tools,
         maxSteps: this.input.maxSteps ?? 8,
-        requestApproval: ({ requestId, callId, input: toolInput, permission }) => {
+        requestApproval: ({ requestId, callId, name, input: toolInput, permission }) => {
+          const definition = tools[name]?.definition;
+          if (!definition) throw new Error("native_tool_definition_missing");
+          validateNativeToolInput(definition, toolInput);
           if (this.pendingApprovals.has(requestId)) return Promise.reject(new Error("native_approval_id_reused"));
           return new Promise((resolve, reject) => this.pendingApprovals.set(requestId, {
             callId,

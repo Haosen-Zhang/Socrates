@@ -81,6 +81,12 @@ export class SingleAgentRunner {
         )
       `).run().changes;
       this.db.query(`
+        UPDATE tool_calls SET status = 'cancelled', error = 'sidecar_restarted', updated_at = ?
+        WHERE status IN ('queued', 'awaiting_approval', 'running') AND session_id IN (
+          SELECT session_id FROM agent_runs WHERE status IN ('preparing', 'running', 'awaiting_approval')
+        )
+      `).run(new Date().toISOString());
+      this.db.query(`
         UPDATE sessions SET status = 'interrupted', updated_at = ?
         WHERE id IN (SELECT session_id FROM agent_runs WHERE status IN ('preparing', 'running', 'awaiting_approval'))
       `).run(new Date().toISOString());
