@@ -37,6 +37,8 @@ const zhCN: Dict = {
   // 通用
   edit: "编辑",
   rename: "重命名",
+  reveal_in_finder: "在访达中显示",
+  reveal_workspace_missing: "找不到该对话绑定的工作区",
   delete: "删除",
   cancel: "取消",
   create: "创建",
@@ -408,6 +410,8 @@ const zhTW: Dict = {
 
   edit: "編輯",
   rename: "重新命名",
+  reveal_in_finder: "在 Finder 中顯示",
+  reveal_workspace_missing: "找不到此對話綁定的工作區",
   delete: "刪除",
   cancel: "取消",
   create: "建立",
@@ -771,6 +775,8 @@ const en: Dict = {
 
   edit: "Edit",
   rename: "Rename",
+  reveal_in_finder: "Reveal in Finder",
+  reveal_workspace_missing: "The workspace linked to this conversation could not be found",
   delete: "Delete",
   cancel: "Cancel",
   create: "Create",
