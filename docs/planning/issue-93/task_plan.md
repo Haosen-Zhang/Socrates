@@ -14,7 +14,7 @@ Add a native Finder reveal action to workspace and workspace-backed conversation
 - [x] Phase 2: Add a failing resolver regression test.
 - [x] Phase 3: Implement resolver, Finder action, menu item, and translations.
 - [x] Phase 4: Run targeted/full verification and review.
-- [ ] Phase 5: Commit, push, create PR, and stop for human merge.
+- [x] Phase 5: Commit, push, create PR, and stop for human merge.
 
 ## Decisions
 
@@ -29,4 +29,4 @@ Add a native Finder reveal action to workspace and workspace-backed conversation
 
 ## Status
 
-**Currently in Phase 5** — preparing the reviewed change for its independent PR.
+**Complete** — PR #94 is ready for human review and merge.

@@ -1,5 +1,7 @@
 # Issue #93 Delivery Record
 
+PR: https://github.com/Haosen-Zhang/Socrates/pull/94
+
 ## Scope completed
 
 - Added `Reveal in Finder` to workspace menus.
