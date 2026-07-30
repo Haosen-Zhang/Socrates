@@ -76,6 +76,8 @@ export function describeToolCall(
   const query = displayValue(objectValue(input, "query") ?? objectValue(input, "pattern"));
   const executable = displayValue(objectValue(input, "executable") ?? objectValue(input, "command"));
   const argv = displayValue(objectValue(input, "argv") ?? objectValue(input, "args"));
+  const source = displayValue(objectValue(input, "source"));
+  const destination = displayValue(objectValue(input, "destination"));
   if (name === "workspace_info") return { operation: "workspace", subject: ".", readOnly: true };
   if (name === "list_directory") return { operation: "list", subject: limitSubject(path), readOnly: true };
   if (name === "search_files" || name === "search_text") {
@@ -83,6 +85,15 @@ export function describeToolCall(
   }
   if (name === "read_file") return { operation: "read", subject: limitSubject(path), readOnly: true };
   if (name === "write_file") return { operation: "write", subject: limitSubject(path), readOnly: false };
+  if (["create_directory", "create_archive", "create_document", "create_spreadsheet"].includes(name)) {
+    return { operation: "write", subject: limitSubject(path), readOnly: false };
+  }
+  if (name === "copy_path") {
+    return { operation: "write", subject: limitSubject(`${source} → ${destination}`), readOnly: false };
+  }
+  if (name === "move_path") {
+    return { operation: "delete", subject: limitSubject(`${source} → ${destination}`), readOnly: false };
+  }
   if (name === "delete_path") return { operation: "delete", subject: limitSubject(path), readOnly: false };
   if (name === "run_shell") {
     return { operation: "command", subject: limitSubject([executable, argv].filter(Boolean).join(" ")), readOnly: false };

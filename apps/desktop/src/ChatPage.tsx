@@ -718,9 +718,6 @@ function SingleAgentSession() {
         </div>
       </header>
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
-        <div className="border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          {t("runtime_native_policy_enforced")}
-        </div>
         {agentError && <div role="alert" className="border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">{agentError}</div>}
         {sessionWindow.hiddenCount > 0 && (
           <button className="pixel-button mx-auto block px-3 py-1 text-xs" onClick={() => setSessionLimit((limit) => expandWindow(limit, sessionMessages.length))}>

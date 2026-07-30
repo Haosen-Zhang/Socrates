@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { linkSync, mkdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { WorkspacePathPolicy } from "./path-policy";
 
@@ -79,5 +79,66 @@ describe("WorkspacePathPolicy", () => {
     expect(policy.readText("src/new.txt", 100).text).toBe("updated\n");
     expect(statSync(`${root}/src/new.txt`).mode & 0o777).toBe(0o600);
     expect(() => policy.writeText("src/hardlink.txt", "overwrite\n")).toThrow("workspace_hardlink_denied");
+  });
+
+  it("creates directories and non-overwriting binary files through pinned descriptors", () => {
+    const policy = new WorkspacePathPolicy(root);
+    expect(policy.createDirectory("exports/reports")).toEqual({ path: "exports/reports" });
+    expect(policy.createFile("exports/report.bin", Buffer.from([1, 2, 3]))).toEqual({
+      path: "exports/report.bin",
+      byteSize: 3,
+    });
+    expect(readFileSync(`${root}/exports/report.bin`)).toEqual(Buffer.from([1, 2, 3]));
+    expect(() => policy.createFile("exports/report.bin", Buffer.from([4]))).toThrow("workspace_path_changed");
+    expect(readdirSync(`${root}/exports`).filter((name) => name.startsWith(".socrates-"))).toEqual([]);
+  });
+
+  it("takes a bounded snapshot of a directory without following links or hardlinks", () => {
+    mkdirSync(`${root}/tree/empty`, { recursive: true });
+    writeFileSync(`${root}/tree/a.txt`, "alpha");
+    const policy = new WorkspacePathPolicy(root);
+    expect(policy.snapshotTree("tree", { maxEntries: 10, maxBytes: 100 })).toEqual({
+      kind: "directory",
+      entries: [
+        { kind: "file", path: "a.txt", bytes: Buffer.from("alpha") },
+        { kind: "directory", path: "empty" },
+      ],
+      totalBytes: 5,
+    });
+    expect(() => policy.snapshotTree("src", { maxEntries: 10, maxBytes: 100 }))
+      .toThrow(/workspace_(symlink|hardlink)_denied/);
+    expect(() => policy.snapshotTree("tree", { maxEntries: 1, maxBytes: 100 }))
+      .toThrow("workspace_tree_too_many_entries");
+    expect(() => policy.snapshotTree("tree/a.txt", { maxEntries: 0, maxBytes: 100 }))
+      .toThrow("workspace_tree_too_many_entries");
+  });
+
+  it("moves files and directories without overwrite and rejects moving a directory into itself", () => {
+    mkdirSync(`${root}/move-me/nested`, { recursive: true });
+    writeFileSync(`${root}/move-me/nested/file.txt`, "content");
+    writeFileSync(`${root}/occupied.txt`, "keep");
+    const policy = new WorkspacePathPolicy(root);
+
+    expect(policy.movePath("move-me", "renamed")).toEqual({
+      from: "move-me",
+      to: "renamed",
+      kind: "directory",
+    });
+    expect(existsSync(`${root}/move-me`)).toBe(false);
+    expect(readFileSync(`${root}/renamed/nested/file.txt`, "utf-8")).toBe("content");
+    expect(() => policy.movePath("renamed", "occupied.txt")).toThrow("workspace_path_changed");
+    expect(() => policy.movePath("renamed", "renamed/inside")).toThrow("workspace_move_into_self");
+  });
+
+  it("publishes copied trees atomically and cleans staging after a destination collision", () => {
+    mkdirSync(`${root}/copy-source/nested`, { recursive: true });
+    writeFileSync(`${root}/copy-source/nested/file.txt`, "content");
+    mkdirSync(`${root}/occupied`);
+    const policy = new WorkspacePathPolicy(root);
+    const snapshot = policy.snapshotTree("copy-source", { maxEntries: 10, maxBytes: 100 });
+
+    expect(() => policy.createTree("occupied", snapshot)).toThrow("workspace_path_changed");
+    expect(readdirSync(root).filter((name) => name.startsWith(".socrates-tree-"))).toEqual([]);
+    expect(readdirSync(`${root}/occupied`)).toEqual([]);
   });
 });
