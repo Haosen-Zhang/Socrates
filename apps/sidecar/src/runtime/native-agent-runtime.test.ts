@@ -333,8 +333,16 @@ describe("NativeAgentRuntime", () => {
     const rw = make(["workspace_read", "workspace_write", "mcp"]);
     await rw.open();
     for await (const _ of rw.start({ prompt: "x" })) { /* drain */ }
-    expect(offered).toContain("write_file");
-    expect(offered).toContain("delete_path");
+    expect(offered).toEqual(expect.arrayContaining([
+      "write_file",
+      "create_directory",
+      "copy_path",
+      "move_path",
+      "create_archive",
+      "create_document",
+      "create_spreadsheet",
+      "delete_path",
+    ]));
     expect(offered).not.toContain("run_shell");
 
     const shell = make(["workspace_read", "workspace_write", "shell", "mcp"]);

@@ -211,6 +211,21 @@ describe("human-readable and safe tool details", () => {
       subject: "tmp/output.txt",
       readOnly: false,
     });
+    expect(describeToolCall("copy_path", { source: "draft", destination: "backup" })).toEqual({
+      operation: "write",
+      subject: "draft → backup",
+      readOnly: false,
+    });
+    expect(describeToolCall("move_path", { source: "old.md", destination: "new.md" })).toEqual({
+      operation: "delete",
+      subject: "old.md → new.md",
+      readOnly: false,
+    });
+    expect(describeToolCall("create_document", { path: "report.docx" })).toEqual({
+      operation: "write",
+      subject: "report.docx",
+      readOnly: false,
+    });
     expect(describeToolCall("run_shell", { executable: "echo", argv: ["hello world"] }).subject)
       .toBe('echo "hello world"');
   });

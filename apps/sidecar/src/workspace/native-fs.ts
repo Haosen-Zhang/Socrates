@@ -1,5 +1,5 @@
 import { dlopen, FFIType, ptr } from "bun:ffi";
-import { closeSync, constants, fchmodSync, openSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, openSync } from "node:fs";
 
 const AT_REMOVEDIR = 0x80;
 const RENAME_EXCL = 0x4;
@@ -20,6 +20,10 @@ const nativeSchema = {
   renameatx_np: {
     args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32],
     returns: FFIType.i32,
+  },
+  getdirentries: {
+    args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr],
+    returns: FFIType.i64,
   },
 } as const;
 const libc = process.platform === "darwin"
@@ -148,6 +152,62 @@ export function unlinkPinnedWorkspaceEntry(
   if (result !== 0) throw new Error("workspace_delete_failed");
 }
 
+export function removePinnedWorkspaceTree(parentFd: number, basename: string): void {
+  const fd = openPinnedWorkspaceEntry(
+    parentFd,
+    basename,
+    constants.O_RDONLY | (constants.O_NONBLOCK ?? 0),
+  );
+  let directory = false;
+  try {
+    const stat = fstatSync(fd);
+    if (stat.isDirectory()) {
+      directory = true;
+      for (const child of listPinnedDirectoryEntries(fd, 10_000)) {
+        removePinnedWorkspaceTree(fd, child);
+      }
+    } else if (stat.isFile()) {
+      if (stat.nlink > 1) throw new Error("workspace_hardlink_denied");
+    } else {
+      throw new Error("workspace_tree_kind_unsupported");
+    }
+  } finally {
+    closeSync(fd);
+  }
+  unlinkPinnedWorkspaceEntry(parentFd, basename, directory);
+}
+
+export function mkdirPinnedWorkspaceEntry(parentFd: number, basename: string): void {
+  mkdirAt(parentFd, basename);
+}
+
+export function listPinnedDirectoryEntries(directoryFd: number, maxEntries: number): string[] {
+  const output: string[] = [];
+  const buffer = Buffer.alloc(16 * 1024);
+  const base = new BigInt64Array(1);
+  while (true) {
+    const received = Number(symbols().getdirentries(directoryFd, ptr(buffer), buffer.length, ptr(base)));
+    if (received < 0) throw new Error("workspace_path_changed");
+    if (received === 0) return output.sort((left, right) => left.localeCompare(right));
+    let offset = 0;
+    while (offset < received) {
+      if (offset + 8 > received) throw new Error("workspace_directory_invalid");
+      const recordLength = buffer.readUInt16LE(offset + 4);
+      const nameLength = buffer.readUInt8(offset + 7);
+      if (recordLength < 8 || offset + recordLength > received || nameLength > recordLength - 8) {
+        throw new Error("workspace_directory_invalid");
+      }
+      const name = buffer.subarray(offset + 8, offset + 8 + nameLength).toString("utf-8");
+      if (name !== "." && name !== "..") {
+        nativePath(name);
+        output.push(name);
+        if (output.length > maxEntries) throw new Error("workspace_tree_too_many_entries");
+      }
+      offset += recordLength;
+    }
+  }
+}
+
 export function renamePinnedWorkspaceEntryExclusive(
   parentFd: number,
   from: string,
@@ -159,6 +219,24 @@ export function renamePinnedWorkspaceEntryExclusive(
     parentFd,
     ptr(encodedFrom),
     parentFd,
+    ptr(encodedTo),
+    RENAME_EXCL,
+  );
+  if (result !== 0) throw new Error("workspace_path_changed");
+}
+
+export function renamePinnedWorkspaceEntryExclusiveBetween(
+  fromParentFd: number,
+  from: string,
+  toParentFd: number,
+  to: string,
+): void {
+  const encodedFrom = nativePath(from);
+  const encodedTo = nativePath(to);
+  const result = symbols().renameatx_np(
+    fromParentFd,
+    ptr(encodedFrom),
+    toParentFd,
     ptr(encodedTo),
     RENAME_EXCL,
   );

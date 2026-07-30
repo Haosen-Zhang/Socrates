@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { unzipSync } from "fflate";
+import ExcelJS from "exceljs";
 import { WorkspacePathPolicy } from "../workspace/path-policy";
 import { SupervisedCommandRunner } from "./workspace-command-runner";
 import { createWorkspaceWriteBuiltins } from "./workspace-write-builtins";
@@ -116,6 +118,129 @@ describe("workspace-write builtins", () => {
     } finally {
       rmSync(outside, { force: true });
     }
+  });
+
+  it("creates directories, copies trees, and moves paths without shell fallback", async () => {
+    const createDirectory = tools.find((tool) => tool.name === "create_directory")!;
+    const copyPath = tools.find((tool) => tool.name === "copy_path")!;
+    const movePath = tools.find((tool) => tool.name === "move_path")!;
+    mkdirSync(join(tmp, "source", "empty"), { recursive: true });
+    writeFileSync(join(tmp, "source", "note.txt"), "hello");
+
+    await expect(createDirectory.execute!({ path: "created/nested" }, context)).resolves.toEqual({
+      action: "created",
+      kind: "directory",
+      path: "created/nested",
+    });
+    await expect(copyPath.execute!({ source: "source", destination: "copied" }, context)).resolves
+      .toMatchObject({ action: "copied", kind: "directory", entries: 2, byteSize: 5 });
+    expect(readFileSync(join(tmp, "copied", "note.txt"), "utf-8")).toBe("hello");
+    expect(existsSync(join(tmp, "copied", "empty"))).toBe(true);
+    expect(movePath).toMatchObject({ risk: "destructive", capability: "workspace_write" });
+    await expect(movePath.execute!({ source: "copied/note.txt", destination: "renamed.txt" }, context))
+      .resolves.toMatchObject({ action: "moved", from: "copied/note.txt", to: "renamed.txt" });
+    expect(readFileSync(join(tmp, "renamed.txt"), "utf-8")).toBe("hello");
+  });
+
+  it("creates bounded ZIP archives containing workspace files", async () => {
+    const archive = tools.find((tool) => tool.name === "create_archive")!;
+    mkdirSync(join(tmp, "archive-source"), { recursive: true });
+    writeFileSync(join(tmp, "archive-source", "one.txt"), "one");
+    writeFileSync(join(tmp, "archive-source", "two.txt"), "two");
+
+    await expect(archive.execute!({
+      path: "exports/files.zip",
+      sources: ["archive-source"],
+    }, context)).resolves.toMatchObject({
+      action: "created",
+      format: "zip",
+      path: "exports/files.zip",
+      entries: 2,
+    });
+    const files = unzipSync(readFileSync(join(tmp, "exports", "files.zip")));
+    expect(Buffer.from(files["archive-source/one.txt"]!).toString("utf-8")).toBe("one");
+    expect(Buffer.from(files["archive-source/two.txt"]!).toString("utf-8")).toBe("two");
+
+    mkdirSync(join(tmp, "empty-archive-source"));
+    const emptyResult = await archive.execute!({
+      path: "exports/empty.zip",
+      sources: ["empty-archive-source"],
+    }, context) as { entries: number };
+    expect(emptyResult.entries).toBe(1);
+    expect(unzipSync(readFileSync(join(tmp, "exports", "empty.zip")))["empty-archive-source/"])
+      .toBeDefined();
+  });
+
+  it("counts synthetic empty roots in the aggregate ZIP entry limit", async () => {
+    const archive = tools.find((tool) => tool.name === "create_archive")!;
+    mkdirSync(join(tmp, "cap-source"));
+    for (let index = 0; index < 255; index += 1) {
+      writeFileSync(join(tmp, "cap-source", `${index}.txt`), "");
+    }
+    mkdirSync(join(tmp, "cap-empty-a"));
+    mkdirSync(join(tmp, "cap-empty-b"));
+
+    await expect(archive.execute!({
+      path: "exports/too-many.zip",
+      sources: ["cap-source", "cap-empty-a", "cap-empty-b"],
+    }, context)).rejects.toThrow("workspace_tree_too_many_entries");
+    expect(existsSync(join(tmp, "exports", "too-many.zip"))).toBe(false);
+  });
+
+  it("creates real DOCX, XLSX, and CSV documents from bounded structured input", async () => {
+    const document = tools.find((tool) => tool.name === "create_document")!;
+    const spreadsheet = tools.find((tool) => tool.name === "create_spreadsheet")!;
+
+    await document.execute!({
+      path: "exports/brief.docx",
+      title: "Project Brief",
+      paragraphs: ["First paragraph", "Second paragraph"],
+    }, context);
+    const docx = unzipSync(readFileSync(join(tmp, "exports", "brief.docx")));
+    expect(Buffer.from(docx["word/document.xml"]!).toString("utf-8")).toContain("Project Brief");
+
+    await spreadsheet.execute!({
+      path: "exports/data.xlsx",
+      format: "xlsx",
+      sheets: [{ name: "Data", rows: [["Name", "Value"], ["alpha", 42]] }],
+    }, context);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(readFileSync(join(tmp, "exports", "data.xlsx")) as never);
+    expect(workbook.getWorksheet("Data")?.getCell("B2").value).toBe(42);
+
+    await spreadsheet.execute!({
+      path: "exports/data.csv",
+      format: "csv",
+      sheets: [{ name: "Data", rows: [["Name", "Value"], ["alpha", 42]] }],
+    }, context);
+    expect(readFileSync(join(tmp, "exports", "data.csv"), "utf-8")).toBe("Name,Value\r\nalpha,42\r\n");
+  });
+
+  it("rejects output collisions, archive secret paths, and spreadsheet formulas before execution", async () => {
+    const createDirectory = tools.find((tool) => tool.name === "create_directory")!;
+    const archive = tools.find((tool) => tool.name === "create_archive")!;
+    const document = tools.find((tool) => tool.name === "create_document")!;
+    const spreadsheet = tools.find((tool) => tool.name === "create_spreadsheet")!;
+    writeFileSync(join(tmp, "collision.txt"), "keep");
+
+    await expect(createDirectory.execute!({ path: "collision.txt" }, context)).rejects.toThrow();
+    expect(archive.validateInput?.({ path: "secret.zip", sources: [".env"] }))
+      .toContain("workspace_secret_path_denied");
+    expect(spreadsheet.validateInput?.({
+      path: "formula.csv",
+      format: "csv",
+      sheets: [{ name: "Data", rows: [["\t=HYPERLINK(\"bad\")"]] }],
+    })).toContain("spreadsheet_formula_denied");
+    expect(document.validateInput?.({
+      path: "huge.docx",
+      title: "界".repeat(400_000),
+      paragraphs: [],
+    })).toContain("document_too_large");
+    expect(spreadsheet.validateInput?.({
+      path: "huge.xlsx",
+      format: "xlsx",
+      sheets: [{ name: "Data", rows: [["x".repeat(5 * 1024 * 1024 + 1)]] }],
+    })).toContain("spreadsheet_too_large");
   });
 
   it("run_shell executes an allowlisted executable with argv preserved", async () => {
