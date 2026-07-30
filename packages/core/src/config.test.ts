@@ -65,6 +65,20 @@ describe("mergeConfig", () => {
     expect(themed.theme).toBe("dark");
     expect(themed.proxy.mode).toBe("auto"); // earlier patch preserved
   });
+
+  it("deep-merges collaboration defaults without discarding retained discussion fields", () => {
+    const merged = mergeConfig(DEFAULT_CONFIG, {
+      collaborationDefaults: {
+        discussion: { enabled: true },
+      } as never,
+    });
+    expect(merged.collaborationDefaults.discussion).toMatchObject({
+      enabled: true,
+      mode: "round_robin",
+      maxRounds: 2,
+    });
+    expect(merged.collaborationDefaults.strategy).toBe("single");
+  });
 });
 
 describe("sidebar prefs (C3)", () => {

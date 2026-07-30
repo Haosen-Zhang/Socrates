@@ -1,6 +1,11 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { TOOL_APPROVAL_CAPABILITIES, type ApprovalDecision, type RuntimeEvent } from "@socrates/core";
+import {
+  COLLABORATION_RUNTIME_CAPABILITIES,
+  TOOL_APPROVAL_CAPABILITIES,
+  type ApprovalDecision,
+  type RuntimeEvent,
+} from "@socrates/core";
 import type { ApprovalManager } from "../approvals/manager";
 import type { SingleAgentRunner } from "../runtime/single-agent-runner";
 
@@ -10,6 +15,7 @@ export function agentRunRoutes(runner: SingleAgentRunner, approvals: ApprovalMan
   const app = new Hono();
   app.get("/capabilities", (c) => c.json({
     approvalPolicy: TOOL_APPROVAL_CAPABILITIES,
+    collaboration: COLLABORATION_RUNTIME_CAPABILITIES,
   }));
   app.post("/sessions/:sessionId/runs", async (c) => {
     const body = await c.req.json().catch(() => null) as {

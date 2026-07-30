@@ -15,13 +15,21 @@ describe("ConfigStore", () => {
     try {
       const store = new ConfigStore(path);
       expect(store.get().theme).toBe("light");
-      store.update({ theme: "dark", proxy: { mode: "custom", type: "socks5", host: "127.0.0.1", port: "7890" } as never });
+      store.update({
+        theme: "dark",
+        proxy: { mode: "custom", type: "socks5", host: "127.0.0.1", port: "7890" } as never,
+        collaborationDefaults: {
+          ...store.get().collaborationDefaults,
+          strategy: "team",
+        },
+      });
       // reload from disk proves persistence
       const reopened = new ConfigStore(path);
       expect(reopened.get().theme).toBe("dark");
       expect(reopened.get().proxy.mode).toBe("custom");
       expect(reopened.get().proxy.host).toBe("127.0.0.1");
       expect(reopened.get().proxy.type).toBe("socks5");
+      expect(reopened.get().collaborationDefaults.strategy).toBe("team");
     } finally {
       rmSync(path, { force: true });
     }
@@ -85,6 +93,34 @@ describe("ConfigStore", () => {
       expect(() => store.update({ proxy: { ...store.get().proxy, username: "alice", password: "secret" } })).toThrow("keychain_locked");
       expect(readFileSync(path, "utf8")).toBe(before);
       expect(values.size).toBe(0);
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
+
+  it("rejects global defaults that the backend cannot execute", () => {
+    const path = tmpPath();
+    try {
+      const store = new ConfigStore(path);
+      expect(() => store.update({
+        collaborationDefaults: {
+          ...store.get().collaborationDefaults,
+          strategy: "adaptive",
+        },
+      })).toThrow("collaboration_strategy_unavailable");
+      expect(store.get().collaborationDefaults.strategy).toBe("single");
+      expect(() => store.update({
+        collaborationDefaults: {
+          ...store.get().collaborationDefaults,
+          assignment: {
+            ...store.get().collaborationDefaults.assignment,
+            routing: {
+              ...store.get().collaborationDefaults.assignment.routing,
+              mode: "manual",
+            },
+          },
+        },
+      })).toThrow("routing_runtime_unavailable");
     } finally {
       rmSync(path, { force: true });
     }

@@ -1,5 +1,13 @@
 import { Hono } from "hono";
-import { isToolApprovalMode, type ConversationMode, type RoomCollaborationSettings } from "@socrates/core";
+import {
+  COLLABORATION_RUNTIME_CAPABILITIES,
+  DEFAULT_COLLABORATION_SETTINGS,
+  isToolApprovalMode,
+  normalizeCollaborationSettings,
+  validateCollaborationCapabilities,
+  type ConversationMode,
+  type RoomCollaborationSettings,
+} from "@socrates/core";
 import type { SessionStore } from "../store/session-store";
 import type { EventStore } from "../store/event-store";
 import type { UsageCollector } from "../services/usage-collector";
@@ -12,6 +20,8 @@ export function sessionRoutes(
   events: EventStore,
   usage?: UsageCollector,
   workspaces?: WorkspaceManager,
+  collaborationDefaults: () => RoomCollaborationSettings =
+    () => DEFAULT_COLLABORATION_SETTINGS,
 ): Hono {
   const app = new Hono();
   app.get("/", (c) => c.json(sessions.list()));
@@ -40,6 +50,9 @@ export function sessionRoutes(
       } else {
         throw new Error("invalid_workspace_selection");
       }
+      const defaults = normalizeCollaborationSettings(collaborationDefaults());
+      const capabilityErrors = validateCollaborationCapabilities(defaults);
+      if (capabilityErrors.length) throw new Error(capabilityErrors[0]);
       return c.json(sessions.create({
         id: sessionId,
         title: body.title,
@@ -47,6 +60,7 @@ export function sessionRoutes(
         kind: "cowork",
         workspaceId,
         primaryAgentId: body.primaryAgentId,
+        collaborationDefaults: defaults,
         agents: body.agents as Array<{ agentId: string; snapshot: Record<string, unknown>; executionEligible: boolean }>,
       }), 201);
     } catch (error) {
@@ -97,13 +111,63 @@ export function sessionRoutes(
     }
   });
   app.put("/:id/collaboration", async (c) => {
-    const body = await c.req.json().catch(() => null) as { collaboration?: unknown } | null;
+    const body = await c.req.json().catch(() => null) as {
+      collaboration?: unknown;
+      primaryAgentId?: unknown;
+    } | null;
     if (!body || typeof body.collaboration !== "object" || body.collaboration === null) return c.json({ error: "invalid_collaboration_input" }, 400);
     try {
-      return c.json(sessions.updateCollaboration(c.req.param("id"), body.collaboration as RoomCollaborationSettings));
+      const normalized = normalizeCollaborationSettings(body.collaboration);
+      const capabilityErrors = validateCollaborationCapabilities(
+        normalized,
+        COLLABORATION_RUNTIME_CAPABILITIES,
+      );
+      if (capabilityErrors.length) throw new Error(capabilityErrors[0]);
+      if (body.primaryAgentId !== undefined && typeof body.primaryAgentId !== "string") {
+        throw new Error("invalid_primary_agent_input");
+      }
+      return c.json(sessions.updateCollaboration(
+        c.req.param("id"),
+        normalized,
+        body.primaryAgentId as string | undefined,
+      ));
     } catch (error) {
       const message = error instanceof Error ? error.message : "collaboration_update_failed";
-      return c.json({ error: message }, message === "session_not_found" ? 404 : 400);
+      return c.json(
+        { error: message },
+        message === "session_not_found"
+          ? 404
+          : message === "collaboration_strategy_unavailable"
+              || message === "discussion_runtime_unavailable"
+              || message === "routing_runtime_unavailable"
+              || message === "plan_confirmation_unavailable"
+              || message === "active_session_collaboration_locked"
+            ? 409
+            : 400,
+      );
+    }
+  });
+  app.put("/:id/primary-agent", async (c) => {
+    const body = await c.req.json().catch(() => null) as { primaryAgentId?: unknown } | null;
+    if (typeof body?.primaryAgentId !== "string") {
+      return c.json({ error: "invalid_primary_agent_input" }, 400);
+    }
+    try {
+      return c.json(sessions.updatePrimaryAgent(c.req.param("id"), body.primaryAgentId));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "primary_agent_update_failed";
+      return c.json({ error: message }, message === "session_not_found" ? 404 : 409);
+    }
+  });
+  app.post("/:id/collaboration/restore-defaults", (c) => {
+    try {
+      const defaults = normalizeCollaborationSettings(collaborationDefaults());
+      const capabilityErrors = validateCollaborationCapabilities(defaults);
+      if (capabilityErrors.length) throw new Error(capabilityErrors[0]);
+      return c.json(sessions.restoreCollaborationDefaults(c.req.param("id"), defaults));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "collaboration_restore_failed";
+      return c.json({ error: message }, message === "session_not_found" ? 404 : 409);
     }
   });
   app.put("/:id/approval-policy", async (c) => {

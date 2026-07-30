@@ -3,8 +3,80 @@ import { openDb } from "../db";
 import { SessionStore } from "./session-store";
 import { ConversationMemoryStore } from "./conversation-memory-store";
 import { ApprovalManager } from "../approvals/manager";
+import { DEFAULT_COLLABORATION_SETTINGS } from "@socrates/core";
 
 describe("SessionStore", () => {
+  it("copies and resolves global collaboration defaults when creating a room", () => {
+    const db = openDb(":memory:");
+    db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w', '/tmp/w', '/tmp/w', 'hash', 'w', 'now', 'now')").run();
+    const store = new SessionStore(db);
+    const session = store.create({
+      title: "Defaults",
+      mode: "multi_agent",
+      workspaceId: "w",
+      primaryAgentId: "b",
+      collaborationDefaults: {
+        ...DEFAULT_COLLABORATION_SETTINGS,
+        strategy: "team",
+        discussion: {
+          ...DEFAULT_COLLABORATION_SETTINGS.discussion,
+          enabled: true,
+        },
+      },
+      agents: [
+        { agentId: "a", snapshot: {}, executionEligible: true },
+        { agentId: "b", snapshot: {}, executionEligible: true },
+      ],
+    });
+
+    expect(session.collaboration.strategy).toBe("team");
+    expect(session.collaboration.assignment.coordinatorAgentId).toBe("b");
+    expect(session.collaboration.discussion.speakerOrder).toEqual(["a", "b"]);
+    expect(session.collaboration.discussion.summaryAgentId).toBe("b");
+  });
+
+  it("safely reassigns collaboration roles when a member is removed", () => {
+    const db = openDb(":memory:");
+    db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w', '/tmp/w', '/tmp/w', 'hash', 'w', 'now', 'now')").run();
+    const store = new SessionStore(db);
+    const session = store.create({
+      title: "Roles",
+      mode: "multi_agent",
+      workspaceId: "w",
+      primaryAgentId: "a",
+      agents: [
+        { agentId: "a", snapshot: {}, executionEligible: true },
+        { agentId: "b", snapshot: {}, executionEligible: true },
+        { agentId: "c", snapshot: {}, executionEligible: true },
+      ],
+    });
+    store.updateCollaboration(session.id, {
+      ...DEFAULT_COLLABORATION_SETTINGS,
+      strategy: "team",
+      assignment: {
+        ...DEFAULT_COLLABORATION_SETTINGS.assignment,
+        coordinatorAgentId: "b",
+        callableAgentIds: ["b", "c"],
+      },
+      discussion: {
+        ...DEFAULT_COLLABORATION_SETTINGS.discussion,
+        enabled: true,
+        speakerOrder: ["b", "c"],
+        summaryAgentId: "b",
+      },
+      planConfirmation: { mode: "reviewer", reviewerAgentId: "b" },
+    });
+
+    const updated = store.removeAgent(session.id, "b");
+    expect(updated.collaboration.assignment.coordinatorAgentId).toBe("a");
+    expect(updated.collaboration.discussion.speakerOrder).toEqual(["c"]);
+    expect(updated.collaboration.discussion.summaryAgentId).toBe("a");
+    expect(updated.collaboration.planConfirmation).toEqual({
+      mode: "reviewer",
+      reviewerAgentId: "a",
+    });
+  });
+
   it("persists an explicit primary Agent independently of member position", () => {
     const db = openDb(":memory:");
     db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w', '/tmp/w', '/tmp/w', 'hash', 'w', 'now', 'now')").run();
@@ -21,6 +93,29 @@ describe("SessionStore", () => {
     });
     expect(session.primaryAgentId).toBe("second");
     expect(store.get(session.id)?.primaryAgentId).toBe("second");
+  });
+
+  it("locks collaboration settings while a room is running", () => {
+    const db = openDb(":memory:");
+    db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w', '/tmp/w', '/tmp/w', 'hash', 'w', 'now', 'now')").run();
+    const store = new SessionStore(db);
+    const session = store.create({
+      title: "Running",
+      mode: "single_agent",
+      workspaceId: "w",
+      primaryAgentId: "a",
+      agents: [{ agentId: "a", snapshot: {}, executionEligible: true }],
+    });
+    db.query("UPDATE sessions SET status = 'running' WHERE id = ?").run(session.id);
+
+    expect(() => store.updateCollaboration(
+      session.id,
+      DEFAULT_COLLABORATION_SETTINGS,
+    )).toThrow("active_session_collaboration_locked");
+    expect(() => store.restoreCollaborationDefaults(
+      session.id,
+      DEFAULT_COLLABORATION_SETTINGS,
+    )).toThrow("active_session_collaboration_locked");
   });
 
   it("adds and removes co-work members and recomputes mode by member count", () => {

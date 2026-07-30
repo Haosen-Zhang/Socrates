@@ -27,6 +27,7 @@ import {
   type ToolRisk,
   type ToolApprovalCapabilities,
   type ToolApprovalMode,
+  type CollaborationRuntimeCapabilities,
 } from "@socrates/core";
 import { relativeWorkspacePath } from "./workspace/workspacePath";
 import { resolveActiveWorkspace } from "./workspace/projectSelection";
@@ -141,14 +142,23 @@ export type Store = {
   /** 累积的流式文本；text_delta 经 rAF 批处理写入，UI 直接读取，不再每帧 filter/join */
   agentStreamText: string;
   pendingApprovals: PendingApproval[];
-  agentCapabilities: { approvalPolicy: ToolApprovalCapabilities } | null;
+  agentCapabilities: {
+    approvalPolicy: ToolApprovalCapabilities;
+    collaboration: CollaborationRuntimeCapabilities;
+  } | null;
   agentRunning: boolean;
   agentError: string | null;
   activeAgentRunId: string | null;
   loadSessions: () => Promise<void>;
   selectAgentSession: (id: string) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<void>;
-  updateCollaboration: (id: string, collaboration: RoomCollaborationSettings) => Promise<void>;
+  updateCollaboration: (
+    id: string,
+    collaboration: RoomCollaborationSettings,
+    primaryAgentId?: string,
+  ) => Promise<void>;
+  restoreCollaborationDefaults: (id: string) => Promise<void>;
+  updatePrimaryAgent: (id: string, primaryAgentId: string) => Promise<void>;
   updateApprovalPolicy: (id: string, mode: ToolApprovalMode) => Promise<void>;
   archiveSession: (id: string, archived: boolean) => Promise<void>;
   removeSession: (id: string, workspaceFiles?: "keep" | "delete") => Promise<void>;
@@ -449,7 +459,10 @@ export const useStore = create<Store>((set, get) => {
               } catch {
                 // 配置加载失败不阻塞连接，沿用本地默认
               }
-              const capabilities = await requireOk<{ approvalPolicy: ToolApprovalCapabilities }>(
+              const capabilities = await requireOk<{
+                approvalPolicy: ToolApprovalCapabilities;
+                collaboration: CollaborationRuntimeCapabilities;
+              }>(
                 await sidecarFetch(handshake, "/agent/capabilities"),
               );
               set({ agentCapabilities: capabilities });
@@ -527,11 +540,28 @@ export const useStore = create<Store>((set, get) => {
       }));
       await get().loadSessions();
     },
-    updateCollaboration: async (id, collaboration) => {
+    updateCollaboration: async (id, collaboration, primaryAgentId) => {
       await requireOk<ConversationSession>(await sidecarFetch(hs(), `/sessions/${id}/collaboration`, {
         method: "PUT",
-        body: JSON.stringify({ collaboration }),
+        body: JSON.stringify({ collaboration, primaryAgentId }),
       }));
+      await get().loadSessions();
+    },
+    restoreCollaborationDefaults: async (id) => {
+      await requireOk<ConversationSession>(
+        await sidecarFetch(hs(), `/sessions/${id}/collaboration/restore-defaults`, {
+          method: "POST",
+        }),
+      );
+      await get().loadSessions();
+    },
+    updatePrimaryAgent: async (id, primaryAgentId) => {
+      await requireOk<ConversationSession>(
+        await sidecarFetch(hs(), `/sessions/${id}/primary-agent`, {
+          method: "PUT",
+          body: JSON.stringify({ primaryAgentId }),
+        }),
+      );
       await get().loadSessions();
     },
     updateApprovalPolicy: async (id, mode) => {
@@ -574,7 +604,9 @@ export const useStore = create<Store>((set, get) => {
       const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${id}/messages`));
       set({ currentSessionId: id, currentRoomId: null, messages: [], sessionMessages, agentEvents: [], agentStreamText: "", pendingApprovals: [], agentError: null, multiTasks: [], currentMultiTask: null, multiError: null, usageSummaries: [] });
       await get().loadCurrentUsage();
-      if (get().sessions.find((session) => session.id === id)?.mode === "multi_agent") await get().loadMultiTasks();
+      if (get().sessions.find((session) => session.id === id)?.collaboration.strategy === "team") {
+        await get().loadMultiTasks();
+      }
     },
     sendAgentPrompt: async (prompt) => {
       const sessionId = get().currentSessionId;

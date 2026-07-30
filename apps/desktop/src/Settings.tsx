@@ -7,13 +7,15 @@ import PixelIcon from "./PixelIcon";
 import ProvidersPage from "./ProvidersPage";
 import AgentsSection from "./AgentsSection";
 import McpSettings from "./settings/McpSettings";
+import { collaborationStrategyOptions } from "./collaborationSettingsUi";
 
 const DEFAULT_PROXY = DEFAULT_CONFIG.proxy;
 
-type SectionId = "general" | "providers" | "bots" | "mcp" | "skills" | "memory" | "network" | "appearance";
+type SectionId = "general" | "collaboration" | "providers" | "bots" | "mcp" | "skills" | "memory" | "network" | "appearance";
 
 const NAV: Array<{ id: SectionId; icon: string; labelKey: string }> = [
   { id: "general", icon: "general", labelKey: "nav_general" },
+  { id: "collaboration", icon: "group", labelKey: "nav_collaboration" },
   { id: "providers", icon: "plug", labelKey: "nav_providers" },
   { id: "bots", icon: "robot", labelKey: "nav_bots" },
   { id: "mcp", icon: "plug", labelKey: "nav_mcp" },
@@ -211,6 +213,93 @@ function NetworkSection() {
   );
 }
 
+function CollaborationDefaultsSection() {
+  const { config, updateConfig, agentCapabilities } = useStorePick(
+    "config",
+    "updateConfig",
+    "agentCapabilities",
+  );
+  const t = useT();
+  const defaults = config?.collaborationDefaults ?? DEFAULT_CONFIG.collaborationDefaults;
+  const routingAvailable = agentCapabilities?.collaboration.routing === true;
+  const update = (patch: Partial<typeof defaults>) => {
+    if (!config) return;
+    void updateConfig({
+      collaborationDefaults: {
+        ...defaults,
+        ...patch,
+      },
+    });
+  };
+
+  return (
+    <SectionShell title={t("nav_collaboration")} desc={t("global_collaboration_desc")}>
+      <div className="pixel-card p-4">
+        <Row label={t("execution_strategy")}>
+          <div className="flex gap-1">
+            {collaborationStrategyOptions(agentCapabilities?.collaboration).map(({ strategy, enabled }) => (
+              <button
+                key={strategy}
+                type="button"
+                disabled={!config || !enabled}
+                className={`pixel-button px-3 py-1 text-sm ${defaults.strategy === strategy ? "pixel-button--primary" : ""}`}
+                onClick={() => update({ strategy })}
+              >
+                {t(`strategy_${strategy}`)}
+              </button>
+            ))}
+          </div>
+        </Row>
+        <Row label={t("pre_execution_discussion")} desc={t("global_discussion_desc")}>
+          <Segmented
+            value={defaults.discussion.enabled ? "on" : "off"}
+            disabled={!config || agentCapabilities?.collaboration.discussion !== true}
+            options={[
+              { value: "on", label: t("on") },
+              { value: "off", label: t("off") },
+            ]}
+            onChange={(value) => update({
+              discussion: { ...defaults.discussion, enabled: value === "on" },
+            })}
+          />
+        </Row>
+        <Row
+          label={t("automatic_policy")}
+          desc={!routingAvailable ? t("routing_runtime_unavailable") : undefined}
+        >
+          <Segmented
+            value={defaults.assignment.routing.automaticPolicy}
+            disabled={!config || !routingAvailable}
+            options={[
+              { value: "cost", label: t("routing_policy_cost") },
+              { value: "balanced", label: t("routing_policy_balanced") },
+              { value: "quality", label: t("routing_policy_quality") },
+            ]}
+            onChange={(automaticPolicy) => update({
+              assignment: {
+                ...defaults.assignment,
+                routing: { ...defaults.assignment.routing, automaticPolicy },
+              },
+            })}
+          />
+        </Row>
+        <Row label={t("plan_confirmation")}>
+          <Segmented
+            value="user"
+            disabled={!config}
+            options={[
+              { value: "user", label: t("plan_confirmation_user") },
+            ]}
+            onChange={() => update({
+              planConfirmation: { mode: "user", reviewerAgentId: null },
+            })}
+          />
+        </Row>
+      </div>
+    </SectionShell>
+  );
+}
+
 function AppearanceSection() {
   const { config, updateConfig } = useStorePick(...SETTINGS_CONFIG_KEYS);
   const t = useT();
@@ -315,6 +404,7 @@ export default function Settings() {
       <div className="min-w-0 flex-1 overflow-y-auto p-6">
         <div key={section} className="anim-view mx-auto max-w-3xl">
           {section === "general" && <GeneralSection />}
+          {section === "collaboration" && <CollaborationDefaultsSection />}
           {section === "providers" && <ProvidersPage />}
           {section === "bots" && <AgentsSection />}
           {section === "mcp" && <McpSettings />}

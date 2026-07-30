@@ -8,6 +8,7 @@ import { validateConversation, type ConversationMode, type ConversationSession, 
   type RoomKind,
   normalizeCollaborationSettings,
   DEFAULT_COLLABORATION_SETTINGS,
+  resolveCollaborationDefaults,
   validateCollaborationSettings,
   type RoomCollaborationSettings,
 } from "@socrates/core";
@@ -63,6 +64,7 @@ export class SessionStore {
     kind?: RoomKind;
     workspaceId?: string | null;
     primaryAgentId: string;
+    collaborationDefaults?: RoomCollaborationSettings;
     legacyRoomId?: string | null;
     agents: Array<{ agentId: string; snapshot: Record<string, unknown>; executionEligible: boolean }>;
   }): ConversationSession {
@@ -88,7 +90,11 @@ export class SessionStore {
     // cowork 房间落一份默认协作设置：多成员默认轮流讨论，单成员默认不讨论——
     // 这样 UI 显示的默认与运行时一致，而不是留空让两边各自推断。
     const collaborationJson = kind === "cowork"
-      ? JSON.stringify({ ...DEFAULT_COLLABORATION_SETTINGS, discussionMode: agentIds.length >= 2 ? "round_robin" : "off" })
+      ? JSON.stringify(resolveCollaborationDefaults(
+          input.collaborationDefaults ?? DEFAULT_COLLABORATION_SETTINGS,
+          { kind, workspaceId, agentIds, primaryAgentId },
+          primaryAgentId,
+        ))
       : null;
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -226,18 +232,77 @@ export class SessionStore {
   }
 
   /** 更新协作设置；跨字段合法性由 core 统一裁决，非法直接拒绝（不静默回退） */
-  updateCollaboration(sessionId: string, settings: RoomCollaborationSettings): ConversationSession {
+  updateCollaboration(
+    sessionId: string,
+    settings: RoomCollaborationSettings,
+    primaryAgentId?: string,
+  ): ConversationSession {
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
+    if (!SessionStore.INACTIVE.includes(session.status)) {
+      throw new Error("active_session_collaboration_locked");
+    }
+    const nextPrimaryAgentId = primaryAgentId ?? session.primaryAgentId;
+    const primary = session.agents.find((agent) => agent.agentId === nextPrimaryAgentId);
+    if (!primary) throw new Error("primary_agent_must_be_room_member");
+    if (!primary.executionEligible) throw new Error("primary_agent_must_be_execution_eligible");
     const normalized = normalizeCollaborationSettings(settings);
     const errors = validateCollaborationSettings(
-      { kind: session.kind, workspaceId: session.workspaceId, agentIds: session.agents.map((agent) => agent.agentId) },
+      {
+        kind: session.kind,
+        workspaceId: session.workspaceId,
+        agentIds: session.agents.map((agent) => agent.agentId),
+        primaryAgentId: nextPrimaryAgentId,
+      },
       normalized,
     );
     if (errors.length) throw new Error(errors[0]);
-    this.db.query("UPDATE sessions SET collaboration_json = ?, updated_at = ? WHERE id = ?")
-      .run(JSON.stringify(normalized), new Date().toISOString(), sessionId);
+    this.db.query(`
+      UPDATE sessions
+      SET collaboration_json = ?, primary_agent_id = ?, updated_at = ?
+      WHERE id = ?
+    `).run(
+      JSON.stringify(normalized),
+      nextPrimaryAgentId,
+      new Date().toISOString(),
+      sessionId,
+    );
     return this.get(sessionId)!;
+  }
+
+  updatePrimaryAgent(sessionId: string, primaryAgentId: string): ConversationSession {
+    const session = this.get(sessionId);
+    if (!session) throw new Error("session_not_found");
+    if (!SessionStore.INACTIVE.includes(session.status)) {
+      throw new Error("active_session_primary_agent_locked");
+    }
+    const member = session.agents.find((agent) => agent.agentId === primaryAgentId);
+    if (!member) throw new Error("primary_agent_must_be_room_member");
+    if (!member.executionEligible) throw new Error("primary_agent_must_be_execution_eligible");
+    this.db.query("UPDATE sessions SET primary_agent_id = ?, updated_at = ? WHERE id = ?")
+      .run(primaryAgentId, new Date().toISOString(), sessionId);
+    return this.get(sessionId)!;
+  }
+
+  restoreCollaborationDefaults(
+    sessionId: string,
+    defaults: RoomCollaborationSettings,
+  ): ConversationSession {
+    const session = this.get(sessionId);
+    if (!session) throw new Error("session_not_found");
+    return this.updateCollaboration(
+      sessionId,
+      resolveCollaborationDefaults(
+        defaults,
+        {
+          kind: session.kind,
+          workspaceId: session.workspaceId,
+          agentIds: session.agents.map((agent) => agent.agentId),
+          primaryAgentId: session.primaryAgentId,
+        },
+        session.primaryAgentId,
+      ),
+    );
   }
 
   updateApprovalPolicy(sessionId: string, mode: ToolApprovalMode): ConversationSession {
@@ -280,10 +345,12 @@ export class SessionStore {
     if (!SessionStore.INACTIVE.includes(session.status)) throw new Error("active_session_members_locked");
     if (!session.agents.some((agent) => agent.agentId === agentId)) throw new Error("session_agent_not_member");
     if (session.agents.length <= 1) throw new Error("session_requires_at_least_one_member");
+    let nextPrimaryAgentId = session.primaryAgentId;
     if (session.primaryAgentId === agentId) {
       const replacement = session.agents.find((agent) => agent.agentId !== agentId && agent.executionEligible)
         ?? session.agents.find((agent) => agent.agentId !== agentId);
       if (!replacement) throw new Error("primary_agent_replacement_required");
+      nextPrimaryAgentId = replacement.agentId;
       this.db.query("UPDATE sessions SET primary_agent_id = ? WHERE id = ?").run(replacement.agentId, sessionId);
     }
     this.db.query("DELETE FROM session_agents WHERE session_id = ? AND agent_id = ?").run(sessionId, agentId);
@@ -292,6 +359,29 @@ export class SessionStore {
       this.db.query("UPDATE session_agents SET position = ? WHERE session_id = ? AND agent_id = ?").run(index, sessionId, agent.agentId);
     });
     this.syncMode(sessionId, session.kind, session.agents.length - 1);
+    const remainingAgentIds = session.agents
+      .map((agent) => agent.agentId)
+      .filter((id) => id !== agentId);
+    const safeSettings = normalizeCollaborationSettings({
+      ...session.collaboration,
+      strategy: remainingAgentIds.length < 2 ? "single" : session.collaboration.strategy,
+      discussion: {
+        ...session.collaboration.discussion,
+        enabled: remainingAgentIds.length >= 2 && session.collaboration.discussion.enabled,
+      },
+    });
+    const reconciled = resolveCollaborationDefaults(
+      safeSettings,
+      {
+        kind: session.kind,
+        workspaceId: session.workspaceId,
+        agentIds: remainingAgentIds,
+        primaryAgentId: nextPrimaryAgentId,
+      },
+      nextPrimaryAgentId,
+    );
+    this.db.query("UPDATE sessions SET collaboration_json = ? WHERE id = ?")
+      .run(JSON.stringify(reconciled), sessionId);
     this.db.query("UPDATE sessions SET updated_at = ? WHERE id = ?").run(new Date().toISOString(), sessionId);
     return this.get(sessionId)!;
   }

@@ -7,11 +7,132 @@ import { EventStore } from "../store/event-store";
 import { SessionStore } from "../store/session-store";
 import { WorkspaceManager } from "../workspace/manager";
 import { sessionRoutes } from "./sessions";
+import { DEFAULT_COLLABORATION_SETTINGS } from "@socrates/core";
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
 describe("session routes", () => {
+  it("copies global defaults, keeps room edits isolated, restores, and gates unavailable strategies", async () => {
+    const db = openDb(":memory:");
+    const managedRoot = `${tmpdir()}/socrates-session-defaults-${crypto.randomUUID()}`;
+    roots.push(managedRoot);
+    const defaults = {
+      ...DEFAULT_COLLABORATION_SETTINGS,
+      strategy: "team" as const,
+    };
+    const app = new Hono().route(
+      "/sessions",
+      sessionRoutes(
+        new SessionStore(db),
+        new EventStore(db),
+        undefined,
+        new WorkspaceManager(db, managedRoot),
+        () => defaults,
+      ),
+    );
+    const response = await app.request("/sessions", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Defaults",
+        mode: "multi_agent",
+        primaryAgentId: "b",
+        agents: [
+          { agentId: "a", snapshot: {}, executionEligible: true },
+          { agentId: "b", snapshot: {}, executionEligible: true },
+        ],
+        workspaceSelection: { kind: "managed" },
+      }),
+    });
+    const created = await response.json();
+    expect(created.collaboration.strategy).toBe("team");
+    expect(created.collaboration.assignment.coordinatorAgentId).toBe("b");
+
+    const primary = await app.request(`/sessions/${created.id}/primary-agent`, {
+      method: "PUT",
+      body: JSON.stringify({ primaryAgentId: "a" }),
+    });
+    expect((await primary.json()).primaryAgentId).toBe("a");
+
+    const roomEdit = {
+      ...created.collaboration,
+      strategy: "single",
+    };
+    expect((await app.request(`/sessions/${created.id}/collaboration`, {
+      method: "PUT",
+      body: JSON.stringify({ collaboration: roomEdit }),
+    })).status).toBe(200);
+    expect(defaults.strategy).toBe("team");
+
+    const restored = await app.request(
+      `/sessions/${created.id}/collaboration/restore-defaults`,
+      { method: "POST" },
+    );
+    expect((await restored.json()).collaboration.strategy).toBe("team");
+
+    const unavailable = await app.request(`/sessions/${created.id}/collaboration`, {
+      method: "PUT",
+      body: JSON.stringify({
+        collaboration: { ...created.collaboration, strategy: "adaptive" },
+      }),
+    });
+    expect(unavailable.status).toBe(409);
+    expect(await unavailable.json()).toEqual({
+      error: "collaboration_strategy_unavailable",
+    });
+
+    const unavailableRouting = await app.request(`/sessions/${created.id}/collaboration`, {
+      method: "PUT",
+      body: JSON.stringify({
+        collaboration: {
+          ...created.collaboration,
+          assignment: {
+            ...created.collaboration.assignment,
+            routing: {
+              ...created.collaboration.assignment.routing,
+              mode: "manual",
+            },
+          },
+        },
+      }),
+    });
+    expect(unavailableRouting.status).toBe(409);
+    expect(await unavailableRouting.json()).toEqual({
+      error: "routing_runtime_unavailable",
+    });
+  });
+
+  it("rejects room creation when configured defaults exceed backend capabilities", async () => {
+    const db = openDb(":memory:");
+    const managedRoot = `${tmpdir()}/socrates-session-capabilities-${crypto.randomUUID()}`;
+    roots.push(managedRoot);
+    const app = new Hono().route(
+      "/sessions",
+      sessionRoutes(
+        new SessionStore(db),
+        new EventStore(db),
+        undefined,
+        new WorkspaceManager(db, managedRoot),
+        () => ({ ...DEFAULT_COLLABORATION_SETTINGS, strategy: "adaptive" }),
+      ),
+    );
+    const response = await app.request("/sessions", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Unavailable defaults",
+        mode: "single_agent",
+        primaryAgentId: "a",
+        agents: [{ agentId: "a", snapshot: {}, executionEligible: true }],
+        workspaceSelection: { kind: "managed" },
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "collaboration_strategy_unavailable",
+    });
+  });
+
   it("creates unified rooms with managed or existing workspaces and an explicit primary Agent", async () => {
     const db = openDb(":memory:");
     const managedRoot = `${tmpdir()}/socrates-session-managed-${crypto.randomUUID()}`;

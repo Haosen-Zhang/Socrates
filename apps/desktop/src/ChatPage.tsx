@@ -32,6 +32,7 @@ import { projectPublicReasoning, projectToolActivities, toolActivityId } from ".
 import { approvalModeOptions } from "./approvalPolicyUi";
 import { resolveSidebarRevealPath, revealResolvedSidebarTarget } from "./sidebar/revealInFinder";
 import { agentRunErrorKey } from "./agentRunErrorUi";
+import { collaborationStrategyOptions } from "./collaborationSettingsUi";
 
 const DUTY_CLS: Record<string, string> = {
   propose: "bg-blue-100 text-blue-800",
@@ -1427,26 +1428,49 @@ function RoomMembersDialog({
  * 跨字段合法性用 core 的 validateCollaborationSettings 统一裁决，前后端同一份判断。
  */
 function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationSession; onClose: () => void }) {
-  const { agents, updateCollaboration } = useStorePick("agents", "updateCollaboration");
+  const {
+    agents,
+    agentCapabilities,
+    updateCollaboration,
+    restoreCollaborationDefaults,
+  } = useStorePick(
+    "agents",
+    "agentCapabilities",
+    "updateCollaboration",
+    "restoreCollaborationDefaults",
+  );
   const t = useT();
   const dialog = useAnimatedDialogClose(onClose);
   const [draft, setDraft] = useState<RoomCollaborationSettings>(() => normalizeCollaborationSettings(session.collaboration));
+  const [primaryAgentId, setPrimaryAgentId] = useState(session.primaryAgentId);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const memberIds = session.agents.map((agent) => agent.agentId);
   const nameOf = (id: string) => agents.find((agent) => agent.id === id)?.nickname ?? id;
-  const shape = { kind: session.kind, workspaceId: session.workspaceId, agentIds: memberIds };
+  const shape = {
+    kind: session.kind,
+    workspaceId: session.workspaceId,
+    agentIds: memberIds,
+    primaryAgentId,
+  };
   const problems = validateCollaborationSettings(shape, draft);
   const patch = (over: Partial<RoomCollaborationSettings>) => { setDraft((current) => ({ ...current, ...over })); setError(null); };
-
-  const bossOn = draft.collaborationMode === "agent_directed_multi_agent";
+  const patchAssignment = (over: Partial<RoomCollaborationSettings["assignment"]>) =>
+    patch({ assignment: { ...draft.assignment, ...over } });
+  const patchRouting = (over: Partial<RoomCollaborationSettings["assignment"]["routing"]>) =>
+    patchAssignment({ routing: { ...draft.assignment.routing, ...over } });
+  const patchDiscussion = (over: Partial<RoomCollaborationSettings["discussion"]>) =>
+    patch({ discussion: { ...draft.discussion, ...over } });
+  const patchPlan = (over: Partial<RoomCollaborationSettings["planConfirmation"]>) =>
+    patch({ planConfirmation: { ...draft.planConfirmation, ...over } });
+  const strategyOptions = collaborationStrategyOptions(agentCapabilities?.collaboration);
 
   const save = async () => {
     if (problems.length) { setError(problems[0]); return; }
     setSaving(true);
     try {
-      await updateCollaboration(session.id, draft);
+      await updateCollaboration(session.id, draft, primaryAgentId);
       dialog.close();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -1461,92 +1485,217 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
       {memberIds.map((id) => <option key={id} value={id}>{nameOf(id)}</option>)}
     </select>
   );
+  const executableIds = session.agents
+    .filter((member) => member.executionEligible)
+    .map((member) => member.agentId);
+  const strategyNeedsCoordinator = draft.strategy !== "single";
+  const discussionAvailable = agentCapabilities?.collaboration.discussion === true;
+  const routingAvailable = agentCapabilities?.collaboration.routing === true;
 
   return (
     <div className={`pixel-dialog-backdrop ${dialog.closing ? "is-closing" : ""}`} role="presentation" onMouseDown={dialog.close}>
       <section className="pixel-dialog max-h-[calc(100vh-40px)] w-[min(600px,calc(100vw-48px))] overflow-y-auto p-5" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
         <div className="mb-4 flex items-start justify-between">
           <div>
-            <div className="pixel-kicker">CO-WORK POLICY</div>
+            <div className="pixel-kicker">COLLABORATION SETTINGS</div>
             <h3 className="text-lg font-bold">{t("cowork_settings_title")}</h3>
             <p className="mt-1 text-xs text-neutral-500">{session.title}</p>
           </div>
           <button className="pixel-button h-8 w-8" aria-label={t("close")} onClick={() => { sfx.close(); dialog.close(); }}>×</button>
         </div>
 
-        {/* 讨论模式：关闭时跳过讨论，直接生成计划（快速提问不再空跑一轮） */}
-        <label className="block text-sm font-bold">{t("discussion_mode")}</label>
-        <div className="mb-4 mt-1 grid grid-cols-2 gap-2">
-          {(["round_robin", "off"] as const).map((value) => (
+        <label className="block text-sm font-bold">{t("execution_strategy")}</label>
+        <div className="mt-1 grid grid-cols-3 gap-2">
+          {strategyOptions.map(({ strategy, enabled }) => {
+            const enoughMembers = strategy !== "team" || memberIds.length >= 2;
+            const available = enabled && enoughMembers;
+            return (
             <button
-              key={value}
+              key={strategy}
               type="button"
-              className={`pixel-mode-card p-3 text-left ${draft.discussionMode === value ? "is-selected" : ""}`}
-              onClick={() => patch({ discussionMode: value })}
+              disabled={!available}
+              className={`pixel-mode-card p-3 text-left ${draft.strategy === strategy ? "is-selected" : ""}`}
+              onClick={() => patch({ strategy })}
             >
-              <span className="block text-sm font-bold">{t(`discussion_mode_${value}`)}</span>
-              <span className="mt-1 block text-[11px] text-neutral-500">{t(`discussion_mode_${value}_desc`)}</span>
+              <span className="block text-sm font-bold">{t(`strategy_${strategy}`)}</span>
+              <span className="mt-1 block text-[11px] text-neutral-500">
+                {!enabled
+                  ? t("runtime_unavailable")
+                  : !enoughMembers
+                    ? t("team_requires_multiple_members")
+                    : t(`strategy_${strategy}_desc`)}
+              </span>
             </button>
-          ))}
+            );
+          })}
         </div>
 
-        {/* 协作方式：单执行者 vs Boss 统筹（Boss 会真实接管计划整合） */}
-        <label className="block text-sm font-bold">{t("collab_mode")}</label>
-        <div className="mt-1 grid grid-cols-2 gap-2">
-          {(["single_executor", "agent_directed_multi_agent"] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              className={`pixel-mode-card p-3 text-left ${draft.collaborationMode === value ? "is-selected" : ""}`}
-              onClick={() => patch(value === "agent_directed_multi_agent"
-                ? { collaborationMode: value, boss: { ...draft.boss, enabled: true } }
-                : { collaborationMode: value, boss: { enabled: false, bossAgentId: null, allowBossExecution: false } })}
-            >
-              <span className="block text-sm font-bold">{t(`collab_mode_${value}`)}</span>
-              <span className="mt-1 block text-[11px] text-neutral-500">{t(`collab_mode_${value}_desc`)}</span>
-            </button>
-          ))}
-        </div>
-
-        {bossOn && (
-          <div className="pixel-card mt-3 space-y-3 p-3">
-            <label className="block text-sm font-bold">{t("boss_agent")}
-              {memberSelect(draft.boss.bossAgentId, (id) => patch({ boss: { ...draft.boss, bossAgentId: id } }), t("boss_agent_placeholder"))}
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={draft.boss.allowBossExecution} onChange={(event) => patch({ boss: { ...draft.boss, allowBossExecution: event.target.checked } })} />
-              {t("boss_allow_execution")}
-            </label>
-            <p className="text-[11px] text-neutral-500">{t("boss_hint")}</p>
-          </div>
-        )}
-
-        {/* 审批方式：后两者真跑一次审核 Agent */}
-        <label className="mt-5 block text-sm font-bold">{t("approval_mode")}</label>
-        <div className="mt-1 space-y-1">
-          {(["human", "executor_self_check", "designated_reviewer"] as const).map((value) => (
-            <label key={value} className="flex items-start gap-2 text-sm">
-              <input type="radio" name="approval" className="mt-1" checked={draft.approvalMode === value} onChange={() => patch({ approvalMode: value })} />
-              <span><span className="font-medium">{t(`approval_mode_${value}`)}</span><span className="block text-[11px] text-neutral-500">{t(`approval_mode_${value}_desc`)}</span></span>
-            </label>
-          ))}
-        </div>
-        {draft.approvalMode === "designated_reviewer" && (
-          <label className="mt-2 block text-sm font-bold">{t("designated_reviewer")}
-            {memberSelect(draft.designatedReviewerId, (id) => patch({ designatedReviewerId: id }), t("reviewer_placeholder"))}
+        <div className="pixel-card mt-4 space-y-3 p-3">
+          <h4 className="text-sm font-bold">{t("agent_assignment")}</h4>
+          <label className="block text-sm font-bold">{t("primary_agent")}
+            <select className="pixel-input mt-1 w-full px-3 py-2 text-sm" value={primaryAgentId} onChange={(event) => setPrimaryAgentId(event.target.value)}>
+              {executableIds.map((id) => <option key={id} value={id}>{nameOf(id)}</option>)}
+            </select>
           </label>
-        )}
+          {strategyNeedsCoordinator && (
+            <label className="block text-sm font-bold">{t("coordinator_agent")}
+              {memberSelect(
+                draft.assignment.coordinatorAgentId,
+                (id) => patchAssignment({ coordinatorAgentId: id }),
+                t("coordinator_placeholder"),
+              )}
+            </label>
+          )}
+          {draft.strategy === "adaptive" && (
+            <div>
+              <div className="text-sm font-bold">{t("callable_members")}</div>
+              <div className="mt-1 flex flex-wrap gap-2">
+                {memberIds.map((id) => (
+                  <label key={id} className="flex items-center gap-1 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={draft.assignment.callableAgentIds.includes(id)}
+                      onChange={(event) => patchAssignment({
+                        callableAgentIds: event.target.checked
+                          ? [...draft.assignment.callableAgentIds, id]
+                          : draft.assignment.callableAgentIds.filter((item) => item !== id),
+                      })}
+                    />
+                    {nameOf(id)}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+          {draft.strategy === "team" && (
+            <>
+              <label className="block text-sm font-bold">{t("routing_mode")}
+                <select disabled={!routingAvailable} className="pixel-input mt-1 w-full px-3 py-2 text-sm" value={draft.assignment.routing.mode} onChange={(event) => patchRouting({ mode: event.target.value as "automatic" | "manual" })}>
+                  <option value="automatic">{t("routing_automatic")}</option>
+                  <option value="manual">{t("routing_manual")}</option>
+                </select>
+              </label>
+              {!routingAvailable && <p className="text-xs text-amber-700">{t("routing_runtime_unavailable")}</p>}
+              {draft.assignment.routing.mode === "automatic" ? (
+                <label className="block text-sm font-bold">{t("automatic_policy")}
+                  <select disabled={!routingAvailable} className="pixel-input mt-1 w-full px-3 py-2 text-sm" value={draft.assignment.routing.automaticPolicy} onChange={(event) => patchRouting({ automaticPolicy: event.target.value as "cost" | "balanced" | "quality" })}>
+                    {(["cost", "balanced", "quality"] as const).map((value) => (
+                      <option key={value} value={value}>{t(`routing_policy_${value}`)}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  {(["lightweight", "complex", "critical"] as const).map((role) => (
+                    <label key={role} className="block text-xs font-bold">{t(`routing_role_${role}`)}
+                      <fieldset disabled={!routingAvailable}>
+                        {memberSelect(
+                          draft.assignment.routing[`${role}AgentId`],
+                          (id) => patchRouting({ [`${role}AgentId`]: id }),
+                          t("fallback_to_coordinator"),
+                        )}
+                      </fieldset>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
 
-        {/* 尚未接入运行时的维度：如实标注，不做成假开关 */}
-        <div className="mt-5 rounded border-2 border-dashed border-neutral-300 p-3 opacity-70">
-          <div className="text-[11px] font-bold uppercase tracking-wider text-neutral-500">{t("not_wired_yet")}</div>
-          <p className="mt-1 text-xs text-neutral-500">{t("supervision_not_wired_desc")}</p>
+        <div className="pixel-card mt-4 space-y-3 p-3">
+          <label className="flex items-center justify-between gap-3 text-sm font-bold">
+            <span>{t("pre_execution_discussion")}</span>
+            <input
+              type="checkbox"
+              disabled={!discussionAvailable}
+              checked={draft.discussion.enabled}
+              onChange={(event) => patchDiscussion({ enabled: event.target.checked })}
+            />
+          </label>
+          {draft.discussion.enabled && (
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block text-xs font-bold">{t("discussion_mode")}
+                  <select className="pixel-input mt-1 w-full px-3 py-2 text-sm" value={draft.discussion.mode} onChange={(event) => patchDiscussion({ mode: event.target.value as "round_robin" | "debate" })}>
+                    <option value="round_robin">{t("discussion_mode_round_robin")}</option>
+                    <option value="debate">{t("discussion_mode_debate")}</option>
+                  </select>
+                </label>
+                <label className="block text-xs font-bold">{t("max_discussion_rounds")}
+                  <input className="pixel-input mt-1 w-full px-3 py-2 text-sm" type="number" min={1} max={20} value={draft.discussion.maxRounds} onChange={(event) => patchDiscussion({ maxRounds: Number(event.target.value) })} />
+                </label>
+              </div>
+              <label className="block text-xs font-bold">{t("discussion_summary_agent")}
+                {memberSelect(draft.discussion.summaryAgentId, (id) => patchDiscussion({ summaryAgentId: id }), t("summary_agent_placeholder"))}
+              </label>
+              <div>
+                <div className="text-xs font-bold">{t("speaking_order")}</div>
+                <div className="mt-1 space-y-1">
+                  {draft.discussion.speakerOrder.map((id, index) => (
+                    <div key={id} className="flex items-center justify-between border px-2 py-1 text-xs">
+                      <span>{index + 1}. {nameOf(id)}</span>
+                      <span className="flex gap-1">
+                        <button type="button" disabled={index === 0} onClick={() => patchDiscussion({ speakerOrder: moveAgentId(draft.discussion.speakerOrder, id, -1) })}>↑</button>
+                        <button type="button" disabled={index === draft.discussion.speakerOrder.length - 1} onClick={() => patchDiscussion({ speakerOrder: moveAgentId(draft.discussion.speakerOrder, id, 1) })}>↓</button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="pixel-card mt-4 space-y-2 p-3">
+          <h4 className="text-sm font-bold">{t("plan_confirmation")}</h4>
+          {(["coordinator", "user", "reviewer"] as const).map((mode) => (
+            <label key={mode} className="flex items-center gap-2 text-sm">
+              <input
+                type="radio"
+                name="plan-confirmation"
+                disabled={agentCapabilities?.collaboration.planConfirmation.includes(mode) !== true}
+                checked={draft.planConfirmation.mode === mode}
+                onChange={() => patchPlan({ mode })}
+              />
+              {t(`plan_confirmation_${mode}`)}
+              {agentCapabilities?.collaboration.planConfirmation.includes(mode) !== true
+                && <span className="text-[10px] text-neutral-500">{t("runtime_unavailable")}</span>}
+            </label>
+          ))}
+          {draft.planConfirmation.mode === "reviewer" && (
+            <label className="block text-xs font-bold">{t("designated_reviewer")}
+              {memberSelect(draft.planConfirmation.reviewerAgentId, (id) => patchPlan({ reviewerAgentId: id }), t("reviewer_placeholder"))}
+            </label>
+          )}
+        </div>
+
+        <div className="pixel-card mt-4 p-3">
+          <h4 className="text-sm font-bold">{t("tool_permission_summary")}</h4>
+          <p className="mt-1 text-xs text-neutral-500">
+            {t(`tool_policy_${session.approvalPolicy.mode}`)} · {t("plan_approval_not_tool_approval")}
+          </p>
         </div>
 
         {error && <p className="mt-3 text-sm text-red-700">{t(error)}</p>}
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-5 flex justify-between gap-2">
+          <button
+            className="pixel-button px-3 py-2 text-sm"
+            type="button"
+            onClick={() => {
+              setSaving(true);
+              restoreCollaborationDefaults(session.id)
+                .then(dialog.close)
+                .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+                .finally(() => setSaving(false));
+            }}
+          >
+            {t("restore_global_defaults")}
+          </button>
+          <div className="flex gap-2">
           <button className="pixel-button px-3 py-2 text-sm" type="button" onClick={dialog.close}>{t("cancel")}</button>
           <button className="pixel-button pixel-button--primary px-4 py-2 text-sm" type="button" disabled={saving || problems.length > 0} onClick={save}>{t("save")}</button>
+          </div>
         </div>
       </section>
     </div>
@@ -1939,7 +2088,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
       )}
 
       <section className="flex min-w-0 flex-1 flex-col">
-        {currentSessionId ? (currentSession?.mode === "multi_agent" ? <MultiAgentSession /> : <SingleAgentSession />) : currentRoomId ? (
+        {currentSessionId ? (currentSession?.collaboration.strategy === "team" ? <MultiAgentSession /> : <SingleAgentSession />) : currentRoomId ? (
           <>
             <div className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
               <span className="text-sm font-bold">{currentRoom?.name}</span>
