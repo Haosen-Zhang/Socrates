@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type {
   ApprovalDecision,
+  AppendMessageInput,
   ConversationStoredMessage,
   MessagePart,
   RuntimeEvent,
@@ -400,8 +401,34 @@ export class SingleAgentRunner {
 
     let runtimeSessionId = "";
     let assistantText = "";
+    let publicReasoningSummary = "";
     let assistantSegmentIndex = 0;
     let usageIndex = 0;
+    const finalAssistantMessage = (
+      content: string,
+      status: string,
+      idempotencyKey: string,
+    ): AppendMessageInput | undefined => {
+      if (!content && !publicReasoningSummary) return undefined;
+      return {
+        roomId: session.id,
+        threadId: prepared.threadId,
+        runId: prepared.runId,
+        turnId: prepared.turnId,
+        agentId: agent.agent_id,
+        role: "assistant",
+        kind: content ? "text" : "summary",
+        content,
+        parts: [
+          ...(publicReasoningSummary
+            ? [{ type: "reasoning_summary" as const, text: publicReasoningSummary }]
+            : []),
+          ...(content ? [{ type: "text" as const, text: content }] : []),
+        ],
+        status,
+        idempotencyKey,
+      };
+    };
     const persistAssistantSegment = async (): Promise<void> => {
       if (!assistantText) return;
       const content = assistantText;
@@ -561,6 +588,11 @@ export class SingleAgentRunner {
             return;
           } else if (event.type === "text_delta") {
             assistantText += event.text;
+          } else if (event.type === "extension" && event.name === "reasoning_summary_delta") {
+            const text = event.payload && typeof event.payload === "object"
+              ? (event.payload as Record<string, unknown>).text
+              : undefined;
+            if (typeof text === "string") publicReasoningSummary += text;
           } else if (event.type === "usage") {
             this.usage.record({
               stableKey: `single:${prepared.runId}:${usageIndex++}`,
@@ -580,21 +612,11 @@ export class SingleAgentRunner {
         runId: prepared.runId,
         turnId: prepared.turnId,
         completedAt,
-        assistantMessage: finalContent
-          ? {
-            roomId: session.id,
-            threadId: prepared.threadId,
-            runId: prepared.runId,
-            turnId: prepared.turnId,
-            agentId: agent.agent_id,
-            role: "assistant",
-            kind: "text",
-            content: finalContent,
-            parts: [{ type: "text", text: finalContent }],
-            status: "completed",
-            idempotencyKey: `assistant-final:${prepared.turnId}`,
-          }
-          : undefined,
+        assistantMessage: finalAssistantMessage(
+          finalContent,
+          "completed",
+          `assistant-final:${prepared.turnId}`,
+        ),
       });
       assistantText = "";
       return {
@@ -618,21 +640,11 @@ export class SingleAgentRunner {
         status,
         error: message,
         completedAt,
-        assistantMessage: partialContent
-          ? {
-            roomId: session.id,
-            threadId: prepared.threadId,
-            runId: prepared.runId,
-            turnId: prepared.turnId,
-            agentId: agent.agent_id,
-            role: "assistant",
-            kind: "text",
-            content: partialContent,
-            parts: [{ type: "text", text: partialContent }],
-            status,
-            idempotencyKey: `assistant-partial:${prepared.runId}`,
-          }
-          : undefined,
+        assistantMessage: finalAssistantMessage(
+          partialContent,
+          status,
+          `assistant-partial:${prepared.runId}`,
+        ),
       });
       await emit({
         type: "status",

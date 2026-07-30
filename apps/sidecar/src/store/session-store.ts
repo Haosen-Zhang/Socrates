@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { validateConversation, type ConversationMode, type ConversationSession, type MessagePart, type SessionAgentSnapshot, type SessionMessage,
+  type ToolOutputRef,
+  type ConversationTurnStatus,
   validateRoomShape,
   type RoomKind,
   normalizeCollaborationSettings,
@@ -24,8 +26,27 @@ type SessionRow = {
 };
 
 type AgentRow = { agent_id: string; snapshot_json: string; position: number; execution_eligible: number };
-type MessageRow = { id: string; session_id: string; role: SessionMessage["role"]; author_id: string | null; content: string; status: string; created_at: string };
-type PartRow = { type: string; text: string | null; attachment_id: string | null; metadata_json: string | null };
+type MessageRow = {
+  id: string;
+  session_id: string;
+  role: SessionMessage["role"];
+  author_id: string | null;
+  kind: SessionMessage["kind"] | null;
+  content: string;
+  sequence: number | null;
+  run_id: string | null;
+  turn_id: string | null;
+  turn_status: ConversationTurnStatus | null;
+  status: string;
+  created_at: string;
+};
+type PartRow = {
+  type: string;
+  text: string | null;
+  attachment_id: string | null;
+  tool_call_id: string | null;
+  metadata_json: string | null;
+};
 
 export class SessionStore {
   constructor(private readonly db: Database) {}
@@ -138,23 +159,43 @@ export class SessionStore {
 
   listMessages(sessionId: string): SessionMessage[] {
     return this.db.query<MessageRow, [string]>(`
-      SELECT * FROM session_messages
-      WHERE session_id = ? AND (kind IS NULL OR kind IN ('text', 'summary', 'error'))
-      ORDER BY COALESCE(sequence, 2147483647), created_at, id
+      SELECT messages.*, turns.status AS turn_status
+      FROM session_messages AS messages
+      LEFT JOIN conversation_turns AS turns ON turns.id = messages.turn_id
+      WHERE messages.session_id = ?
+      ORDER BY COALESCE(messages.sequence, 2147483647), messages.created_at, messages.id
     `).all(sessionId).map((row) => ({
       id: row.id,
       sessionId: row.session_id,
       role: row.role,
       authorId: row.author_id,
+      kind: row.kind ?? (row.role === "tool" ? "tool_result" : "text"),
       content: row.content,
+      sequence: row.sequence ?? Number.MAX_SAFE_INTEGER,
+      runId: row.run_id,
+      turnId: row.turn_id,
+      turnStatus: row.turn_status,
       status: row.status,
       createdAt: row.created_at,
-      parts: this.db.query<PartRow, [string]>("SELECT type, text, attachment_id, metadata_json FROM message_parts WHERE message_id = ? ORDER BY ordinal").all(row.id).flatMap((part): MessagePart[] => {
+      parts: this.db.query<PartRow, [string]>("SELECT type, text, attachment_id, tool_call_id, metadata_json FROM message_parts WHERE message_id = ? ORDER BY ordinal").all(row.id).flatMap((part): MessagePart[] => {
         const metadata = part.metadata_json ? JSON.parse(part.metadata_json) as Record<string, unknown> : {};
         if (part.type === "text") return [{ type: "text", text: part.text ?? "" }];
+        if (part.type === "reasoning_summary") return [{ type: "reasoning_summary", text: part.text ?? "" }];
         if (part.type === "image" && part.attachment_id) return [{ type: "image", attachmentId: part.attachment_id, mediaType: String(metadata.mediaType ?? "application/octet-stream"), alt: String(metadata.filename ?? "image") }];
         if (part.type === "file" && part.attachment_id) return [{ type: "file", attachmentId: part.attachment_id, mediaType: String(metadata.mediaType ?? "application/octet-stream"), filename: String(metadata.filename ?? "file") }];
         if (part.type === "workspace_ref") return [{ type: "workspace_ref", refId: String(metadata.refId ?? ""), relativePath: String(metadata.relativePath ?? ""), snapshotHash: typeof metadata.snapshotHash === "string" ? metadata.snapshotHash : undefined }];
+        if (part.type === "tool_call" && part.tool_call_id) return [{
+          type: "tool_call",
+          callId: part.tool_call_id,
+          name: String(metadata.name ?? ""),
+          input: metadata.input,
+        }];
+        if (part.type === "tool_result" && part.tool_call_id) return [{
+          type: "tool_result",
+          callId: part.tool_call_id,
+          output: metadata.output as ToolOutputRef,
+          isError: metadata.isError === true,
+        }];
         return [];
       }),
     }));

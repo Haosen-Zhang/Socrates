@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MD_COMPONENTS } from "./markdownLink";
@@ -22,6 +22,12 @@ import AttachmentTray, { AttachmentImage } from "./attachments/AttachmentTray";
 import { canReviewPlan, dropAgentBefore, moveAgentId } from "./multiAgentUi";
 import ResizableComposer from "./composer/ResizableComposer";
 import { roomTitleOrFallback } from "./workspace/projectSelection";
+import {
+  ApprovalShelf,
+  PublicReasoningPanel,
+  ToolActivityTimeline,
+} from "./tooling/ToolActivityTimeline";
+import { projectPublicReasoning, projectToolActivities, toolActivityId } from "./tooling/toolActivity";
 
 const DUTY_CLS: Record<string, string> = {
   propose: "bg-blue-100 text-blue-800",
@@ -640,8 +646,8 @@ function SimpleComposer() {
 function SingleAgentSession() {
   const {
     sessions, currentSessionId, sessionMessages, agentEvents, agentStreamText, pendingApprovals,
-    agentRunning, agentError, sendAgentPrompt, decideAgentApproval, cancelAgentRun, rewindSessionTo, workspacePathResults, searchWorkspacePaths, addWorkspaceRef, usageSummaries,
-  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "agentEvents", "agentStreamText", "pendingApprovals", "agentRunning", "agentError", "sendAgentPrompt", "decideAgentApproval", "cancelAgentRun", "rewindSessionTo", "workspacePathResults", "searchWorkspacePaths", "addWorkspaceRef", "usageSummaries");
+    agentRunning, activeAgentRunId, agentError, sendAgentPrompt, decideAgentApproval, cancelAgentRun, rewindSessionTo, workspacePathResults, searchWorkspacePaths, addWorkspaceRef, usageSummaries, workspaces,
+  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "agentEvents", "agentStreamText", "pendingApprovals", "agentRunning", "activeAgentRunId", "agentError", "sendAgentPrompt", "decideAgentApproval", "cancelAgentRun", "rewindSessionTo", "workspacePathResults", "searchWorkspacePaths", "addWorkspaceRef", "usageSummaries", "workspaces");
   // 窗口化：长会话只渲染最近 N 条，更早的可展开
   const [sessionLimit, setSessionLimit] = useState(DEFAULT_WINDOW_SIZE);
   useEffect(() => setSessionLimit(DEFAULT_WINDOW_SIZE), [currentSessionId]);
@@ -653,6 +659,33 @@ function SingleAgentSession() {
   const session = sessions.find((item) => item.id === currentSessionId);
   const agentSnapshot = session?.agents[0]?.snapshot;
   const agentUsage = usageSummaries.find((item) => item.agentId === session?.agents[0]?.agentId);
+  const workspaceLabel = workspaces.find((workspace) => workspace.id === session?.workspaceId)?.label ?? t("workspace_none");
+  const toolActivities = useMemo(
+    () => projectToolActivities({
+      messages: sessionMessages,
+      events: agentEvents,
+      approvals: pendingApprovals,
+      activeRunId: activeAgentRunId,
+    }),
+    [sessionMessages, agentEvents, pendingApprovals, activeAgentRunId],
+  );
+  const reasoningSummaries = useMemo(
+    () => projectPublicReasoning({
+      messages: sessionMessages,
+      events: agentEvents,
+      running: agentRunning,
+      activeRunId: activeAgentRunId,
+    }),
+    [sessionMessages, agentEvents, agentRunning, activeAgentRunId],
+  );
+  const visibleToolActivityIds = new Set(sessionWindow.visible.flatMap((message) => message.parts
+    .filter((part) => part.type === "tool_call")
+    .map((part) => toolActivityId(message.runId, part.callId))));
+  const visibleSequence = sessionWindow.visible[0]?.sequence ?? Number.MAX_SAFE_INTEGER;
+  const unanchoredToolActivities = toolActivities.filter((activity) => (
+    !visibleToolActivityIds.has(activity.id) && activity.sequence >= visibleSequence
+  ));
+  const liveReasoningSummaries = reasoningSummaries.filter((summary) => summary.id === "live-reasoning-summary");
   const usageText = (value: number | null | undefined) => value == null ? t("usage_unavailable") : value.toLocaleString();
   const streamingText = agentStreamText;
   const submit = async () => {
@@ -696,45 +729,53 @@ function SingleAgentSession() {
             {t("show_earlier", { n: sessionWindow.hiddenCount })}
           </button>
         )}
-        {sessionWindow.visible.map((message) => (
-          <div key={message.id} className={`anim-msg group flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}>
-            <div className={`pixel-card max-w-[78%] p-3 text-sm ${message.role === "user" ? "whitespace-pre-wrap bg-violet-50" : "md-body bg-white"}`}>
-              {message.role === "user" ? message.content : <Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{message.content}</Markdown>}
-              {message.parts.filter((part) => part.type !== "text").length > 0 && <div className="mt-2 flex flex-wrap gap-2">
-                {message.parts.map((part, index) => part.type === "image"
-                  ? <AttachmentImage key={`${part.attachmentId}-${index}`} id={part.attachmentId} alt={part.alt ?? "image"} className="max-h-64 w-auto max-w-full" />
-                  : part.type === "file" ? <span key={`${part.attachmentId}-${index}`} className="pixel-chip">{part.filename}</span>
-                  : part.type === "workspace_ref" ? <span key={`${part.refId}-${index}`} className="pixel-chip">@{part.relativePath}</span>
-                  : null)}
-              </div>}
-            </div>
-            <MsgActions m={message} align={message.role === "user" ? "right" : "left"} busy={agentRunning} onRewind={(messageId) => void rewindSessionTo(messageId)} />
-          </div>
-        ))}
-        {agentRunning && streamingText && <div className="pixel-card max-w-[78%] whitespace-pre-wrap bg-white p-3 text-sm">{streamingText}</div>}
-        {agentEvents.filter((event) => event.type === "tool_call").map((event) => event.type === "tool_call" && (
-          <div key={event.callId} className="pixel-tool-card p-3 text-xs">
-            <div className="font-bold">{event.name}</div>
-            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap">{JSON.stringify(event.input, null, 2)}</pre>
-          </div>
-        ))}
-        {pendingApprovals.map((approval) => {
-          const rawId = approval.subjectId.slice(approval.subjectId.indexOf(":") + 1);
-          const call = agentEvents.find((event) => event.type === "tool_call" && event.callId === rawId);
+        {sessionWindow.visible.map((message) => {
+          const messageReasoning = reasoningSummaries.filter((summary) => summary.id === message.id);
+          if (message.kind === "tool_call") {
+            const callId = message.parts.find((part) => part.type === "tool_call")?.callId;
+            const activity = toolActivities.find((item) => item.id === toolActivityId(message.runId, callId ?? ""));
+            return (
+              <Fragment key={message.id}>
+                {messageReasoning.length > 0 && <PublicReasoningPanel summaries={messageReasoning} running={messageReasoning.some((summary) => summary.running)} />}
+                {activity && <ToolActivityTimeline activities={[activity]} showHeading={false} />}
+              </Fragment>
+            );
+          }
+          if (message.kind === "summary") {
+            return <PublicReasoningPanel key={message.id} summaries={messageReasoning} running={false} />;
+          }
+          if (message.kind !== "text" && message.kind !== "error") return null;
           return (
-            <section key={approval.id} className="pixel-approval-card p-4" aria-label={approval.kind}>
-              <div className="flex items-center justify-between gap-3"><strong>{approval.kind}</strong><span className="pixel-chip">{approval.risk}</span></div>
-              {call?.type === "tool_call" && <pre className="my-3 max-h-48 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(call.input, null, 2)}</pre>}
-              <div className="flex flex-wrap gap-2">
-                <button className="pixel-button pixel-button--primary px-3 py-1.5 text-xs" onClick={() => void decideAgentApproval(approval.id, "allow_once")}>{t("approval_allow_once")}</button>
-                {!approval.freshHumanRequired && <button className="pixel-button px-3 py-1.5 text-xs" onClick={() => void decideAgentApproval(approval.id, "allow_session")}>{t("approval_allow_session")}</button>}
-                <button className="pixel-button px-3 py-1.5 text-xs text-red-700" onClick={() => void decideAgentApproval(approval.id, "deny")}>{t("approval_deny")}</button>
+            <Fragment key={message.id}>
+              {messageReasoning.length > 0 && <PublicReasoningPanel summaries={messageReasoning} running={messageReasoning.some((summary) => summary.running)} />}
+              <div className={`anim-msg group flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}>
+                <div className={`pixel-card max-w-[78%] p-3 text-sm ${message.role === "user" ? "whitespace-pre-wrap bg-violet-50" : "md-body bg-white"}`}>
+                  {message.role === "user" ? message.content : <Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{message.content}</Markdown>}
+                  {message.parts.filter((part) => part.type !== "text" && part.type !== "reasoning_summary").length > 0 && <div className="mt-2 flex flex-wrap gap-2">
+                    {message.parts.map((part, index) => part.type === "image"
+                      ? <AttachmentImage key={`${part.attachmentId}-${index}`} id={part.attachmentId} alt={part.alt ?? "image"} className="max-h-64 w-auto max-w-full" />
+                      : part.type === "file" ? <span key={`${part.attachmentId}-${index}`} className="pixel-chip">{part.filename}</span>
+                      : part.type === "workspace_ref" ? <span key={`${part.refId}-${index}`} className="pixel-chip">@{part.relativePath}</span>
+                      : null)}
+                  </div>}
+                </div>
+                <MsgActions m={message} align={message.role === "user" ? "right" : "left"} busy={agentRunning} onRewind={(messageId) => void rewindSessionTo(messageId)} />
               </div>
-            </section>
+            </Fragment>
           );
         })}
+        <PublicReasoningPanel summaries={liveReasoningSummaries} running={agentRunning} />
+        <ToolActivityTimeline activities={unanchoredToolActivities} showHeading={false} />
+        {agentRunning && streamingText && <div className="pixel-card max-w-[78%] whitespace-pre-wrap bg-white p-3 text-sm">{streamingText}</div>}
       </div>
       <form className="composer-dock" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        <ApprovalShelf
+          approvals={pendingApprovals}
+          activities={toolActivities}
+          workspaceLabel={workspaceLabel}
+          busy={false}
+          onDecision={decideAgentApproval}
+        />
         {workspacePathResults.length > 0 && (
           <div className="pixel-card mb-2 max-h-48 overflow-y-auto p-2">
             {workspacePathResults.filter((result) => result.kind === "file").slice(0, 12).map((result) => (

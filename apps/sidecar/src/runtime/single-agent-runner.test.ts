@@ -105,6 +105,23 @@ class FlakyRuntime implements AgentRuntime {
   async close() {}
 }
 
+class PublicSummaryRuntime implements AgentRuntime {
+  readonly kind = "public-summary";
+  readonly capabilities = { ...UNKNOWN_MODEL_CAPABILITIES, textInput: true as const };
+  async open() {}
+  async *start(): AsyncIterable<RuntimeEvent> {
+    yield {
+      type: "extension",
+      name: "reasoning_summary_delta",
+      payload: { text: "Checked the public constraints." },
+    };
+    yield { type: "text_delta", text: "done" };
+  }
+  async answerApproval() {}
+  async interrupt() {}
+  async close() {}
+}
+
 function setup() {
   const db = openDb(":memory:");
   db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
@@ -118,6 +135,7 @@ function setup() {
   const events = new EventStore(db);
   const runtimes = new RuntimeManager(db, events);
   runtimes.register("fake", () => new ApprovalRuntime());
+  runtimes.register("public-summary", () => new PublicSummaryRuntime());
   return { db, session, approvals, runner: new SingleAgentRunner(db, runtimes, approvals, events, new AttachmentResolver(db, `${tmpdir()}/unused-${crypto.randomUUID()}`)) };
 }
 
@@ -600,6 +618,23 @@ describe("SingleAgentRunner", () => {
     expect(db.query("SELECT text FROM message_parts JOIN session_messages ON session_messages.id = message_parts.message_id WHERE session_messages.role = 'assistant' AND session_messages.kind = 'text'").get()).toEqual({ text: "done" });
     expect(db.query("SELECT status FROM runtime_sessions").get()).toEqual({ status: "closed" });
     await expect(runner.decide(pending.id, { clientDecisionKey: "again", decision: "allow_once" })).rejects.toThrow("approval_already_decided");
+  });
+
+  it("persists only an explicit public reasoning summary extension", async () => {
+    const { db, session, runner } = setup();
+    await runner.run({
+      sessionId: session.id,
+      runtimeKind: "public-summary",
+      prompt: "explain safely",
+    }, () => {});
+
+    const assistant = new SessionStore(db).listMessages(session.id)
+      .find((message) => message.role === "assistant");
+    expect(assistant?.content).toBe("done");
+    expect(assistant?.parts).toEqual([
+      { type: "reasoning_summary", text: "Checked the public constraints." },
+      { type: "text", text: "done" },
+    ]);
   });
 
   it("records an explicit user cancellation as cancelled rather than failed", async () => {
