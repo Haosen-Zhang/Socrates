@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useT } from "../store";
 import Settings from "../Settings";
 import { sfx } from "../fx";
+import { hasOpenNestedDialog } from "../dialog/dialogLayer";
 
 /**
  * Settings 以模态面板呈现（C6）。
@@ -38,6 +39,7 @@ export default function SettingsOverlayHost({
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (hasOpenNestedDialog(document)) return;
       if (event.key === "Escape") {
         event.preventDefault();
         onClose();

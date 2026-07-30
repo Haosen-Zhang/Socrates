@@ -14,6 +14,7 @@ import { validateAvatarUpload } from "./agentAvatarUpload";
 import { useT, type AgentForm } from "./store";
 import { AGENTS_SECTION_KEYS, useStorePick } from "./selectors";
 import { sfx } from "./fx";
+import NestedDialogPortal from "./dialog/NestedDialogPortal";
 
 function newForm(agents: Agent[]): AgentForm {
   const identity = randomUniqueAgentIdentity(agents.map((agent) => agent.nickname));
@@ -180,15 +181,12 @@ export default function AgentsSection() {
       )}
 
       {open && (
-        <div className="pixel-dialog-backdrop" role="presentation" onMouseDown={close}>
-          <div
-            className="pixel-dialog max-h-[88vh] w-[min(760px,calc(100vw-48px))] overflow-y-auto p-5"
-            role="dialog"
-            aria-modal="true"
-            aria-label={editingId ? t("agent_edit") : t("agent_create")}
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="mb-5 flex items-start justify-between">
+        <NestedDialogPortal
+          ariaLabel={editingId ? t("agent_edit") : t("agent_create")}
+          className="pixel-dialog max-h-full w-full max-w-[760px] overflow-y-auto overscroll-contain p-5"
+          onClose={close}
+        >
+          <div className="mb-5 flex items-start justify-between">
               <div>
                 <div className="pixel-kicker">PERSONA CONFIG</div>
                 <h3 className="text-lg font-bold">{editingId ? t("agent_edit") : t("agent_create")}</h3>
@@ -205,11 +203,11 @@ export default function AgentsSection() {
               </button>
             </div>
 
-            <form onSubmit={submit} className="space-y-5">
-              <div className="pixel-identity-panel flex gap-5 p-4">
+          <form onSubmit={submit} className="space-y-5">
+              <div className="pixel-identity-panel flex flex-col gap-5 p-4 sm:flex-row">
                 <AgentAvatar src={form.avatar} label={form.nickname} size={104} />
                 <div className="min-w-0 flex-1 space-y-3">
-                  <div className="flex items-end gap-2">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
                     <label className="min-w-0 flex-1 text-sm">
                       {t("nickname")}
                       <input
@@ -250,6 +248,8 @@ export default function AgentsSection() {
                       ref={avatarInputRef}
                       className="sr-only"
                       type="file"
+                      tabIndex={-1}
+                      aria-hidden="true"
                       accept={AGENT_AVATAR_ACCEPT}
                       onChange={selectAvatarFile}
                     />
@@ -258,7 +258,7 @@ export default function AgentsSection() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <label className="text-sm">
                   {t("provider")}
                   <select className={input} required value={form.providerId} onChange={(e) => setForm({ ...form, providerId: e.target.value })}>
@@ -332,7 +332,7 @@ export default function AgentsSection() {
                     onChange={(event) => setForm({ ...form, contextWindowTokens: event.target.value })}
                   />
                 </label>
-                <div className="col-span-2 pixel-card space-y-3 p-3">
+                <div className="pixel-card space-y-3 p-3 md:col-span-2">
                   <label className="flex items-center gap-2 text-sm font-bold">
                     <input type="checkbox" checked={form.reasoningCapabilityKnown} onChange={(event) => setForm({ ...form, reasoningCapabilityKnown: event.target.checked, reasoningEfforts: event.target.checked ? form.reasoningEfforts : [], reasoningEffort: "" })} />
                     {t("reasoning_capability_override")}
@@ -342,11 +342,11 @@ export default function AgentsSection() {
                     <label className="block text-sm">{t("reasoning_effort")}<select className={input} value={form.reasoningEffort} onChange={(event) => setForm({ ...form, reasoningEffort: event.target.value as ReasoningEffort | "" })}><option value="">{t("reasoning_effort_none")}</option>{form.reasoningEfforts.map((effort) => <option key={effort} value={effort}>{effort}</option>)}</select></label>
                   </>}
                 </div>
-                <label className="col-span-2 text-sm">
+                <label className="text-sm md:col-span-2">
                   {t("role")}
                   <input className={input} placeholder={t("role_placeholder")} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} />
                 </label>
-                <label className="col-span-2 text-sm">
+                <label className="text-sm md:col-span-2">
                   {t("system_prompt")}
                   <textarea className={`${input} h-24`} value={form.systemPrompt} onChange={(e) => setForm({ ...form, systemPrompt: e.target.value })} />
                 </label>
@@ -356,9 +356,8 @@ export default function AgentsSection() {
                 <button type="button" className="pixel-button px-4 py-2 text-sm" onClick={close}>{t("cancel")}</button>
                 <button disabled={duplicateNickname} type="submit" className="pixel-button pixel-button--primary px-5 py-2 text-sm">{editingId ? t("save") : t("create")}</button>
               </div>
-            </form>
-          </div>
-        </div>
+          </form>
+        </NestedDialogPortal>
       )}
     </section>
   );
