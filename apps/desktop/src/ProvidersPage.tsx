@@ -4,6 +4,7 @@ import { useT, type ProviderForm, type TestResult } from "./store";
 import { PROVIDER_CARD_KEYS, PROVIDERS_PAGE_KEYS, useStorePick } from "./selectors";
 import { sfx } from "./fx";
 import { useTransientFlag } from "./useTransientFlag";
+import NestedDialogPortal from "./dialog/NestedDialogPortal";
 
 const EMPTY: ProviderForm = {
   name: "",
@@ -189,15 +190,12 @@ export default function ProvidersPage() {
       )}
 
       {open && (
-        <div className="pixel-dialog-backdrop" role="presentation" onMouseDown={close}>
-          <div
-            className="pixel-dialog w-[min(620px,calc(100vw-48px))] p-5"
-            role="dialog"
-            aria-modal="true"
-            aria-label={editingId ? t("provider_edit") : t("provider_add")}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <div className="mb-5 flex items-start justify-between">
+        <NestedDialogPortal
+          ariaLabel={editingId ? t("provider_edit") : t("provider_add")}
+          className="pixel-dialog max-h-full w-full max-w-[620px] overflow-y-auto overscroll-contain p-5"
+          onClose={close}
+        >
+          <div className="mb-5 flex items-start justify-between">
               <div>
                 <div className="pixel-kicker">PROVIDER CONFIG</div>
                 <h3 className="text-lg font-bold">{editingId ? t("provider_edit") : t("provider_add")}</h3>
@@ -213,7 +211,7 @@ export default function ProvidersPage() {
                 ×
               </button>
             </div>
-            <form onSubmit={submit} className="grid grid-cols-2 gap-4">
+          <form onSubmit={submit} className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <label className="text-sm">
                 {t("name")}
                 <input className={input} required {...field("name")} />
@@ -233,7 +231,7 @@ export default function ProvidersPage() {
                 {t("default_model")}
                 <input className={input} placeholder="gpt-5.4 / deepseek-v4-flash" {...field("defaultModel")} />
               </label>
-              <label className="col-span-2 text-sm">
+              <label className="text-sm md:col-span-2">
                 {editingId ? t("api_key_keep") : t("api_key")}
                 <input
                   className={input}
@@ -243,8 +241,8 @@ export default function ProvidersPage() {
                   {...field("apiKey")}
                 />
               </label>
-              {error && <p className="col-span-2 text-sm text-red-700">{error}</p>}
-              <div className="col-span-2 flex justify-end gap-2">
+              {error && <p className="text-sm text-red-700 md:col-span-2">{error}</p>}
+              <div className="flex justify-end gap-2 md:col-span-2">
                 <button type="button" className="pixel-button px-4 py-2 text-sm" onClick={close}>
                   {t("cancel")}
                 </button>
@@ -252,9 +250,8 @@ export default function ProvidersPage() {
                   {editingId ? t("save") : t("add")}
                 </button>
               </div>
-            </form>
-          </div>
-        </div>
+          </form>
+        </NestedDialogPortal>
       )}
     </section>
   );
