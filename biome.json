@@ -6,7 +6,8 @@
       "apps/sidecar/src/**",
       "apps/desktop/src/**",
       "!**/dist/**",
-      "!**/target/**"
+      "!**/target/**",
+      "!**/.claude/**"
     ]
   },
   "formatter": { "enabled": false },

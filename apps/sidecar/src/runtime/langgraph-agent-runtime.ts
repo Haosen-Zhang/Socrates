@@ -34,11 +34,9 @@ import {
   reduceRunState,
   reduceAgentState,
   reduceTurnState,
-  reduceToolState,
   type RunState,
   type AgentState,
   type TurnState,
-  type ToolState,
 } from "@socrates/core";
 
 // ─── Types ─────────────────────────────────────────────────
@@ -281,7 +279,6 @@ export class LangGraphAgentRuntime implements AgentRuntime {
     const modelInvoker = this.input.modelInvoker;
     const toolExecutor = this.input.toolExecutor;
     const toolNeedsApproval = this.input.toolNeedsApproval;
-    const agentId = this.input.agentId;
 
     const prepareContextNode = async (state: typeof AgentGraphState.State): Promise<Partial<typeof AgentGraphState.State>> => {
       const nextTurn = reduceTurnState(state.turnState, { type: "sample" });
