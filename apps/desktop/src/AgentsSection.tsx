@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_AVATAR_ACCEPT,
   AGENT_AVATARS,
@@ -6,8 +6,8 @@ import {
   isAgentAvatarSource,
   normalizeAgentNickname,
   randomUniqueAgentIdentity,
+  resolveReasoningProfile,
   type Agent,
-  type ReasoningEffort,
 } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import { validateAvatarUpload } from "./agentAvatarUpload";
@@ -15,6 +15,7 @@ import { useT, type AgentForm } from "./store";
 import { AGENTS_SECTION_KEYS, useStorePick } from "./selectors";
 import { sfx } from "./fx";
 import NestedDialogPortal from "./dialog/NestedDialogPortal";
+import ReasoningEffortSelect from "./ReasoningEffortSelect";
 
 function newForm(agents: Agent[]): AgentForm {
   const identity = randomUniqueAgentIdentity(agents.map((agent) => agent.nickname));
@@ -27,9 +28,7 @@ function newForm(agents: Agent[]): AgentForm {
     systemPrompt: "",
     temperature: "",
     contextWindowTokens: "",
-    reasoningCapabilityKnown: false,
-    reasoningEfforts: [],
-    reasoningEffort: "",
+    reasoningEffort: "auto",
   };
 }
 
@@ -73,9 +72,7 @@ export default function AgentsSection() {
       contextWindowTokens: typeof agent.modelCapabilities?.contextWindowTokens === "number"
         ? String(agent.modelCapabilities.contextWindowTokens)
         : "",
-      reasoningCapabilityKnown: agent.modelCapabilities?.reasoningEfforts !== "unknown" && Array.isArray(agent.modelCapabilities?.reasoningEfforts),
-      reasoningEfforts: Array.isArray(agent.modelCapabilities?.reasoningEfforts) ? agent.modelCapabilities.reasoningEfforts : [],
-      reasoningEffort: agent.reasoningEffort ?? "",
+      reasoningEffort: agent.reasoningEffort ?? "auto",
     });
     setOpen(true);
   };
@@ -130,7 +127,27 @@ export default function AgentsSection() {
   };
 
   const input = "pixel-input w-full px-3 py-2 text-sm";
-  const effortOptions: ReasoningEffort[] = ["auto", "minimal", "low", "medium", "high", "xhigh", "max"];
+  const selectedProvider = providers.find((provider) => provider.id === form.providerId);
+  const effectiveModelId = form.modelId.trim() || selectedProvider?.defaultModel || "";
+  const editingAgent = editingId ? agents.find((agent) => agent.id === editingId) : undefined;
+  const capabilityOverride = editingAgent &&
+    editingAgent.providerId === form.providerId &&
+    editingAgent.modelId === effectiveModelId
+    ? editingAgent.modelCapabilities?.reasoningEfforts
+    : undefined;
+  const reasoningProfile = useMemo(
+    () => resolveReasoningProfile(
+      selectedProvider?.type ?? "openai_compatible",
+      effectiveModelId,
+      capabilityOverride,
+    ),
+    [selectedProvider?.type, effectiveModelId, capabilityOverride],
+  );
+
+  useEffect(() => {
+    if (reasoningProfile.efforts.includes(form.reasoningEffort)) return;
+    setForm((current) => ({ ...current, reasoningEffort: reasoningProfile.defaultEffort }));
+  }, [form.reasoningEffort, reasoningProfile]);
 
   return (
     <section className="space-y-4">
@@ -261,7 +278,7 @@ export default function AgentsSection() {
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <label className="text-sm">
                   {t("provider")}
-                  <select className={input} required value={form.providerId} onChange={(e) => setForm({ ...form, providerId: e.target.value })}>
+                  <select className={input} required value={form.providerId} onChange={(e) => setForm({ ...form, providerId: e.target.value, reasoningEffort: "auto" })}>
                     <option value="">{t("provider_select")}</option>
                     {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
                   </select>
@@ -273,7 +290,7 @@ export default function AgentsSection() {
                       <select
                         className={input}
                         value={form.modelId}
-                        onChange={(e) => setForm({ ...form, modelId: e.target.value })}
+                        onChange={(e) => setForm({ ...form, modelId: e.target.value, reasoningEffort: "auto" })}
                       >
                         <option value="">{t("model_default_option")}</option>
                         {form.modelId && !models.includes(form.modelId) && (
@@ -300,7 +317,7 @@ export default function AgentsSection() {
                         className={input}
                         placeholder={providers.find((p) => p.id === form.providerId)?.defaultModel ?? ""}
                         value={form.modelId}
-                        onChange={(e) => setForm({ ...form, modelId: e.target.value })}
+                        onChange={(e) => setForm({ ...form, modelId: e.target.value, reasoningEffort: "auto" })}
                       />
                       {models && models.length > 0 && (
                         <button
@@ -332,16 +349,11 @@ export default function AgentsSection() {
                     onChange={(event) => setForm({ ...form, contextWindowTokens: event.target.value })}
                   />
                 </label>
-                <div className="pixel-card space-y-3 p-3 md:col-span-2">
-                  <label className="flex items-center gap-2 text-sm font-bold">
-                    <input type="checkbox" checked={form.reasoningCapabilityKnown} onChange={(event) => setForm({ ...form, reasoningCapabilityKnown: event.target.checked, reasoningEfforts: event.target.checked ? form.reasoningEfforts : [], reasoningEffort: "" })} />
-                    {t("reasoning_capability_override")}
-                  </label>
-                  {!form.reasoningCapabilityKnown ? <p className="text-xs text-neutral-500">{t("reasoning_unavailable")}</p> : <>
-                    <div className="flex flex-wrap gap-2">{effortOptions.map((effort) => <label key={effort} className="pixel-chip flex items-center gap-1 text-xs"><input type="checkbox" checked={form.reasoningEfforts.includes(effort)} onChange={(event) => setForm((current) => ({ ...current, reasoningEfforts: event.target.checked ? [...current.reasoningEfforts, effort] : current.reasoningEfforts.filter((item) => item !== effort), reasoningEffort: !event.target.checked && current.reasoningEffort === effort ? "" : current.reasoningEffort }))} />{effort}</label>)}</div>
-                    <label className="block text-sm">{t("reasoning_effort")}<select className={input} value={form.reasoningEffort} onChange={(event) => setForm({ ...form, reasoningEffort: event.target.value as ReasoningEffort | "" })}><option value="">{t("reasoning_effort_none")}</option>{form.reasoningEfforts.map((effort) => <option key={effort} value={effort}>{effort}</option>)}</select></label>
-                  </>}
-                </div>
+                <ReasoningEffortSelect
+                  profile={reasoningProfile}
+                  value={form.reasoningEffort}
+                  onChange={(reasoningEffort) => setForm({ ...form, reasoningEffort })}
+                />
                 <label className="text-sm md:col-span-2">
                   {t("role")}
                   <input className={input} placeholder={t("role_placeholder")} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} />

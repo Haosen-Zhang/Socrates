@@ -1,13 +1,44 @@
 import { streamText } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createAnthropic } from "@ai-sdk/anthropic";
-import type { ModelGateway } from "@socrates/core";
+import { resolveReasoningProfile, type ModelGateway, type ReasoningEffort } from "@socrates/core";
 import type { FetchLike } from "./net";
 
-export function reasoningProviderOptions(providerType: "openai_compatible" | "anthropic", effort?: string) {
-  return providerType === "openai_compatible" && effort
-    ? { "openai-compatible": { reasoningEffort: effort } }
-    : undefined;
+type StreamProviderOptions = NonNullable<Parameters<typeof streamText>[0]["providerOptions"]>;
+
+export function reasoningProviderOptions(
+  providerType: "openai_compatible" | "anthropic",
+  modelId: string,
+  effort?: ReasoningEffort,
+): StreamProviderOptions | undefined {
+  if (!effort || effort === "auto") return undefined;
+  const family = resolveReasoningProfile(providerType, modelId).family;
+
+  if (providerType === "anthropic") {
+    if (effort === "disabled") return { anthropic: { thinking: { type: "disabled" as const } } };
+    return {
+      anthropic: {
+        effort,
+        ...(family === "deepseek" ? { thinking: { type: "enabled" as const } } : {}),
+      },
+    };
+  }
+
+  if (effort === "disabled") {
+    if (family === "deepseek") return { openaiCompatible: { thinking: { type: "disabled" } } };
+    if (["qwen", "kimi", "glm"].includes(family)) {
+      return { openaiCompatible: { enable_thinking: false } };
+    }
+    return { openaiCompatible: { reasoningEffort: "none" } };
+  }
+
+  return {
+    openaiCompatible: {
+      reasoningEffort: effort,
+      ...(family === "deepseek" ? { thinking: { type: "enabled" } } : {}),
+      ...(["qwen", "kimi", "glm"].includes(family) ? { enable_thinking: true } : {}),
+    },
+  };
 }
 
 export function createAiSdkModel(input: {
@@ -58,7 +89,7 @@ export function makeAiSdkGateway(fetchImpl: FetchLike): ModelGateway {
       system: req.system,
       messages: req.messages,
       temperature: req.temperature,
-      providerOptions: reasoningProviderOptions(req.providerType, req.reasoningEffort),
+      providerOptions: reasoningProviderOptions(req.providerType, req.modelId, req.reasoningEffort),
       abortSignal: req.signal,
     });
     let usage: { inputTokens?: number; outputTokens?: number } | undefined;

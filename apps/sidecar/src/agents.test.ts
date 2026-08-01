@@ -6,18 +6,17 @@ import { MemorySecrets } from "./secrets";
 import { providerRoutes } from "./providers";
 import { agentRoutes } from "./agents";
 
-function makeApp() {
-  const db = openDb(":memory:");
+function makeApp(db = openDb(":memory:")) {
   const app = new Hono();
   app.route("/providers", providerRoutes(db, new MemorySecrets()));
   app.route("/agents", agentRoutes(db));
   return app;
 }
 
-async function createProvider(app: Hono): Promise<string> {
+async function createProvider(app: Hono, type: "openai_compatible" | "anthropic" = "openai_compatible"): Promise<string> {
   const response = await app.request("/providers", {
     method: "POST",
-    body: JSON.stringify({ name: "OpenAI", type: "openai_compatible", apiKey: "sk-test" }),
+    body: JSON.stringify({ name: type === "anthropic" ? "Anthropic" : "OpenAI", type, apiKey: "sk-test" }),
   });
   return (await response.json()).id;
 }
@@ -31,10 +30,12 @@ async function createAgent(app: Hono, providerId: string, nickname: string, avat
 
 describe("agent identity validation", () => {
   let app: Hono;
+  let db: ReturnType<typeof openDb>;
   let providerId: string;
 
   beforeEach(async () => {
-    app = makeApp();
+    db = openDb(":memory:");
+    app = makeApp(db);
     providerId = await createProvider(app);
   });
 
@@ -64,19 +65,107 @@ describe("agent identity validation", () => {
     expect(svg.status).toBe(400);
   });
 
-  it("stores only explicitly declared reasoning efforts and rejects unsupported defaults", async () => {
+  it("derives model-aware reasoning efforts and rejects unsupported selections", async () => {
     const valid = await app.request("/agents", {
       method: "POST",
-      body: JSON.stringify({ nickname: "Reasoner", avatar: AGENT_AVATARS[0], providerId, modelId: "reasoning-model", reasoningEfforts: ["low", "high"], reasoningEffort: "high" }),
+      body: JSON.stringify({ nickname: "Reasoner", avatar: AGENT_AVATARS[0], providerId, modelId: "gpt-5.4", reasoningEffort: "high" }),
     });
     expect(valid.status).toBe(201);
-    expect(await valid.json()).toMatchObject({ reasoningEffort: "high", modelCapabilities: { reasoningEfforts: ["low", "high"] } });
+    expect(await valid.json()).toMatchObject({
+      reasoningEffort: "high",
+      modelCapabilities: { reasoningEfforts: ["auto", "disabled", "low", "medium", "high", "xhigh"] },
+    });
     const unsupported = await app.request("/agents", {
       method: "POST",
-      body: JSON.stringify({ nickname: "Invalid", avatar: AGENT_AVATARS[1], providerId, modelId: "reasoning-model", reasoningEfforts: ["low"], reasoningEffort: "high" }),
+      body: JSON.stringify({ nickname: "Invalid", avatar: AGENT_AVATARS[1], providerId, modelId: "gpt-5.4", reasoningEffort: "max" }),
     });
     expect(unsupported.status).toBe(400);
     expect(await unsupported.json()).toEqual({ error: "reasoning_effort_unsupported" });
+
+    const nonReasoning = await app.request("/agents", {
+      method: "POST",
+      body: JSON.stringify({ nickname: "GPT 4o", avatar: AGENT_AVATARS[2], providerId, modelId: "gpt-4o", reasoningEffort: "xhigh" }),
+    });
+    expect(nonReasoning.status).toBe(400);
+  });
+
+  it("supports DeepSeek and Anthropic profiles without manual capability checkboxes", async () => {
+    const deepseek = await app.request("/agents", {
+      method: "POST",
+      body: JSON.stringify({ nickname: "Deep", providerId, modelId: "deepseek-v4-pro", reasoningEffort: "max" }),
+    });
+    expect(deepseek.status).toBe(201);
+    expect(await deepseek.json()).toMatchObject({
+      reasoningEffort: "max",
+      modelCapabilities: { reasoningEfforts: ["auto", "disabled", "high", "max"] },
+    });
+
+    const anthropicProviderId = await createProvider(app, "anthropic");
+    const claude = await app.request("/agents", {
+      method: "POST",
+      body: JSON.stringify({ nickname: "Claude", providerId: anthropicProviderId, modelId: "claude-opus-4-8", reasoningEffort: "xhigh" }),
+    });
+    expect(claude.status).toBe(201);
+    expect(await claude.json()).toMatchObject({ reasoningEffort: "xhigh" });
+  });
+
+  it("normalizes a missing legacy selection to required auto", async () => {
+    const response = await createAgent(app, providerId, "Legacy Client");
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({
+      reasoningEffort: "auto",
+      modelCapabilities: { reasoningEfforts: ["auto", "disabled"] },
+    });
+  });
+
+  it("preserves supported effort on unrelated or same-model updates and resets only real changes", async () => {
+    const created = await app.request("/agents", {
+      method: "POST",
+      body: JSON.stringify({ nickname: "Stable", providerId, modelId: "gpt-5.4", reasoningEffort: "high" }),
+    });
+    const agent = await created.json();
+
+    const unrelated = await app.request(`/agents/${agent.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ role: "reviewer" }),
+    });
+    expect(await unrelated.json()).toMatchObject({ reasoningEffort: "high" });
+
+    const sameModel = await app.request(`/agents/${agent.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ providerId, modelId: "gpt-5.4" }),
+    });
+    expect(await sameModel.json()).toMatchObject({ reasoningEffort: "high" });
+
+    const changedModel = await app.request(`/agents/${agent.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ modelId: "deepseek-v4-pro" }),
+    });
+    expect(await changedModel.json()).toMatchObject({
+      reasoningEffort: "auto",
+      modelCapabilities: { reasoningEfforts: ["auto", "disabled", "high", "max"] },
+    });
+  });
+
+  it("normalizes a stored legacy unsupported effort during an unrelated update", async () => {
+    const created = await app.request("/agents", {
+      method: "POST",
+      body: JSON.stringify({ nickname: "Legacy Invalid", providerId, modelId: "gpt-5.4", reasoningEffort: "high" }),
+    });
+    const agent = await created.json();
+    db.run(
+      "UPDATE agents SET model_id = ?, reasoning_effort = ?, model_capabilities_json = ? WHERE id = ?",
+      ["company-model", "max", JSON.stringify({ reasoningEfforts: ["auto", "low", "high"] }), agent.id],
+    );
+
+    const unrelated = await app.request(`/agents/${agent.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ role: "legacy" }),
+    });
+    expect(await unrelated.json()).toMatchObject({
+      reasoningEffort: "auto",
+      modelCapabilities: { reasoningEfforts: ["auto", "low", "high"] },
+    });
   });
 
   it("persists an explicit model context window capability and rejects unsafe bounds", async () => {

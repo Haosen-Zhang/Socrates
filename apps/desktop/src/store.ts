@@ -58,9 +58,7 @@ export type AgentForm = {
   systemPrompt: string;
   temperature: string; // 表单态，空串=未设置
   contextWindowTokens: string; // 空串=未知，运行时使用保守上限
-  reasoningCapabilityKnown: boolean;
-  reasoningEfforts: ReasoningEffort[];
-  reasoningEffort: ReasoningEffort | "";
+  reasoningEffort: ReasoningEffort;
 };
 
 export type TestResult = { outcome: TestOutcome; status?: number; detail?: string };
@@ -1029,8 +1027,7 @@ export const useStore = create<Store>((set, get) => {
         contextWindowTokens: form.contextWindowTokens === ""
           ? (editingId ? null : undefined)
           : Number(form.contextWindowTokens),
-        reasoningEfforts: form.reasoningCapabilityKnown ? form.reasoningEfforts : undefined,
-        reasoningEffort: form.reasoningEffort || undefined,
+        reasoningEffort: form.reasoningEffort,
       };
       const res = editingId
         ? await sidecarFetch(hs(), `/agents/${editingId}`, { method: "PUT", body: JSON.stringify(payload) })
