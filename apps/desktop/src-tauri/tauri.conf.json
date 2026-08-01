@@ -14,7 +14,15 @@
       {
         "title": "Socrates",
         "width": 1080,
-        "height": 720
+        "height": 720,
+        "minWidth": 760,
+        "minHeight": 540,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 14,
+          "y": 16
+        }
       }
     ],
     "security": {

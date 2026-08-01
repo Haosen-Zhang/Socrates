@@ -34,6 +34,12 @@ import { agentRunErrorKey } from "./agentRunErrorUi";
 import { collaborationStrategyOptions } from "./collaborationSettingsUi";
 import { taskStatusKey } from "./taskSurface";
 import RoomTaskComposer from "./TaskComposer";
+import WindowRoomToolbar from "./window/WindowRoomToolbar";
+import {
+  deriveWindowChromeLayout,
+  useWindowChromeState,
+  type WindowToolbarMode,
+} from "./window/windowChrome";
 
 const DUTY_CLS: Record<string, string> = {
   propose: "bg-blue-100 text-blue-800",
@@ -41,6 +47,12 @@ const DUTY_CLS: Record<string, string> = {
   synthesize: "bg-purple-100 text-purple-800",
   judge: "bg-amber-100 text-amber-800",
   summarize: "bg-amber-100 text-amber-800",
+};
+
+type RoomChromeControls = {
+  sidebarHidden: boolean;
+  toolbarMode: WindowToolbarMode;
+  onToggleSidebar: () => void;
 };
 
 function AgentHeader({ name, model, duty, avatar }: { name?: string; model?: string; duty?: string; avatar?: string }) {
@@ -649,7 +661,7 @@ function SimpleComposer() {
   );
 }
 
-function SingleAgentSession() {
+function SingleAgentSession({ chrome }: { chrome: RoomChromeControls }) {
   const {
     sessions, currentSessionId, sessionMessages, agentEvents, agentStreamText, pendingApprovals,
     agentRunning, activeAgentRunId, agentError, agentCapabilities, sendAgentPrompt, updateApprovalPolicy, decideAgentApproval, cancelAgentRun, rewindSessionTo, workspacePathResults, searchWorkspacePaths, addWorkspaceRef, usageSummaries, workspaces,
@@ -713,11 +725,15 @@ function SingleAgentSession() {
   };
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
-        <div>
-          <div className="text-sm font-bold">{session?.title}</div>
-          <div className="text-[10px] uppercase tracking-wider text-neutral-500">{strategyStatus}</div>
-        </div>
+      <WindowRoomToolbar
+        title={session?.title ?? "Socrates"}
+        subtitle={strategyStatus}
+        sidebarHidden={chrome.sidebarHidden}
+        toolbarMode={chrome.toolbarMode}
+        collapseLabel={t("sidebar_collapse")}
+        expandLabel={t("sidebar_expand")}
+        onToggleSidebar={chrome.onToggleSidebar}
+      >
         <div className="flex items-center gap-2">
           {agentSnapshot && <div className="pixel-card flex items-center gap-2 px-2 py-1"><AgentAvatar src={String(agentSnapshot.avatar ?? "")} label={String(agentSnapshot.nickname ?? "Agent")} size={28} lively={false} /><span className="text-[10px]">{t("usage_current")}: {usageText(agentUsage?.current.totalTokens)}<br />{t("usage_total")}: {usageText(agentUsage?.cumulative.totalTokens)}</span></div>}
           <WorkspaceChip workspaceId={session?.workspaceId} locked />
@@ -725,7 +741,7 @@ function SingleAgentSession() {
           {session && <button className="pixel-button flex items-center gap-1 px-2 py-1 text-xs" onClick={() => setShowCollab(true)} title={t("cowork_settings_title")}><PixelIcon name="gear" size={14} />{t("cowork_settings_title")}</button>}
           {agentRunning && <button className="pixel-button px-2 py-1 text-xs text-red-700" onClick={() => void cancelAgentRun()}>{t("cancel_task")}</button>}
         </div>
-      </header>
+      </WindowRoomToolbar>
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
         {sessionWindow.hiddenCount > 0 && (
           <button className="pixel-button mx-auto block px-3 py-1 text-xs" onClick={() => setSessionLimit((limit) => expandWindow(limit, sessionMessages.length))}>
@@ -873,7 +889,7 @@ function MultiPlanCard({ plan }: { plan: MultiPlan }) {
   );
 }
 
-function MultiAgentSession() {
+function MultiAgentSession({ chrome }: { chrome: RoomChromeControls }) {
   const {
     sessions, currentSessionId, sessionMessages, currentMultiTask, multiRunning, multiError, multiStreamAgentId, multiStreamText,
     sendMultiTask, loadMultiTask, decideMultiApproval, cancelMultiTask, pauseMultiTask, resumeMultiTask, retryMultiTask, rewindSessionTo,
@@ -903,10 +919,9 @@ function MultiAgentSession() {
   );
   const strategyStatus = `${t(`strategy_${strategy}`)} · ${t(status)}`;
   return <div className="flex min-h-0 flex-1 flex-col">
-    <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
-      <div><div className="text-sm font-bold">{session?.title}</div><div className="text-[10px] uppercase tracking-wider text-neutral-500">{strategyStatus}</div></div>
+    <WindowRoomToolbar title={session?.title ?? "Socrates"} subtitle={strategyStatus} sidebarHidden={chrome.sidebarHidden} toolbarMode={chrome.toolbarMode} collapseLabel={t("sidebar_collapse")} expandLabel={t("sidebar_expand")} onToggleSidebar={chrome.onToggleSidebar}>
       <div className="flex items-center gap-2"><WorkspaceChip workspaceId={session?.workspaceId} locked />{session && <button className="pixel-button flex items-center gap-1 px-2 py-1 text-xs" onClick={() => setShowMembers(true)} title={t("room_members_title")}><PixelIcon name="robot" size={14} />{participants.length}</button>}{session && !terminal && <button className="pixel-button flex items-center gap-1 px-2 py-1 text-xs" onClick={() => setShowCollab(true)} title={t("cowork_settings_title")}><PixelIcon name="gear" size={14} />{t("cowork_settings_title")}</button>}<div className="flex -space-x-2">{participants.slice(0, 6).map((agent) => <AgentAvatar key={agent.id} src={String(agent.avatar ?? "")} label={String(agent.nickname ?? agent.id)} size={28} lively={false} />)}</div>{currentMultiTask?.state === "paused" ? <button className="pixel-button pixel-button--primary px-2 py-1 text-xs" onClick={() => void (currentMultiTask.outcomeUnknown || currentMultiTask.requiresExecutionReview ? retryMultiTask() : resumeMultiTask())}>{t(currentMultiTask.outcomeUnknown || currentMultiTask.requiresExecutionReview ? "multi_retry_reviewed" : "multi_resume")}</button> : pausable && <button className="pixel-button px-2 py-1 text-xs" onClick={() => void pauseMultiTask()}>{t("multi_pause")}</button>}{currentMultiTask && !terminal && <button className="pixel-button px-2 py-1 text-xs text-red-700" onClick={() => void cancelMultiTask()}>{t("cancel_task")}</button>}</div>
-    </header>
+    </WindowRoomToolbar>
     <div className="flex-1 space-y-4 overflow-y-auto p-4">
       {multiError && <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{multiError}</div>}
       {/* 执行是脱离 SSE 的后台任务，失败原因不会走 task_failed 事件——直接读 terminalReason 展示 */}
@@ -1794,6 +1809,21 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
   const [query, setQuery] = useState("");
   const [foldedGroups, setFoldedGroups] = useState<string[]>([]);
   const collapsed = config?.sidebar.collapsed ?? false;
+  const windowState = useWindowChromeState();
+  const chromeLayout = deriveWindowChromeLayout({
+    sidebarHidden: collapsed,
+    fullscreen: windowState.fullscreen,
+    platform: windowState.platform,
+  });
+  const toggleSidebar = () => {
+    if (!config) return;
+    void updateConfig({ sidebar: { ...config.sidebar, collapsed: !collapsed } });
+  };
+  const chrome: RoomChromeControls = {
+    sidebarHidden: !chromeLayout.sidebarVisible,
+    toolbarMode: chromeLayout.toolbarMode,
+    onToggleSidebar: toggleSidebar,
+  };
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // 侧栏统一视图：历史 rooms 与 workspace sessions 折算成同一种行，
@@ -1940,32 +1970,18 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
 
   return (
     <div className="flex h-[100dvh]">
-      <aside className={`pixel-room-sidebar flex shrink-0 flex-col p-3 ${collapsed ? "w-14" : "w-64"}`}>
-        <div className="flex items-center gap-2">
-          {!collapsed && (
-            <button
-              className="pixel-new-room-button flex min-w-0 flex-1 items-center justify-center gap-2 px-3 py-2.5 text-sm font-bold"
-              onClick={() => setCreating({ presetWorkspaceId: null })}
-            >
-              <PixelIcon name="plus" size={20} />
-              {t("new_room")}
-            </button>
-          )}
-          <button
-            className="pixel-button h-9 w-9 shrink-0"
-            aria-label={t(collapsed ? "sidebar_expand" : "sidebar_collapse")}
-            title={t(collapsed ? "sidebar_expand" : "sidebar_collapse")}
-            aria-expanded={!collapsed}
-            onClick={() => void updateConfig({ sidebar: { ...config!.sidebar, collapsed: !collapsed } })}
-          >
-            {collapsed ? "»" : "«"}
-          </button>
-        </div>
-        {collapsed && (
-          <button className="pixel-button mt-2 h-9 w-9 self-center" aria-label={t("new_room")} title={t("new_room")} onClick={() => setCreating({ presetWorkspaceId: null })}>
-            <PixelIcon name="plus" size={18} />
-          </button>
-        )}
+      <aside
+        className={`pixel-room-sidebar flex shrink-0 flex-col p-3 ${collapsed ? "is-hidden" : ""}`}
+        aria-hidden={collapsed}
+        inert={collapsed ? true : undefined}
+      >
+        <button
+          className="pixel-new-room-button flex min-w-0 items-center justify-center gap-2 px-3 py-2.5 text-sm font-bold"
+          onClick={() => setCreating({ presetWorkspaceId: null })}
+        >
+          <PixelIcon name="plus" size={20} />
+          {t("new_room")}
+        </button>
 
         {!collapsed && (
           <input
@@ -2084,11 +2100,17 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
         <RoomMembersDialog roomId={currentRoom.id} memberIds={currentRoom.agentIds} onClose={() => setShowMembers(false)} />
       )}
 
-      <section className="flex min-w-0 flex-1 flex-col">
-        {currentSessionId ? (currentSession?.collaboration.strategy === "team" ? <MultiAgentSession /> : <SingleAgentSession />) : currentRoomId ? (
+      <section className="pixel-room-content flex min-w-0 flex-1 flex-col">
+        {currentSessionId ? (currentSession?.collaboration.strategy === "team" ? <MultiAgentSession chrome={chrome} /> : <SingleAgentSession chrome={chrome} />) : currentRoomId ? (
           <>
-            <div className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
-              <span className="text-sm font-bold">{currentRoom?.name}</span>
+            <WindowRoomToolbar
+              title={currentRoom?.name ?? "Socrates"}
+              sidebarHidden={chrome.sidebarHidden}
+              toolbarMode={chrome.toolbarMode}
+              collapseLabel={t("sidebar_collapse")}
+              expandLabel={t("sidebar_expand")}
+              onToggleSidebar={chrome.onToggleSidebar}
+            >
               <div className="flex items-center gap-2">
                 {roomAgents.slice(0, 3).map((agent) => { const usage = usageSummaries.find((item) => item.agentId === agent.id); return <span key={agent.id} className="pixel-chip text-[10px]" title={`${t("usage_current")}: ${usage?.current.totalTokens ?? t("usage_unavailable")} · ${t("usage_total")}: ${usage?.cumulative.totalTokens ?? t("usage_unavailable")}`}>{agent.nickname}: {usage?.cumulative.totalTokens ?? "—"}</span>; })}
                 <button className="pixel-member-button flex items-center gap-1 px-2 py-1" onClick={() => setShowMembers(true)} title={t("room_members_title")}>
@@ -2104,7 +2126,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
                   {t("task_history", { n: tasks.length })}
                 </button>
               </div>
-            </div>
+            </WindowRoomToolbar>
             {showTasks && <TaskHistoryPanel onJump={jumpToTask} />}
             <div key={currentRoomId} className="anim-view flex-1 space-y-3 overflow-y-auto p-4">
               {chatWindow.hiddenCount > 0 && (
@@ -2140,17 +2162,27 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
             {roomAgents.length > 1 ? <TaskComposer agents={roomAgents} /> : <SimpleComposer />}
           </>
         ) : (
-          <div className="flex flex-1 flex-col items-center justify-center gap-5 p-8 text-center">
-            <span className="opacity-30"><PixelIcon name="chat" size={72} /></span>
-            <div className="space-y-1.5">
-              <p className="text-lg font-bold text-neutral-700">{t("pick_room_title")}</p>
-              <p className="text-sm text-neutral-500">{t("pick_room")}</p>
+          <>
+            <WindowRoomToolbar
+              title="Socrates"
+              sidebarHidden={chrome.sidebarHidden}
+              toolbarMode={chrome.toolbarMode}
+              collapseLabel={t("sidebar_collapse")}
+              expandLabel={t("sidebar_expand")}
+              onToggleSidebar={chrome.onToggleSidebar}
+            />
+            <div className="flex flex-1 flex-col items-center justify-center gap-5 p-8 text-center">
+              <span className="opacity-30"><PixelIcon name="chat" size={72} /></span>
+              <div className="space-y-1.5">
+                <p className="text-lg font-bold text-neutral-700">{t("pick_room_title")}</p>
+                <p className="text-sm text-neutral-500">{t("pick_room")}</p>
+              </div>
+              <button className="pixel-button pixel-button--primary flex items-center gap-2 px-4 py-2 text-sm" onClick={() => setCreating({ presetWorkspaceId: null })}>
+                <PixelIcon name="plus" size={16} />
+                {t("new_room")}
+              </button>
             </div>
-            <button className="pixel-button pixel-button--primary flex items-center gap-2 px-4 py-2 text-sm" onClick={() => setCreating({ presetWorkspaceId: null })}>
-              <PixelIcon name="plus" size={16} />
-              {t("new_room")}
-            </button>
-          </div>
+          </>
         )}
       </section>
     </div>

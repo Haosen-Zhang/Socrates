@@ -4,6 +4,18 @@ import type { UiTheme } from "@socrates/core";
 
 // 每个图标一张位图（`X`/`#` 为实心像素），行等宽
 const ICONS: Record<string, string[]> = {
+  sidebar: [
+    "XXXXXXXXXX",
+    "X..X.....X",
+    "X..X.XXX.X",
+    "X..X.....X",
+    "X..X.XXX.X",
+    "X..X.....X",
+    "X..X.XXX.X",
+    "X..X.....X",
+    "XXXXXXXXXX",
+    "..........",
+  ],
   chat: [
     "XXXXXXXX..",
     "X......X..",
