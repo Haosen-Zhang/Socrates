@@ -172,6 +172,30 @@ const ICONS: Record<string, string[]> = {
     "..........",
     "..........",
   ],
+  file: [
+    "..XXXX....",
+    "..X..XX...",
+    "..X...XX..",
+    "..X....X..",
+    "..X.XX.X..",
+    "..X....X..",
+    "..X.XX.X..",
+    "..XXXXXX..",
+    "..........",
+    "..........",
+  ],
+  diff: [
+    ".XXX...XX.",
+    "...X..XX..",
+    "...X.XX...",
+    ".XXX..XX..",
+    "......XXX.",
+    ".XX.......",
+    "..XX.XXX..",
+    "...XX..X..",
+    "..XX.XXX..",
+    "..........",
+  ],
 };
 
 const GENERATED_ICON_CELLS: Record<string, readonly [column: number, row: number]> = {

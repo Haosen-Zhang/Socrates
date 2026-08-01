@@ -5,6 +5,8 @@ import type { AttachmentResolver } from "../attachments/resolver";
 import type { WorkspaceManager } from "../workspace/manager";
 import { WorkspacePathPolicy } from "../workspace/path-policy";
 import { searchWorkspacePaths } from "../workspace/search";
+import { listWorkspaceDirectory } from "../workspace/browser";
+import { inspectWorkspaceGitDiff, inspectWorkspaceGitStatus } from "../workspace/git-inspection";
 
 export function contentRoutes(db: Database, workspaces: WorkspaceManager, attachments: AttachmentResolver): Hono {
   const app = new Hono();
@@ -12,6 +14,54 @@ export function contentRoutes(db: Database, workspaces: WorkspaceManager, attach
     const workspace = workspaces.get(c.req.param("id"));
     if (!workspace) return c.json({ error: "workspace_not_found" }, 404);
     return c.json(searchWorkspacePaths(workspace.canonicalPath, c.req.query("q") ?? ""));
+  });
+  app.get("/workspaces/:id/tree", (c) => {
+    const workspace = workspaces.get(c.req.param("id"));
+    if (!workspace) return c.json({ error: "workspace_not_found" }, 404);
+    try {
+      return c.json(listWorkspaceDirectory(
+        new WorkspacePathPolicy(workspace.canonicalPath),
+        c.req.query("path") ?? "",
+      ));
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "workspace_tree_failed" }, 400);
+    }
+  });
+  app.get("/workspaces/:id/file", (c) => {
+    const workspace = workspaces.get(c.req.param("id"));
+    if (!workspace) return c.json({ error: "workspace_not_found" }, 404);
+    const relativePath = c.req.query("path");
+    if (!relativePath) return c.json({ error: "relative_path_required" }, 400);
+    try {
+      const policy = new WorkspacePathPolicy(workspace.canonicalPath);
+      const result = policy.readText(relativePath, 512 * 1024);
+      return c.json({ relativePath: policy.resolveExisting(relativePath).relativePath, ...result });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "workspace_file_failed" }, 400);
+    }
+  });
+  app.get("/workspaces/:id/git/status", async (c) => {
+    const workspace = workspaces.get(c.req.param("id"));
+    if (!workspace) return c.json({ error: "workspace_not_found" }, 404);
+    try {
+      return c.json(await inspectWorkspaceGitStatus(new WorkspacePathPolicy(workspace.canonicalPath)));
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "workspace_git_status_failed" }, 400);
+    }
+  });
+  app.get("/workspaces/:id/git/diff", async (c) => {
+    const workspace = workspaces.get(c.req.param("id"));
+    if (!workspace) return c.json({ error: "workspace_not_found" }, 404);
+    const relativePath = c.req.query("path");
+    if (!relativePath) return c.json({ error: "relative_path_required" }, 400);
+    try {
+      return c.json(await inspectWorkspaceGitDiff(
+        new WorkspacePathPolicy(workspace.canonicalPath),
+        relativePath,
+      ));
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "workspace_git_diff_failed" }, 400);
+    }
   });
   app.post("/workspaces/:id/refs", async (c) => {
     const workspace = workspaces.get(c.req.param("id"));

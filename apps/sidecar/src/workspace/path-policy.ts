@@ -41,6 +41,8 @@ export interface ResolvedWorkspacePath {
   relativePath: string;
 }
 
+export type WorkspaceDirectoryEntry = { name: string; kind: "file" | "directory" };
+
 export type DeletionTarget = ResolvedWorkspacePath & {
   kind: "file" | "directory";
   dev: number;
@@ -118,6 +120,43 @@ export class WorkspacePathPolicy {
       const bytes = Buffer.alloc(Math.min(opened.size, limit) + (opened.size > limit ? 0 : 1));
       const read = readSync(fd, bytes, 0, Math.min(opened.size, limit), 0);
       return { bytes: bytes.subarray(0, read), byteSize: opened.size, truncated: opened.size > limit };
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  listDirectory(input: string, maxEntries: number): { entries: WorkspaceDirectoryEntry[]; truncated: boolean } {
+    const resolved = this.resolveExisting(input || ".");
+    this.assertNotSecret(resolved.relativePath);
+    const before = lstatSync(resolved.absolutePath);
+    if (!before.isDirectory()) throw new Error("workspace_not_directory");
+    const fd = openSync(
+      resolved.absolutePath,
+      constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0),
+    );
+    try {
+      const opened = fstatSync(fd);
+      if (opened.dev !== before.dev || opened.ino !== before.ino) throw new Error("workspace_path_changed");
+      const limit = Math.max(1, Math.min(maxEntries, 500));
+      const names = listPinnedDirectoryEntries(fd, limit, true);
+      const truncated = names.length > limit;
+      const entries: WorkspaceDirectoryEntry[] = [];
+      for (const name of names.slice(0, limit)) {
+        const relativePath = [resolved.relativePath, name].filter(Boolean).join("/");
+        if (isSecretWorkspacePath(relativePath)) continue;
+        let childFd: number | null = null;
+        try {
+          childFd = openPinnedWorkspaceEntry(fd, name, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+          const stat = fstatSync(childFd);
+          if (stat.isDirectory()) entries.push({ name, kind: "directory" });
+          else if (stat.isFile() && stat.nlink <= 1) entries.push({ name, kind: "file" });
+        } catch {
+          // The entry changed after enumeration; omit it rather than following a new target.
+        } finally {
+          if (childFd !== null) closeSync(childFd);
+        }
+      }
+      return { entries, truncated };
     } finally {
       closeSync(fd);
     }

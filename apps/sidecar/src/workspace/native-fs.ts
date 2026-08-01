@@ -181,7 +181,7 @@ export function mkdirPinnedWorkspaceEntry(parentFd: number, basename: string): v
   mkdirAt(parentFd, basename);
 }
 
-export function listPinnedDirectoryEntries(directoryFd: number, maxEntries: number): string[] {
+export function listPinnedDirectoryEntries(directoryFd: number, maxEntries: number, stopAtLimit = false): string[] {
   const output: string[] = [];
   const buffer = Buffer.alloc(16 * 1024);
   const base = new BigInt64Array(1);
@@ -201,7 +201,10 @@ export function listPinnedDirectoryEntries(directoryFd: number, maxEntries: numb
       if (name !== "." && name !== "..") {
         nativePath(name);
         output.push(name);
-        if (output.length > maxEntries) throw new Error("workspace_tree_too_many_entries");
+        if (output.length > maxEntries) {
+          if (stopAtLimit) return output;
+          throw new Error("workspace_tree_too_many_entries");
+        }
       }
       offset += recordLength;
     }

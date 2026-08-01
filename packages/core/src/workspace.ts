@@ -26,6 +26,40 @@ export interface WorkspaceRef {
   snapshotSize: number | null;
 }
 
+export interface WorkspaceBrowserEntry {
+  name: string;
+  relativePath: string;
+  kind: "file" | "directory";
+}
+
+export interface WorkspaceDirectoryListing {
+  path: string;
+  entries: WorkspaceBrowserEntry[];
+  truncated: boolean;
+}
+
+export interface WorkspaceFilePreview {
+  relativePath: string;
+  text: string;
+  byteSize: number;
+  truncated: boolean;
+}
+
+export type WorkspaceGitFileStatus = "added" | "deleted" | "modified" | "renamed" | "untracked";
+
+export interface WorkspaceGitStatus {
+  state: "ready" | "not_git";
+  files: Array<{ relativePath: string; status: WorkspaceGitFileStatus }>;
+  truncated: boolean;
+}
+
+export interface WorkspaceGitDiff {
+  relativePath: string;
+  patch: string;
+  binary: boolean;
+  truncated: boolean;
+}
+
 export function normalizeWorkspaceRelativePath(input: string): string {
   if (input.includes("\0")) throw new Error("workspace_path_contains_null");
   const portable = input.split("\\").join("/");
