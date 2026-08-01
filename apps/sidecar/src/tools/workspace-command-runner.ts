@@ -50,9 +50,9 @@ export type CommandInvocationAdapter = (
 function appendBounded(
   chunks: Buffer[],
   chunk: Buffer,
-  state: { bytes: number; truncated: boolean },
+  state: { bytes: number; truncated: boolean; limit: number },
 ): void {
-  const remaining = STREAM_LIMIT_BYTES - state.bytes;
+  const remaining = state.limit - state.bytes;
   if (remaining <= 0) {
     state.truncated = true;
     return;
@@ -79,7 +79,7 @@ function textOutput(chunks: Buffer[]): string {
 }
 
 export class SupervisedCommandRunner implements WorkspaceCommandRunner {
-  constructor(private readonly adapt: CommandInvocationAdapter) {}
+  constructor(private readonly adapt: CommandInvocationAdapter, private readonly streamLimitBytes = STREAM_LIMIT_BYTES) {}
 
   async run(
     workspaceRoot: string,
@@ -99,8 +99,8 @@ export class SupervisedCommandRunner implements WorkspaceCommandRunner {
       });
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
-      const stdoutState = { bytes: 0, truncated: false };
-      const stderrState = { bytes: 0, truncated: false };
+      const stdoutState = { bytes: 0, truncated: false, limit: this.streamLimitBytes };
+      const stderrState = { bytes: 0, truncated: false, limit: this.streamLimitBytes };
       let timedOut = false;
       let cancelled = false;
       let settled = false;
