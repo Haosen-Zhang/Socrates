@@ -131,7 +131,8 @@ export type Store = {
   workspaces: WorkspaceRecord[];
   activeWorkspace: WorkspaceRecord | null;
   loadWorkspaces: () => Promise<void>;
-  selectWorkspacePath: (path: string) => Promise<void>;
+  registerWorkspacePath: (path: string) => Promise<WorkspaceRecord>;
+  selectWorkspacePath: (path: string) => Promise<WorkspaceRecord>;
   setActiveWorkspace: (workspaceId: string | null) => Promise<void>;
   renameWorkspace: (id: string, label: string) => Promise<void>;
   archiveWorkspace: (id: string, archived: boolean) => Promise<void>;
@@ -489,14 +490,19 @@ export const useStore = create<Store>((set, get) => {
         activeWorkspace: resolveActiveWorkspace(workspaces, state.activeWorkspace, storedActiveWorkspaceId()),
       }));
     },
-    selectWorkspacePath: async (path) => {
-      const activeWorkspace = await requireOk<WorkspaceRecord>(
+    registerWorkspacePath: async (path) => {
+      const workspace = await requireOk<WorkspaceRecord>(
         await sidecarFetch(hs(), "/workspaces", { method: "POST", body: JSON.stringify({ path }) }),
       );
+      await get().loadWorkspaces();
+      return workspace;
+    },
+    selectWorkspacePath: async (path) => {
+      const activeWorkspace = await get().registerWorkspacePath(path);
       set({ activeWorkspace });
       persistActiveWorkspaceId(activeWorkspace.id);
-      await get().loadWorkspaces();
       await get().loadMcpServers();
+      return activeWorkspace;
     },
     setActiveWorkspace: async (workspaceId) => {
       if (get().activeTaskId || get().agentRunning) throw new Error("workspace_change_while_running");

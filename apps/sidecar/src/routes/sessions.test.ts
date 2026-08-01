@@ -199,6 +199,32 @@ describe("session routes", () => {
     expect(await legacyWorkspaceLess.json()).toEqual({ error: "workspace_selection_required" });
   });
 
+  it("rejects binding another room's managed workspace as an existing project", async () => {
+    const db = openDb(":memory:");
+    const managedRoot = `${tmpdir()}/socrates-session-managed-isolation-${crypto.randomUUID()}`;
+    roots.push(managedRoot);
+    const workspaces = new WorkspaceManager(db, managedRoot);
+    const managed = workspaces.createManaged("owner-room", "Owner room");
+    const app = new Hono().route(
+      "/sessions",
+      sessionRoutes(new SessionStore(db), new EventStore(db), undefined, workspaces),
+    );
+
+    const response = await app.request("/sessions", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Intruder",
+        mode: "single_agent",
+        primaryAgentId: "a",
+        agents: [{ agentId: "a", snapshot: {}, executionEligible: true }],
+        workspaceSelection: { kind: "existing", workspaceId: managed.id },
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "existing_workspace_required" });
+  });
+
   it("requires an explicit file-retention choice when deleting a managed room", async () => {
     const db = openDb(":memory:");
     const managedRoot = `${tmpdir()}/socrates-session-delete-${crypto.randomUUID()}`;

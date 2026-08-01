@@ -11,6 +11,12 @@ export interface WorkspaceRecord {
   lastOpenedAt: string;
 }
 
+export function isReusableProjectWorkspace(
+  workspace: WorkspaceRecord | null | undefined,
+): boolean {
+  return workspace?.ownership === "external" && !workspace.archived;
+}
+
 export interface WorkspaceCapability {
   workspaceId: string;
   identityHash: string;

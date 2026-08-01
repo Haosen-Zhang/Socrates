@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import {
   COLLABORATION_RUNTIME_CAPABILITIES,
   DEFAULT_COLLABORATION_SETTINGS,
+  isReusableProjectWorkspace,
   isToolApprovalMode,
   normalizeCollaborationSettings,
   validateCollaborationCapabilities,
@@ -46,7 +47,12 @@ export function sessionRoutes(
         managedWorkspaceCreated = true;
       } else if (workspaceSelection?.kind === "existing") {
         if (typeof workspaceSelection.workspaceId !== "string") throw new Error("workspace_required");
-        workspaceId = workspaceSelection.workspaceId;
+        const workspace = workspaces?.get(workspaceSelection.workspaceId);
+        if (!workspace) throw new Error("workspace_not_found");
+        if (!isReusableProjectWorkspace(workspace)) {
+          throw new Error(workspace.archived ? "workspace_not_found" : "existing_workspace_required");
+        }
+        workspaceId = workspace.id;
       } else {
         throw new Error("invalid_workspace_selection");
       }

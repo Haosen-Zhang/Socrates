@@ -198,8 +198,13 @@ button, input, select, textarea { font: inherit; }
   box-shadow: 0 3px 0 var(--pixel-shadow);
   color: var(--pixel-ink);
   user-select: none;
+  transition: left 160ms cubic-bezier(0.2, 0.8, 0.2, 1), padding-left 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.pixel-window-toolbar[data-window-mode="macos-overlay"] { padding-left: 78px; }
+.pixel-window-toolbar[data-window-mode="macos-overlay"][data-sidebar-hidden="false"] {
+  left: var(--room-sidebar-width, 16rem);
+  padding-left: 10px;
+}
+.pixel-window-toolbar[data-window-mode="macos-overlay"][data-sidebar-hidden="true"] { padding-left: 78px; }
 .pixel-window-toolbar[data-window-mode="fullscreen"] { padding-left: 10px; }
 .pixel-window-toolbar__identity {
   display: flex;
@@ -273,9 +278,9 @@ button, input, select, textarea { font: inherit; }
 }
 @media (prefers-reduced-motion: reduce) { .pixel-workspace-dock { animation: none; } }
 .pixel-room-sidebar {
-  width: 16rem;
-  max-width: 16rem;
-  flex-basis: 16rem;
+  width: var(--room-sidebar-width, 16rem);
+  max-width: var(--room-sidebar-width, 16rem);
+  flex-basis: var(--room-sidebar-width, 16rem);
   padding-top: calc(var(--window-toolbar-height) + 0.75rem);
   overflow: hidden;
   border-right: 3px solid var(--pixel-ink);
@@ -331,6 +336,7 @@ button, input, select, textarea { font: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .pixel-segmented__thumb,
   .pixel-room-sidebar,
+  .pixel-window-toolbar,
   .pixel-window-toolbar__sidebar-toggle { transition: none; }
 }
 
