@@ -7,7 +7,7 @@ import { DEFAULT_WINDOW_SIZE, expandWindow, windowTail } from "./listWindow";
 import { useTransientFlag } from "./useTransientFlag";
 import { agentLabel, normalizeCollaborationSettings, validateCollaborationSettings, type Agent, type AppMode,
   type ConversationSession, type RoomCollaborationSettings, type WorkspaceRecord,
-  type ReasoningEffort, type SessionMessage, type StoredMessage, type TaskSummary,
+  type SessionMessage, type StoredMessage, type TaskSummary,
   type ToolApprovalMode } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
@@ -20,7 +20,7 @@ import { sfx } from "./fx";
 import { shouldSubmitComposerEnter } from "./composerIme";
 import WorkspaceChip from "./workspace/WorkspaceChip";
 import AttachmentTray, { AttachmentImage } from "./attachments/AttachmentTray";
-import { canReviewPlan, dropAgentBefore, moveAgentId } from "./multiAgentUi";
+import { canReviewPlan, moveAgentId } from "./multiAgentUi";
 import ResizableComposer from "./composer/ResizableComposer";
 import { roomTitleOrFallback } from "./workspace/projectSelection";
 import {
@@ -33,6 +33,8 @@ import { approvalModeOptions } from "./approvalPolicyUi";
 import { resolveSidebarRevealPath, revealResolvedSidebarTarget } from "./sidebar/revealInFinder";
 import { agentRunErrorKey } from "./agentRunErrorUi";
 import { collaborationStrategyOptions } from "./collaborationSettingsUi";
+import { taskStatusKey } from "./taskSurface";
+import RoomTaskComposer from "./TaskComposer";
 
 const DUTY_CLS: Record<string, string> = {
   propose: "bg-blue-100 text-blue-800",
@@ -660,6 +662,7 @@ function SingleAgentSession() {
   const t = useT();
   const [draft, setDraft] = useState("");
   const [showMembers, setShowMembers] = useState(false);
+  const [showCollab, setShowCollab] = useState(false);
   const session = sessions.find((item) => item.id === currentSessionId);
   const agentSnapshot = session?.agents[0]?.snapshot;
   const agentUsage = usageSummaries.find((item) => item.agentId === session?.agents[0]?.agentId);
@@ -693,6 +696,9 @@ function SingleAgentSession() {
   const liveReasoningSummaries = reasoningSummaries.filter((summary) => summary.id === "live-reasoning-summary");
   const usageText = (value: number | null | undefined) => value == null ? t("usage_unavailable") : value.toLocaleString();
   const streamingText = agentStreamText;
+  const strategy = session?.collaboration.strategy ?? "single";
+  const status = taskStatusKey(agentError ? "failed" : agentRunning ? "executing" : null);
+  const strategyStatus = `${t(`strategy_${strategy}`)} · ${t(status)}`;
   const submit = async () => {
     const prompt = draft.trim();
     if (!prompt || agentRunning) return;
@@ -711,12 +717,13 @@ function SingleAgentSession() {
       <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
         <div>
           <div className="text-sm font-bold">{session?.title}</div>
-          <div className="text-[10px] uppercase tracking-wider text-neutral-500">Single Agent · {t(`approval_mode_${session?.approvalPolicy.mode ?? "ask"}`)}</div>
+          <div className="text-[10px] uppercase tracking-wider text-neutral-500">{strategyStatus}</div>
         </div>
         <div className="flex items-center gap-2">
           {agentSnapshot && <div className="pixel-card flex items-center gap-2 px-2 py-1"><AgentAvatar src={String(agentSnapshot.avatar ?? "")} label={String(agentSnapshot.nickname ?? "Agent")} size={28} lively={false} /><span className="text-[10px]">{t("usage_current")}: {usageText(agentUsage?.current.totalTokens)}<br />{t("usage_total")}: {usageText(agentUsage?.cumulative.totalTokens)}</span></div>}
           <WorkspaceChip workspaceId={session?.workspaceId} locked />
           {session && <button className="pixel-button flex items-center gap-1 px-2 py-1 text-xs" onClick={() => setShowMembers(true)} title={t("room_members_title")}><PixelIcon name="robot" size={14} />{session.agents.length}</button>}
+          {session && <button className="pixel-button flex items-center gap-1 px-2 py-1 text-xs" onClick={() => setShowCollab(true)} title={t("cowork_settings_title")}><PixelIcon name="gear" size={14} />{t("cowork_settings_title")}</button>}
           {agentRunning && <button className="pixel-button px-2 py-1 text-xs text-red-700" onClick={() => void cancelAgentRun()}>{t("cancel_task")}</button>}
         </div>
       </header>
@@ -820,6 +827,7 @@ function SingleAgentSession() {
           </label>
         )}
       </form>
+      {showCollab && session && <CoworkRoomSettingsDialog session={session} onClose={() => setShowCollab(false)} />}
       {showMembers && session && <SessionMembersDialog session={session} onClose={() => setShowMembers(false)} />}
     </div>
   );
@@ -879,20 +887,8 @@ function MultiAgentSession() {
   const session = sessions.find((item) => item.id === currentSessionId);
   const participants: Array<{ id: string; nickname?: unknown; avatar?: unknown; modelId?: unknown; [key: string]: unknown }> = session?.agents.map((item) => ({ id: item.agentId, ...item.snapshot })) ?? [];
   const [prompt, setPrompt] = useState("");
-  const [order, setOrder] = useState<string[]>(() => participants.map((item) => item.id));
-  const [rounds, setRounds] = useState(1);
-  const [synthesizerId, setSynthesizerId] = useState(order[order.length - 1] ?? "");
-  const [executionAgentId, setExecutionAgentId] = useState(order[0] ?? "");
-  const [effortByAgent, setEffortByAgent] = useState<Record<string, ReasoningEffort>>({});
-  const [fallbackOrderByAgent, setFallbackOrderByAgent] = useState<Record<string, string[]>>({});
-  const dragging = useRef<string | null>(null);
   const [showCollab, setShowCollab] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
-  useEffect(() => {
-    const ids = participants.map((item) => item.id);
-    setOrder(ids); setSynthesizerId(ids[ids.length - 1] ?? ""); setExecutionAgentId(ids[0] ?? "");
-    setEffortByAgent(Object.fromEntries(participants.flatMap((item) => typeof item.reasoningEffort === "string" ? [[item.id, item.reasoningEffort as ReasoningEffort]] : [])));
-  }, [currentSessionId]);
   // 主实时路径是 SSE delta / turn 事件（见 store.sendMultiTask）；此定时器仅为无 SSE 流阶段
   // （如 executing）的兜底对账，2s 一次，不再是 750ms 的主轮询。
   useEffect(() => {
@@ -900,13 +896,17 @@ function MultiAgentSession() {
     const timer = window.setInterval(() => void loadMultiTask(currentMultiTask.id), 2000);
     return () => window.clearInterval(timer);
   }, [currentMultiTask?.id, currentMultiTask?.state, loadMultiTask]);
-  const move = (id: string, delta: number) => setOrder((current) => moveAgentId(current, id, delta));
   const terminal = !currentMultiTask || ["failed", "cancelled", "completed"].includes(currentMultiTask.state);
   const pausable = currentMultiTask && ["preparing", "discussing", "synthesizing", "executing", "awaiting_tool_approval"].includes(currentMultiTask.state);
+  const strategy = session?.collaboration.strategy ?? "team";
+  const status = taskStatusKey(
+    multiError ? "failed" : multiRunning && !currentMultiTask ? "preparing" : currentMultiTask?.state ?? null,
+  );
+  const strategyStatus = `${t(`strategy_${strategy}`)} · ${t(status)}`;
   return <div className="flex min-h-0 flex-1 flex-col">
     <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
-      <div><div className="text-sm font-bold">{session?.title}</div><div className="text-[10px] uppercase tracking-wider text-neutral-500">Multi-Agent · {currentMultiTask?.state ?? "idle"}</div></div>
-      <div className="flex items-center gap-2"><WorkspaceChip workspaceId={session?.workspaceId} locked />{session && <button className="pixel-button flex items-center gap-1 px-2 py-1 text-xs" onClick={() => setShowMembers(true)} title={t("room_members_title")}><PixelIcon name="robot" size={14} />{participants.length}</button>}{session && <button className="pixel-button flex items-center gap-1 px-2 py-1 text-xs" onClick={() => setShowCollab(true)} title={t("cowork_settings_title")}><PixelIcon name="gear" size={14} />{t("cowork_settings_title")}</button>}<div className="flex -space-x-2">{participants.slice(0, 6).map((agent) => <AgentAvatar key={agent.id} src={String(agent.avatar ?? "")} label={String(agent.nickname ?? agent.id)} size={28} lively={false} />)}</div>{currentMultiTask?.state === "paused" ? <button className="pixel-button pixel-button--primary px-2 py-1 text-xs" onClick={() => void (currentMultiTask.outcomeUnknown || currentMultiTask.requiresExecutionReview ? retryMultiTask() : resumeMultiTask())}>{t(currentMultiTask.outcomeUnknown || currentMultiTask.requiresExecutionReview ? "multi_retry_reviewed" : "multi_resume")}</button> : pausable && <button className="pixel-button px-2 py-1 text-xs" onClick={() => void pauseMultiTask()}>{t("multi_pause")}</button>}{currentMultiTask && !terminal && <button className="pixel-button px-2 py-1 text-xs text-red-700" onClick={() => void cancelMultiTask()}>{t("cancel_task")}</button>}</div>
+      <div><div className="text-sm font-bold">{session?.title}</div><div className="text-[10px] uppercase tracking-wider text-neutral-500">{strategyStatus}</div></div>
+      <div className="flex items-center gap-2"><WorkspaceChip workspaceId={session?.workspaceId} locked />{session && <button className="pixel-button flex items-center gap-1 px-2 py-1 text-xs" onClick={() => setShowMembers(true)} title={t("room_members_title")}><PixelIcon name="robot" size={14} />{participants.length}</button>}{session && !terminal && <button className="pixel-button flex items-center gap-1 px-2 py-1 text-xs" onClick={() => setShowCollab(true)} title={t("cowork_settings_title")}><PixelIcon name="gear" size={14} />{t("cowork_settings_title")}</button>}<div className="flex -space-x-2">{participants.slice(0, 6).map((agent) => <AgentAvatar key={agent.id} src={String(agent.avatar ?? "")} label={String(agent.nickname ?? agent.id)} size={28} lively={false} />)}</div>{currentMultiTask?.state === "paused" ? <button className="pixel-button pixel-button--primary px-2 py-1 text-xs" onClick={() => void (currentMultiTask.outcomeUnknown || currentMultiTask.requiresExecutionReview ? retryMultiTask() : resumeMultiTask())}>{t(currentMultiTask.outcomeUnknown || currentMultiTask.requiresExecutionReview ? "multi_retry_reviewed" : "multi_resume")}</button> : pausable && <button className="pixel-button px-2 py-1 text-xs" onClick={() => void pauseMultiTask()}>{t("multi_pause")}</button>}{currentMultiTask && !terminal && <button className="pixel-button px-2 py-1 text-xs text-red-700" onClick={() => void cancelMultiTask()}>{t("cancel_task")}</button>}</div>
     </header>
     <div className="flex-1 space-y-4 overflow-y-auto p-4">
       {multiError && <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{multiError}</div>}
@@ -948,16 +948,20 @@ function MultiAgentSession() {
         <p className="my-2 text-xs text-neutral-600">{approval.kind === "plan_scope_expansion" ? t("multi_scope_expansion") : t("multi_tool_approval_hint")}</p>
         <div className="flex gap-2"><button className="pixel-button pixel-button--primary px-3 py-1.5 text-xs" onClick={() => void decideMultiApproval(approval.id, "allow_once")}>{t("approval_allow_once")}</button>{!approval.freshHumanRequired && <button className="pixel-button px-3 py-1.5 text-xs" onClick={() => void decideMultiApproval(approval.id, "allow_session")}>{t("approval_allow_session")}</button>}<button className="pixel-button px-3 py-1.5 text-xs text-red-700" onClick={() => void decideMultiApproval(approval.id, "deny")}>{t("approval_deny")}</button></div>
       </section>)}
-      {terminal && <form className="pixel-card space-y-4 p-4" onSubmit={(event) => { event.preventDefault(); void sendMultiTask({ prompt, speakingOrder: order, maxRounds: rounds, synthesizerId, executionAgentId, effortByAgent, fallbackOrderByAgent }); }}>
-        <div><div className="pixel-kicker">DISCUSSION SETUP</div><h3 className="font-bold">{t("multi_new_task")}</h3></div>
-        <textarea className="pixel-input min-h-28 w-full p-3 text-sm" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={t("multi_prompt_placeholder")} />
-        <div className="grid gap-4 md:grid-cols-2"><div><div className="mb-2 text-xs font-bold">{t("speaking_order")}</div><div className="max-h-64 space-y-2 overflow-y-auto">
-          {order.map((id, index) => { const agent = participants.find((item) => item.id === id); return <div key={id} draggable className="pixel-card flex items-center gap-2 p-2" onDragStart={() => { dragging.current = id; }} onDragOver={(event) => event.preventDefault()} onDrop={() => { const source = dragging.current; if (!source || source === id) return; setOrder((current) => dropAgentBefore(current, source, id)); dragging.current = null; }}>
-            <span className="cursor-grab">⠿</span><AgentAvatar src={String(agent?.avatar ?? "")} label={String(agent?.nickname ?? id)} size={30} /><span className="min-w-0 flex-1 truncate text-sm">{agent?.nickname as string ?? id}</span>{Array.isArray((agent?.modelCapabilities as { reasoningEfforts?: unknown } | undefined)?.reasoningEfforts) && ((agent?.modelCapabilities as { reasoningEfforts: ReasoningEffort[] }).reasoningEfforts.length > 0) && <select aria-label={t("reasoning_effort")} className="pixel-input max-w-24 px-1 py-1 text-xs" value={effortByAgent[id] ?? ""} onChange={(event) => setEffortByAgent((current) => event.target.value ? { ...current, [id]: event.target.value as ReasoningEffort } : Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)))}><option value="">—</option>{(agent?.modelCapabilities as { reasoningEfforts: ReasoningEffort[] }).reasoningEfforts.map((effort) => <option key={effort}>{effort}</option>)}</select>}<select aria-label={t("multi_fallback")} title={t("multi_fallback")} className="pixel-input max-w-28 px-1 py-1 text-xs" value={fallbackOrderByAgent[id]?.[0] ?? ""} onChange={(event) => setFallbackOrderByAgent((current) => event.target.value ? { ...current, [id]: [event.target.value] } : Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)))}><option value="">{t("multi_no_fallback")}</option>{order.filter((candidate) => candidate !== id).map((candidate) => <option key={candidate} value={candidate}>{String(participants.find((item) => item.id === candidate)?.nickname ?? candidate)}</option>)}</select><button type="button" aria-label="move up" className="pixel-button px-1" disabled={index === 0} onClick={() => move(id, -1)}>↑</button><button type="button" aria-label="move down" className="pixel-button px-1" disabled={index === order.length - 1} onClick={() => move(id, 1)}>↓</button>
-          </div>; })}
-        </div></div><div className="space-y-3"><label className="block text-xs font-bold">{t("max_rounds")}<input className="pixel-input mt-1 w-full px-3 py-2" type="number" min={1} max={20} value={rounds} onChange={(event) => setRounds(Number(event.target.value))} /></label><label className="block text-xs font-bold">{t("multi_synthesizer")}<select className="pixel-input mt-1 w-full px-3 py-2" value={synthesizerId} onChange={(event) => setSynthesizerId(event.target.value)}>{order.map((id) => <option key={id} value={id}>{String(participants.find((item) => item.id === id)?.nickname ?? id)}</option>)}</select></label><label className="block text-xs font-bold">{t("multi_executor")}<select className="pixel-input mt-1 w-full px-3 py-2" value={executionAgentId} onChange={(event) => setExecutionAgentId(event.target.value)}>{order.map((id) => <option key={id} value={id}>{String(participants.find((item) => item.id === id)?.nickname ?? id)}</option>)}</select></label></div></div>
-        <button className="pixel-button pixel-button--primary px-4 py-2 text-sm" disabled={multiRunning || !prompt.trim()}>{multiRunning ? t("multi_discussing") : t("multi_start")}</button>
-      </form>}
+      {terminal && <RoomTaskComposer
+        prompt={prompt}
+        summary={strategyStatus}
+        running={multiRunning}
+        title={t("multi_new_task")}
+        settingsLabel={t("cowork_settings_title")}
+        promptLabel={t("task_prompt_label")}
+        placeholder={t("multi_prompt_placeholder")}
+        startLabel={t("multi_start")}
+        runningLabel={t("multi_discussing")}
+        onPromptChange={setPrompt}
+        onOpenSettings={() => setShowCollab(true)}
+        onSubmit={() => void sendMultiTask(prompt)}
+      />}
     </div>
     {showCollab && session && <CoworkRoomSettingsDialog session={session} onClose={() => setShowCollab(false)} />}
     {showMembers && session && <SessionMembersDialog session={session} onClose={() => setShowMembers(false)} />}

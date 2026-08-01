@@ -28,12 +28,14 @@ import {
   type ToolApprovalCapabilities,
   type ToolApprovalMode,
   type CollaborationRuntimeCapabilities,
+  type TaskState,
 } from "@socrates/core";
 import { relativeWorkspacePath } from "./workspace/workspacePath";
 import { resolveActiveWorkspace } from "./workspace/projectSelection";
 import { sidecarFetch, requireOk, streamSseEvents } from "./transport";
 import { decodeRuntimeEvent } from "./protocol";
 import { commitApprovalPolicyUpdate } from "./approvalPolicyUi";
+import { deriveRoomTaskConfig } from "./taskSurface";
 
 type Handshake = { port: number; token: string };
 export type ConnStatus = "connecting" | "connected" | "disconnected";
@@ -90,7 +92,7 @@ export type MultiPlan = {
   content: { objective: string; summary: string; steps: Array<{ id: string; title: string; description: string; files: string[]; commands: string[]; risks: string[]; verification: string[] }>; evidence: Array<{ refId: string; snapshotHash: string }> };
 };
 export type MultiTaskView = {
-  id: string; sessionId: string; prompt: string; state: string; resumeFrom: string | null; terminalReason: string | null; outcomeUnknown: boolean; requiresExecutionReview: boolean;
+  id: string; sessionId: string; prompt: string; state: TaskState; resumeFrom: string | null; terminalReason: string | null; outcomeUnknown: boolean; requiresExecutionReview: boolean;
   config: { speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string; effortByAgent?: Record<string, ReasoningEffort>; fallbackOrderByAgent?: Record<string, string[]> };
   plan: MultiPlan | null;
   turns: Array<{ id: string; phase: string; round: number; agentId: string; snapshot: Record<string, unknown>; status: string; content: string | null; usage: { inputTokens?: number; outputTokens?: number } | null; error: string | null }>;
@@ -177,7 +179,7 @@ export type Store = {
   multiStreamText: string;
   loadMultiTasks: () => Promise<void>;
   loadMultiTask: (id: string) => Promise<void>;
-  sendMultiTask: (input: { prompt: string; speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string; effortByAgent?: Record<string, ReasoningEffort>; fallbackOrderByAgent?: Record<string, string[]> }) => Promise<void>;
+  sendMultiTask: (prompt: string) => Promise<void>;
   decideMultiPlan: (input: { decision: "approve_exact_plan" | "request_replan" | "reject" | "edit_and_approve"; reason?: string; content?: MultiPlan["content"] }) => Promise<void>;
   decideMultiApproval: (requestId: string, decision: ApprovalDecision) => Promise<void>;
   cancelMultiTask: () => Promise<void>;
@@ -747,9 +749,12 @@ export const useStore = create<Store>((set, get) => {
       const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${currentMultiTask.sessionId}/messages`));
       set({ currentMultiTask, sessionMessages, pendingApprovals: currentMultiTask.pendingApprovals, multiRunning: !["awaiting_plan_approval", "failed", "cancelled", "completed", "paused"].includes(currentMultiTask.state) });
     },
-    sendMultiTask: async (input) => {
-      const sessionId = get().currentSessionId;
+    sendMultiTask: async (prompt) => {
+      const state = get();
+      const sessionId = state.currentSessionId;
       if (!sessionId || get().multiRunning) return;
+      const session = state.sessions.find((item) => item.id === sessionId);
+      if (!session) return;
       set({ multiRunning: true, multiError: null, currentMultiTask: null, multiStreamAgentId: null, multiStreamText: "" });
       // 讨论/综合阶段 turn 级 delta 是主实时路径；turn 边界事件驱动一次精准重载
       let pendingText = "";
@@ -769,7 +774,8 @@ export const useStore = create<Store>((set, get) => {
         flushText();
       };
       try {
-        const response = await sidecarFetch(hs(), `/multi/sessions/${sessionId}/tasks`, { method: "POST", body: JSON.stringify({ prompt: input.prompt, config: input }) });
+        const config = deriveRoomTaskConfig(session);
+        const response = await sidecarFetch(hs(), `/multi/sessions/${sessionId}/tasks`, { method: "POST", body: JSON.stringify({ prompt, config }) });
         if (!response.ok || !response.body) await requireOk(response);
         const reader = response.body!.getReader();
         const decoder = new TextDecoder();
