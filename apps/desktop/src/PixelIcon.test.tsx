@@ -3,6 +3,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import PixelIcon from "./PixelIcon";
 
 describe("PixelIcon themes", () => {
+  it("renders a recognisable modern vector icon for the default theme", () => {
+    const html = renderToStaticMarkup(<PixelIcon name="gear" theme="socrates-classic" />);
+
+    expect(html).toContain("pixel-icon__modern");
+    expect(html).toContain("lucide-settings");
+  });
+
   it("renders crisp SVG micro icons for every Pixel 1998 navigation icon", () => {
     for (const name of ["chat", "gear", "general", "plug", "robot", "spark", "brain", "globe", "palette"]) {
       const html = renderToStaticMarkup(<PixelIcon name={name} theme="pixel-1998" />);

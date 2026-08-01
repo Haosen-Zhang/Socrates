@@ -1,12 +1,13 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import "@git-diff-view/react/styles/diff-view-pure.css";
 import type { WorkspaceBrowserEntry, WorkspaceFilePreview, WorkspaceGitDiff, WorkspaceGitStatus } from "@socrates/core";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import PixelIcon from "../PixelIcon";
 import { useT } from "../store";
 import { workspaceInspectionClient } from "./workspaceInspectionClient";
 import type { Handshake } from "../transport";
 import type { WorkspaceDockMode } from "./workspaceDockState";
+import WorkspaceDockTabs from "./WorkspaceDockTabs";
 
 type TreeRow = WorkspaceBrowserEntry & { depth: number };
 const LazyDiffView = lazy(() => import("@git-diff-view/react").then((module) => ({ default: module.DiffView })));
@@ -26,10 +27,12 @@ function patchHunks(patch: string): string[] {
   return patch.slice(first).split(/(?=^@@ )/mu).filter(Boolean);
 }
 
-export default function WorkspaceDock({ handshake, workspaceId, mode, onClose }: {
-  handshake: Handshake;
-  workspaceId: string;
+export default function WorkspaceDock({ handshake, workspaceId, mode, overview, onSelect, onClose }: {
+  handshake: Handshake | null;
+  workspaceId: string | null;
   mode: Exclude<WorkspaceDockMode, "closed">;
+  overview: ReactNode;
+  onSelect: (mode: Exclude<WorkspaceDockMode, "closed">) => void;
   onClose: () => void;
 }) {
   const t = useT();
@@ -50,6 +53,15 @@ export default function WorkspaceDock({ handshake, workspaceId, mode, onClose }:
   useEffect(() => {
     const id = ++request.current;
     setError(""); setLoading(true); setPreview(null); setDiff(null); setStatus(null); setSelectedDiff(""); setTreeTruncated(false); setTruncatedDirectories(new Set());
+    if (mode === "overview") {
+      setLoading(false);
+      return () => { request.current += 1; };
+    }
+    if (!handshake || !workspaceId) {
+      setError(t("workspace_required_for_tools"));
+      setLoading(false);
+      return () => { request.current += 1; };
+    }
     if (mode === "files") {
       setChildren(new Map()); setExpanded(new Set());
       void workspaceInspectionClient.list(handshake, workspaceId).then((result) => {
@@ -65,7 +77,7 @@ export default function WorkspaceDock({ handshake, workspaceId, mode, onClose }:
   }, [handshake, workspaceId, mode]);
 
   useEffect(() => {
-    if (mode !== "diff" || !selectedDiff) { setDiff(null); return; }
+    if (mode !== "diff" || !selectedDiff || !handshake || !workspaceId) { setDiff(null); return; }
     const id = ++diffRequest.current;
     setLoading(true); setError("");
     void workspaceInspectionClient.diff(handshake, workspaceId, selectedDiff)
@@ -77,6 +89,7 @@ export default function WorkspaceDock({ handshake, workspaceId, mode, onClose }:
   const rows = useMemo(() => flattenTree(children, expanded), [children, expanded]);
   const virtualizer = useVirtualizer({ count: rows.length, getScrollElement: () => scrollRef.current, estimateSize: () => 30, overscan: 8 });
   const toggleDirectory = async (row: TreeRow) => {
+    if (!handshake || !workspaceId) return;
     const next = new Set(expanded);
     if (next.has(row.relativePath)) next.delete(row.relativePath);
     else {
@@ -92,6 +105,7 @@ export default function WorkspaceDock({ handshake, workspaceId, mode, onClose }:
     setExpanded(next);
   };
   const selectFile = async (row: TreeRow) => {
+    if (!handshake || !workspaceId) return;
     setLoading(true); setError("");
     try { setPreview(await workspaceInspectionClient.preview(handshake, workspaceId, row.relativePath)); }
     catch (cause) { setError(String(cause)); }
@@ -99,11 +113,15 @@ export default function WorkspaceDock({ handshake, workspaceId, mode, onClose }:
   };
   const hunks = diff ? patchHunks(diff.patch) : [];
 
-  return <aside className="pixel-workspace-dock" aria-label={mode === "files" ? t("workspace_files") : t("workspace_changes")}>
-    <header className="pixel-workspace-dock__header"><strong>{mode === "files" ? t("workspace_files") : t("workspace_changes")}</strong><button type="button" className="pixel-button p-1" aria-label={t("close")} onClick={onClose}>×</button></header>
+  const label = mode === "overview" ? t("workspace_overview") : mode === "files" ? t("workspace_files") : t("workspace_changes");
+  return <aside className="pixel-workspace-dock" aria-label={label}>
+    <header className="pixel-workspace-dock__header">
+      <WorkspaceDockTabs mode={mode} hasWorkspace={!!handshake && !!workspaceId} onSelect={onSelect} />
+      <button type="button" className="pixel-workspace-dock__close" aria-label={t("close")} onClick={onClose}>×</button>
+    </header>
     {error && <div role="alert" className="pixel-workspace-dock__error">{error}</div>}
-    {loading && <div className="pixel-workspace-dock__empty">{t("loading")}</div>}
-    {mode === "files" ? <>
+    {mode !== "overview" && loading && <div className="pixel-workspace-dock__empty">{t("loading")}</div>}
+    {mode === "overview" ? <div className="pixel-workspace-dock__overview">{overview}</div> : mode === "files" ? <>
       {children.get("") && children.get("")!.length === 0 && !loading && <div className="pixel-workspace-dock__empty">{t("workspace_empty_folder")}</div>}
       <div ref={scrollRef} className="pixel-workspace-tree" role="tree">
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>

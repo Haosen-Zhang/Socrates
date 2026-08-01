@@ -1,4 +1,23 @@
 import type { UiTheme } from "@socrates/core";
+import {
+  Archive,
+  ArrowUp,
+  Bot,
+  BrainCircuit,
+  FileText,
+  Folder,
+  GitCompareArrows,
+  Globe2,
+  MessageSquare,
+  Palette,
+  PanelLeft,
+  Plug,
+  Plus,
+  Settings,
+  SlidersHorizontal,
+  Sparkles,
+  type LucideIcon,
+} from "lucide-react";
 
 /** 手绘像素图标：字符网格 → crisp rects，fill=currentColor 跟随主题。比图像生成更适合 UI 小图标。 */
 
@@ -210,6 +229,25 @@ const GENERATED_ICON_CELLS: Record<string, readonly [column: number, row: number
   palette: [2, 2],
 };
 
+const MODERN_ICONS: Record<string, LucideIcon> = {
+  sidebar: PanelLeft,
+  chat: MessageSquare,
+  gear: Settings,
+  general: SlidersHorizontal,
+  plug: Plug,
+  robot: Bot,
+  spark: Sparkles,
+  brain: BrainCircuit,
+  globe: Globe2,
+  palette: Palette,
+  send: ArrowUp,
+  plus: Plus,
+  archive: Archive,
+  folder: Folder,
+  file: FileText,
+  diff: GitCompareArrows,
+};
+
 export default function PixelIcon({
   name,
   size = 16,
@@ -224,7 +262,8 @@ export default function PixelIcon({
 }) {
   const grid = ICONS[name];
   const generatedCell = GENERATED_ICON_CELLS[name];
-  if (!grid && !generatedCell) return null;
+  const ModernIcon = MODERN_ICONS[name];
+  if (!grid && !generatedCell && !ModernIcon) return null;
   const cols = grid ? Math.max(...grid.map((r) => r.length)) : 10;
   const rows = grid?.length ?? 10;
   const rects: Array<[number, number]> = [];
@@ -271,6 +310,7 @@ export default function PixelIcon({
           style={{ backgroundPosition: `${generatedCell[0] * 50}% ${generatedCell[1] * 50}%` }}
         />
       )}
+      {ModernIcon && <ModernIcon className="pixel-icon__modern" width={size} height={size} strokeWidth={1.9} />}
       {variant === "micro" && svg("pixel-icon__micro pixel-icon__micro--classic")}
       {variant === "micro" && svg("pixel-icon__micro pixel-icon__micro--pixel-1998", true)}
       {variant === "decorative" && svg("pixel-icon__decorative-fallback")}

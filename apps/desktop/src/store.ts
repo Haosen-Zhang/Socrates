@@ -36,6 +36,7 @@ import { sidecarFetch, requireOk, streamSseEvents } from "./transport";
 import { decodeRuntimeEvent } from "./protocol";
 import { commitApprovalPolicyUpdate } from "./approvalPolicyUi";
 import { deriveRoomTaskConfig } from "./taskSurface";
+import { canCommitMultiTaskLoad } from "./multiTaskSelection";
 
 type Handshake = { port: number; token: string };
 export type ConnStatus = "connecting" | "connected" | "disconnected";
@@ -752,8 +753,16 @@ export const useStore = create<Store>((set, get) => {
     },
     loadMultiTask: async (id) => {
       const currentMultiTask = await requireOk<MultiTaskView>(await sidecarFetch(hs(), `/multi/tasks/${id}`));
+      if (!canCommitMultiTaskLoad(get().currentSessionId, currentMultiTask.sessionId)) return;
       const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${currentMultiTask.sessionId}/messages`));
-      set({ currentMultiTask, sessionMessages, pendingApprovals: currentMultiTask.pendingApprovals, multiRunning: !["awaiting_plan_approval", "failed", "cancelled", "completed", "paused"].includes(currentMultiTask.state) });
+      if (!canCommitMultiTaskLoad(get().currentSessionId, currentMultiTask.sessionId)) return;
+      set({
+        currentMultiTask,
+        sessionMessages,
+        pendingApprovals: currentMultiTask.pendingApprovals,
+        usageSummaries: currentMultiTask.usageSummaries,
+        multiRunning: !["awaiting_plan_approval", "failed", "cancelled", "completed", "paused"].includes(currentMultiTask.state),
+      });
     },
     sendMultiTask: async (prompt) => {
       const state = get();
