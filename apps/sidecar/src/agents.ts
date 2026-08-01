@@ -5,8 +5,10 @@ import {
   isAgentAvatarSource,
   normalizeAgentNickname,
   randomAgentIdentity,
+  resolveReasoningProfile,
   UNKNOWN_MODEL_CAPABILITIES,
   type ModelCapabilities,
+  type ProviderType,
   type ReasoningEffort,
   type Agent,
 } from "@socrates/core";
@@ -40,7 +42,7 @@ export function toAgent(r: AgentRow): Agent {
     systemPrompt: r.system_prompt,
     temperature: r.temperature ?? undefined,
     modelCapabilities: r.model_capabilities_json ? JSON.parse(r.model_capabilities_json) : { ...UNKNOWN_MODEL_CAPABILITIES },
-    reasoningEffort: r.reasoning_effort ? r.reasoning_effort as ReasoningEffort : undefined,
+    reasoningEffort: r.reasoning_effort ? r.reasoning_effort as ReasoningEffort : "auto",
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -75,7 +77,6 @@ export function agentRoutes(db: Database) {
       role?: string;
       systemPrompt?: string;
       temperature?: number;
-      reasoningEfforts?: ReasoningEffort[];
       reasoningEffort?: ReasoningEffort;
       contextWindowTokens?: number;
     }>();
@@ -83,11 +84,10 @@ export function agentRoutes(db: Database) {
     if (!b.modelId?.trim()) return c.json({ error: "模型不能为空" }, 400);
     const provider = providerById(b.providerId);
     if (!provider) return c.json({ error: "供应商不存在" }, 400);
-    const reasoning = validateReasoning(b.reasoningEfforts, b.reasoningEffort);
+    const reasoning = validateReasoning(provider.type as ProviderType, b.modelId, b.reasoningEffort);
     if (reasoning.error) return c.json({ error: reasoning.error }, 400);
     const contextWindow = validateContextWindow(b.contextWindowTokens);
     if (contextWindow.error) return c.json({ error: contextWindow.error }, 400);
-    if (reasoning.efforts !== "unknown" && reasoning.efforts.length > 0 && provider.type !== "openai_compatible") return c.json({ error: "reasoning_effort_adapter_unsupported" }, 400);
     const nickname = b.nickname.trim();
     if (nicknameTaken(nickname)) return c.json({ error: "昵称已被使用" }, 409);
     if (b.avatar !== undefined && !isAgentAvatarSource(b.avatar)) return c.json({ error: "头像格式不受支持或文件过大" }, 400);
@@ -131,7 +131,6 @@ export function agentRoutes(db: Database) {
       role: string;
       systemPrompt: string;
       temperature: number | null;
-      reasoningEfforts: ReasoningEffort[];
       reasoningEffort: ReasoningEffort | null;
       contextWindowTokens: number | null;
     }>>();
@@ -140,7 +139,31 @@ export function agentRoutes(db: Database) {
     }
     if (b.avatar !== undefined && !isAgentAvatarSource(b.avatar)) return c.json({ error: "头像格式不受支持或文件过大" }, 400);
     const currentCapabilities = row.model_capabilities_json ? JSON.parse(row.model_capabilities_json) as ModelCapabilities : UNKNOWN_MODEL_CAPABILITIES;
-    const reasoning = validateReasoning(b.reasoningEfforts ?? (currentCapabilities.reasoningEfforts === "unknown" ? undefined : currentCapabilities.reasoningEfforts), b.reasoningEffort === undefined ? row.reasoning_effort as ReasoningEffort | undefined : b.reasoningEffort ?? undefined);
+    const nextProvider = providerById(b.providerId ?? row.provider_id);
+    if (!nextProvider) return c.json({ error: "供应商不存在" }, 400);
+    const nextModelId = b.modelId?.trim() || row.model_id;
+    const providerChanged = b.providerId !== undefined && b.providerId !== row.provider_id;
+    const modelChanged = b.modelId !== undefined && nextModelId !== row.model_id;
+    const capabilityOverride = !providerChanged && !modelChanged
+      ? currentCapabilities.reasoningEfforts
+      : undefined;
+    const profile = resolveReasoningProfile(
+      nextProvider.type as ProviderType,
+      nextModelId,
+      capabilityOverride,
+    );
+    const storedEffort = (row.reasoning_effort as ReasoningEffort | null) ?? "auto";
+    const requestedEffort = b.reasoningEffort === undefined
+      ? (providerChanged || modelChanged || !profile.efforts.includes(storedEffort)
+        ? "auto"
+        : storedEffort)
+      : b.reasoningEffort ?? "auto";
+    const reasoning = validateReasoning(
+      nextProvider.type as ProviderType,
+      nextModelId,
+      requestedEffort,
+      capabilityOverride,
+    );
     if (reasoning.error) return c.json({ error: reasoning.error }, 400);
     const contextWindow = validateContextWindow(
       b.contextWindowTokens === undefined
@@ -148,8 +171,6 @@ export function agentRoutes(db: Database) {
         : b.contextWindowTokens ?? undefined,
     );
     if (contextWindow.error) return c.json({ error: contextWindow.error }, 400);
-    const nextProvider = providerById(b.providerId ?? row.provider_id);
-    if (reasoning.efforts !== "unknown" && reasoning.efforts.length > 0 && nextProvider?.type !== "openai_compatible") return c.json({ error: "reasoning_effort_adapter_unsupported" }, 400);
     const nickname = b.nickname?.trim() || row.nickname || agentIdentityFromSeed(row.id).nickname;
     if (nicknameTaken(nickname, row.id)) return c.json({ error: "昵称已被使用" }, 409);
     db.run(
@@ -160,7 +181,7 @@ export function agentRoutes(db: Database) {
         nickname,
         b.avatar ?? row.avatar ?? agentIdentityFromSeed(row.id).avatar,
         b.providerId ?? row.provider_id,
-        b.modelId?.trim() || row.model_id,
+        nextModelId,
         b.role ?? row.role,
         b.systemPrompt ?? row.system_prompt,
         b.temperature === undefined ? row.temperature : b.temperature,
@@ -188,12 +209,18 @@ export function agentRoutes(db: Database) {
   return app;
 }
 
-const REASONING_EFFORTS = new Set<ReasoningEffort>(["auto", "minimal", "low", "medium", "high", "xhigh", "max"]);
-function validateReasoning(efforts: ReasoningEffort[] | undefined, effort: ReasoningEffort | undefined): { efforts: ReasoningEffort[] | "unknown"; effort: ReasoningEffort | null; error?: string } {
-  if (efforts === undefined) return effort ? { efforts: "unknown", effort: null, error: "reasoning_effort_capability_unknown" } : { efforts: "unknown", effort: null };
-  if (!Array.isArray(efforts) || efforts.some((item) => !REASONING_EFFORTS.has(item)) || new Set(efforts).size !== efforts.length) return { efforts: "unknown", effort: null, error: "reasoning_efforts_invalid" };
-  if (effort && !efforts.includes(effort)) return { efforts, effort: null, error: "reasoning_effort_unsupported" };
-  return { efforts, effort: effort ?? null };
+function validateReasoning(
+  providerType: ProviderType,
+  modelId: string,
+  effort: ReasoningEffort | undefined,
+  capabilityOverride?: ReasoningEffort[] | "unknown",
+): { efforts: ReasoningEffort[]; effort: ReasoningEffort; error?: string } {
+  const profile = resolveReasoningProfile(providerType, modelId, capabilityOverride);
+  const selected = effort ?? profile.defaultEffort;
+  if (!profile.efforts.includes(selected)) {
+    return { efforts: profile.efforts, effort: profile.defaultEffort, error: "reasoning_effort_unsupported" };
+  }
+  return { efforts: profile.efforts, effort: selected };
 }
 
 function validateContextWindow(value: number | "unknown" | undefined): {
