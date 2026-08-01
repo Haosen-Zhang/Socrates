@@ -22,6 +22,7 @@ describe("WindowRoomToolbar", () => {
     expect(html).toContain("单 Agent · 空闲");
     expect(html).toContain('aria-label="展开侧栏"');
     expect(html).toContain('data-window-mode="macos-overlay"');
+    expect(html).toContain('data-sidebar-hidden="true"');
     expect(html).toContain("历史任务");
   });
 
@@ -38,5 +39,6 @@ describe("WindowRoomToolbar", () => {
     );
     expect(html).toContain('aria-label="收起侧栏"');
     expect(html).toContain('data-window-mode="fullscreen"');
+    expect(html).toContain('data-sidebar-hidden="false"');
   });
 });

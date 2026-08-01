@@ -26,6 +26,7 @@ export default function WindowRoomToolbar({
     <header
       className="pixel-window-toolbar"
       data-window-mode={toolbarMode}
+      data-sidebar-hidden={sidebarHidden}
       data-tauri-drag-region
     >
       <div className="pixel-window-toolbar__identity" data-tauri-drag-region>

@@ -1,4 +1,5 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MD_COMPONENTS } from "./markdownLink";
@@ -18,6 +19,7 @@ import { useStorePick } from "./selectors";
 import { sfx } from "./fx";
 import { shouldSubmitComposerEnter } from "./composerIme";
 import WorkspaceChip from "./workspace/WorkspaceChip";
+import { prepareNewRoomWorkspace, selectableProjectWorkspaces } from "./workspace/newRoomWorkspace";
 import WorkspaceDock from "./workspace/WorkspaceDock";
 import WorkspaceDockButtons from "./workspace/WorkspaceDockButtons";
 import { toggleWorkspaceDock, type WorkspaceDockMode } from "./workspace/workspaceDockState";
@@ -990,17 +992,29 @@ function MultiAgentSession({ chrome }: { chrome: RoomChromeControls }) {
 }
 
 function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; presetWorkspaceId?: string | null }) {
-  const { agents, workspaces, createRoomFromDraft } = useStorePick("agents", "workspaces", "createRoomFromDraft");
+  const { agents, workspaces, createRoomFromDraft, registerWorkspacePath } = useStorePick(
+    "agents",
+    "workspaces",
+    "createRoomFromDraft",
+    "registerWorkspacePath",
+  );
   const t = useT();
+  const projectWorkspaces = selectableProjectWorkspaces(workspaces);
   // 从某个工作区分组的「＋」进入时，沿用该 existing workspace。
-  const locked = presetWorkspaceId != null && workspaces.some((w) => w.id === presetWorkspaceId && !w.archived);
+  const locked = presetWorkspaceId != null && projectWorkspaces.some((w) => w.id === presetWorkspaceId);
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [primaryAgentId, setPrimaryAgentId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [workspaceKind, setWorkspaceKind] = useState<"managed" | "existing">(locked ? "existing" : "managed");
+  const [workspaceMode, setWorkspaceMode] = useState<"temporary" | "project">(locked ? "project" : "temporary");
   const [workspaceId, setWorkspaceId] = useState<string | null>(locked ? presetWorkspaceId! : null);
   const dialog = useAnimatedDialogClose(onClose);
+
+  const pickAndRegisterWorkspace = async () => {
+    const selected = await open({ directory: true, multiple: false, title: t("workspace_choose") });
+    if (typeof selected !== "string") return null;
+    return registerWorkspacePath(selected);
+  };
 
   const toggle = (id: string) => {
     const next = toggleRoomAgentSelection(selected, id);
@@ -1023,13 +1037,17 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
+      const workspaceSelection = await prepareNewRoomWorkspace({
+        mode: workspaceMode,
+        workspaceId,
+        pickAndRegisterWorkspace,
+      });
+      if (!workspaceSelection) return;
       await createRoomFromDraft({
         title: roomTitleOrFallback(name, t("room_untitled")),
         agentIds: selected,
         primaryAgentId,
-        workspaceSelection: workspaceKind === "managed"
-          ? { kind: "managed" }
-          : { kind: "existing", workspaceId },
+        workspaceSelection,
       });
       dialog.close();
     } catch (err) {
@@ -1083,43 +1101,63 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
         <div className="mt-5">
           <h3 className="mb-2 text-sm font-bold">{t("room_workspace")}</h3>
           <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label={t("room_workspace")}>
-          {(["managed", "existing"] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              role="radio"
-              aria-checked={workspaceKind === value}
-              disabled={locked}
-              className={`pixel-mode-card p-3 text-left ${workspaceKind === value ? "is-selected" : ""} ${locked ? "cursor-not-allowed opacity-50" : ""}`}
-              onClick={() => {
-                setWorkspaceKind(value);
-                setError(null);
-              }}
-            >
-              <span className="block text-sm font-bold">{t(`workspace_choice_${value}`)}</span>
-              <span className="mt-1 block text-[11px] text-neutral-500">{t(`workspace_choice_${value}_desc`)}</span>
-            </button>
-          ))}
+            {(["temporary", "project"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={workspaceMode === value}
+                disabled={locked}
+                className={`pixel-mode-card p-3 text-left ${workspaceMode === value ? "is-selected" : ""} ${locked ? "cursor-not-allowed opacity-50" : ""}`}
+                onClick={() => {
+                  setWorkspaceMode(value);
+                  setError(null);
+                }}
+              >
+                <span className="block text-sm font-bold">{t(`workspace_mode_${value}`)}</span>
+                <span className="mt-1 block text-[11px] text-neutral-500">{t(`workspace_mode_${value}_desc`)}</span>
+              </button>
+            ))}
           </div>
-        {workspaceKind === "existing" && (
-          <label className="mt-3 block text-sm font-bold">
-            {t("workspace_choice_existing_select")}
-            <select
-              className={`pixel-input mt-1 w-full px-3 py-2 text-sm ${locked ? "cursor-not-allowed opacity-70" : ""}`}
-              value={workspaceId ?? ""}
-              disabled={locked}
-              onChange={(event) => {
-                setWorkspaceId(event.target.value || null);
-                setError(null);
-              }}
-            >
-              <option value="">{t("room_workspace_placeholder")}</option>
-              {workspaces.filter((workspace) => !workspace.archived).map((workspace) => (
-                <option key={workspace.id} value={workspace.id}>{workspace.label || workspace.displayPath}</option>
-              ))}
-            </select>
-          </label>
-        )}
+          {workspaceMode === "project" && (
+            <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
+              <label className="block text-sm font-bold">
+                {t("workspace_registered")}
+                <select
+                  className={`pixel-input mt-1 w-full px-3 py-2 text-sm ${locked ? "cursor-not-allowed opacity-70" : ""}`}
+                  value={workspaceId ?? ""}
+                  disabled={locked}
+                  onChange={(event) => {
+                    setWorkspaceId(event.target.value || null);
+                    setError(null);
+                  }}
+                >
+                  <option value="">{t("room_workspace_placeholder")}</option>
+                  {projectWorkspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>{workspace.label || workspace.displayPath}</option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="pixel-button flex items-center justify-center gap-2 px-3 py-2 text-sm"
+                disabled={locked}
+                onClick={async () => {
+                  try {
+                    const workspace = await pickAndRegisterWorkspace();
+                    if (!workspace) return;
+                    setWorkspaceId(workspace.id);
+                    setError(null);
+                  } catch (cause) {
+                    setError(cause instanceof Error ? cause.message : String(cause));
+                  }
+                }}
+              >
+                <PixelIcon name="folder" size={16} />
+                {t("workspace_add_folder")}
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="mb-2 mt-5 flex items-center justify-between">
@@ -1171,7 +1209,7 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
                 title: name,
                 agentIds: selected,
                 primaryAgentId,
-                workspaceSelection: workspaceKind === "managed"
+                workspaceSelection: workspaceMode === "temporary" || !workspaceId
                   ? { kind: "managed" }
                   : { kind: "existing", workspaceId },
               }) !== null}
@@ -1983,7 +2021,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
     streaming?.round !== undefined && streaming.round !== lastRound && streaming.phase !== "summary";
 
   return (
-    <div className="flex h-[100dvh]">
+    <div className="flex h-[100dvh]" style={{ "--room-sidebar-width": `${config?.sidebar.width ?? 256}px` } as React.CSSProperties}>
       <aside
         className={`pixel-room-sidebar flex shrink-0 flex-col p-3 ${collapsed ? "is-hidden" : ""}`}
         aria-hidden={collapsed}
