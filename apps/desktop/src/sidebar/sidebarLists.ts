@@ -1,12 +1,6 @@
-import type { AppMode, NavRoom, NavWorkspace } from "@socrates/core";
+import type { NavRoom, NavWorkspace } from "@socrates/core";
 
-/**
- * 侧栏列表与搜索（C3，纯函数）。
- *
- * 关键不变量：列表按顶层模式过滤——Chat 房间绝不出现在 Co-work 的工作区树里，
- * Co-work 房间也绝不出现在 Chat 列表中。**展开与选中是两件事**，展开状态由调用方
- * 单独持有，本模块只负责「有哪些内容」。
- */
+/** A room projected into the single sidebar, regardless of its legacy source. */
 export type SidebarRoom = NavRoom & { name: string };
 
 export type WorkspaceGroup = {
@@ -14,18 +8,26 @@ export type WorkspaceGroup = {
   rooms: SidebarRoom[];
 };
 
-/** Chat 模式：只有未归档的 chat 房间，扁平列表。 */
-export function chatRooms(rooms: SidebarRoom[]): SidebarRoom[] {
-  return rooms.filter((room) => room.kind === "chat" && !room.archived);
+/**
+ * Compatibility bucket for historical rooms that predate workspace binding.
+ * They stay reachable without exposing their old Chat product type.
+ */
+export function topLevelRooms(
+  rooms: SidebarRoom[],
+  workspaces: Array<NavWorkspace>,
+): SidebarRoom[] {
+  const workspaceIds = new Set(workspaces.map((workspace) => workspace.id));
+  return rooms.filter(
+    (room) => !room.archived && (room.workspaceId === null || !workspaceIds.has(room.workspaceId)),
+  );
 }
 
 /**
- * Co-work 模式：工作区树，每个工作区下挂它自己绑定的 cowork 房间。
- *
- * 归档的工作区默认隐藏，但**只要还挂着未归档的房间就仍要显示**——否则那些房间
- * 会彻底从界面消失、既进不去也删不掉（曾经的 orphan bug）。
+ * One workspace tree for every workspace-bound room. An archived workspace
+ * remains visible while it still owns a live room so that room cannot become
+ * unreachable.
  */
-export function coworkGroups(
+export function workspaceGroups(
   rooms: SidebarRoom[],
   workspaces: Array<NavWorkspace & { label: string }>,
 ): WorkspaceGroup[] {
@@ -33,7 +35,7 @@ export function coworkGroups(
     .map((workspace) => ({
       workspace,
       rooms: rooms.filter(
-        (room) => room.kind === "cowork" && !room.archived && room.workspaceId === workspace.id,
+        (room) => !room.archived && room.workspaceId === workspace.id,
       ),
     }))
     .filter((group) => !group.workspace.archived || group.rooms.length > 0);
@@ -45,13 +47,9 @@ export type SearchHit =
 
 const matches = (haystack: string, needle: string) => haystack.toLowerCase().includes(needle);
 
-/**
- * 搜索范围随顶层模式收窄：Chat 只搜 chat 房间与成员名；
- * Co-work 搜 cowork 房间、工作区名与路径。搜索**不改变**任何持久化关系。
- */
+/** Search every visible room and workspace without a top-level mode filter. */
 export function searchSidebar(
   query: string,
-  mode: AppMode,
   data: {
     rooms: SidebarRoom[];
     workspaces: Array<NavWorkspace & { label: string; path?: string }>;
@@ -62,31 +60,20 @@ export function searchSidebar(
   if (!needle) return [];
   const memberNames = data.memberNamesByRoom ?? {};
 
-  if (mode === "chat") {
-    return chatRooms(data.rooms)
-      .filter(
-        (room) =>
-          matches(room.name, needle) ||
-          (memberNames[room.id] ?? []).some((name) => matches(name, needle)),
-      )
-      .map((room) => ({ kind: "room" as const, room }));
-  }
-
-  const roomHits: SearchHit[] = data.rooms
-    .filter(
-      (room) =>
-        room.kind === "cowork" &&
-        !room.archived &&
-        (matches(room.name, needle) || (memberNames[room.id] ?? []).some((name) => matches(name, needle))),
-    )
-    .map((room) => ({ kind: "room" as const, room }));
-
   const workspaceHits: SearchHit[] = data.workspaces
     .filter(
       (workspace) =>
         !workspace.archived && (matches(workspace.label, needle) || matches(workspace.path ?? "", needle)),
     )
     .map((workspace) => ({ kind: "workspace" as const, workspaceId: workspace.id, label: workspace.label }));
+
+  const roomHits: SearchHit[] = data.rooms
+    .filter(
+      (room) =>
+        !room.archived &&
+        (matches(room.name, needle) || (memberNames[room.id] ?? []).some((name) => matches(name, needle))),
+    )
+    .map((room) => ({ kind: "room" as const, room }));
 
   return [...workspaceHits, ...roomHits];
 }

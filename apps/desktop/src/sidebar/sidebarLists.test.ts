@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { chatRooms, coworkGroups, searchSidebar, type SidebarRoom } from "./sidebarLists";
-import { isSegmentKey, nextSegment } from "./segmented";
+import { searchSidebar, topLevelRooms, workspaceGroups, type SidebarRoom } from "./sidebarLists";
 
 const chat = (id: string, name: string, archived = false): SidebarRoom => ({
   id,
@@ -28,101 +27,59 @@ const rooms = [
 ];
 const workspaces = [wsRec("w1", "Socrates", "/Users/me/Socrates"), wsRec("w2", "Website", "/srv/web")];
 
-describe("mode filtering keeps the two lists disjoint", () => {
-  it("chat list contains only live chat rooms", () => {
-    expect(chatRooms(rooms).map((r) => r.id)).toEqual(["c1", "c2"]);
+describe("one unified room navigation", () => {
+  it("keeps live workspace-less rooms visible without a Chat mode", () => {
+    expect(topLevelRooms(rooms, workspaces).map((room) => room.id)).toEqual(["c1", "c2"]);
   });
 
-  it("no cowork room ever appears in the chat list", () => {
-    expect(chatRooms(rooms).every((room) => room.kind === "chat")).toBeTrue();
+  it("keeps a room visible when its persisted workspace no longer exists", () => {
+    const orphan = cowork("orphan", "待修复工作区", "missing-workspace");
+    expect(topLevelRooms([...rooms, orphan], workspaces).map((room) => room.id)).toEqual(["c1", "c2", "orphan"]);
   });
 
-  it("cowork tree groups rooms under their own workspace only", () => {
-    const groups = coworkGroups(rooms, workspaces);
-    expect(groups.map((g) => [g.workspace.id, g.rooms.map((r) => r.id)])).toEqual([
+  it("groups every live workspace-bound room under its persisted workspace", () => {
+    expect(workspaceGroups(rooms, workspaces).map((group) => [group.workspace.id, group.rooms.map((room) => room.id)])).toEqual([
       ["w1", ["k1"]],
       ["w2", ["k2"]],
     ]);
   });
 
-  it("no chat room is ever placed inside the workspace tree", () => {
-    const all = coworkGroups(rooms, workspaces).flatMap((g) => g.rooms);
-    expect(all.every((room) => room.kind === "cowork")).toBeTrue();
+  it("projects every live room exactly once", () => {
+    const ids = [
+      ...topLevelRooms(rooms, workspaces).map((room) => room.id),
+      ...workspaceGroups(rooms, workspaces).flatMap((group) => group.rooms.map((room) => room.id)),
+    ];
+    expect(ids).toEqual(["c1", "c2", "k1", "k2"]);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("archived workspaces and rooms are excluded", () => {
-    const groups = coworkGroups(rooms, [...workspaces, wsRec("w9", "Old", "/old", true)]);
-    expect(groups.map((g) => g.workspace.id)).toEqual(["w1", "w2"]);
-    expect(groups.flatMap((g) => g.rooms).some((r) => r.id === "k3")).toBeFalse();
-  });
-
-  it("an archived workspace still shows while it holds a live room (never orphan a room)", () => {
-    const archivedWs = wsRec("wz", "Archived", "/z", true);
-    const roomsWithOrphan = [...rooms, cowork("kz", "活着的房间", "wz")];
-    const groups = coworkGroups(roomsWithOrphan, [...workspaces, archivedWs]);
-    expect(groups.find((g) => g.workspace.id === "wz")?.rooms.map((r) => r.id)).toEqual(["kz"]);
-    // 一旦房间也归档，这个归档工作区就重新隐藏
-    expect(coworkGroups([...rooms, cowork("kz", "归档的", "wz", true)], [...workspaces, archivedWs]).some((g) => g.workspace.id === "wz")).toBeFalse();
+  it("keeps an archived workspace visible while it owns a live room", () => {
+    const archivedWorkspace = wsRec("wz", "Archived", "/z", true);
+    const groups = workspaceGroups([...rooms, cowork("kz", "活着的房间", "wz")], [...workspaces, archivedWorkspace]);
+    expect(groups.find((group) => group.workspace.id === "wz")?.rooms.map((room) => room.id)).toEqual(["kz"]);
   });
 });
 
-describe("search is scoped by top-level mode", () => {
+describe("unified sidebar search", () => {
   const data = { rooms, workspaces, memberNamesByRoom: { c1: ["紫镜狐狸"], k1: ["月面记录官"] } };
 
-  it("chat mode searches chat room names and member names only", () => {
-    expect(searchSidebar("论文", "chat", data)).toEqual([{ kind: "room", room: rooms[0] }]);
-    expect(searchSidebar("紫镜", "chat", data)).toEqual([{ kind: "room", room: rooms[0] }]);
-    // cowork 房间不会出现在 chat 搜索结果里
-    expect(searchSidebar("重构", "chat", data)).toEqual([]);
+  it("searches room names and member nicknames across legacy and workspace rooms", () => {
+    expect(searchSidebar("论文", data)).toEqual([{ kind: "room", room: rooms[0] }]);
+    expect(searchSidebar("紫镜", data)).toEqual([{ kind: "room", room: rooms[0] }]);
+    expect(searchSidebar("重构", data)).toEqual([{ kind: "room", room: rooms[3] }]);
+    expect(searchSidebar("月面", data)).toEqual([{ kind: "room", room: rooms[3] }]);
   });
 
-  it("cowork mode searches workspace label, workspace path and cowork rooms", () => {
-    expect(searchSidebar("重构", "cowork", data).map((h) => (h.kind === "room" ? h.room.id : h.workspaceId))).toEqual([
-      "k1",
-    ]);
-    expect(searchSidebar("Socrates", "cowork", data).map((h) => (h.kind === "workspace" ? h.workspaceId : ""))).toEqual([
-      "w1",
-    ]);
-    expect(searchSidebar("/srv", "cowork", data).map((h) => (h.kind === "workspace" ? h.workspaceId : ""))).toEqual([
-      "w2",
-    ]);
-    // chat 房间不会出现在 cowork 搜索结果里
-    expect(searchSidebar("闲聊", "cowork", data)).toEqual([]);
+  it("searches workspace labels and paths", () => {
+    expect(searchSidebar("Socrates", data)).toEqual([{ kind: "workspace", workspaceId: "w1", label: "Socrates" }]);
+    expect(searchSidebar("/srv", data)).toEqual([{ kind: "workspace", workspaceId: "w2", label: "Website" }]);
   });
 
-  it("an empty query clears results rather than listing everything", () => {
-    expect(searchSidebar("", "chat", data)).toEqual([]);
-    expect(searchSidebar("   ", "cowork", data)).toEqual([]);
-  });
-
-  it("search never mutates the underlying data", () => {
+  it("excludes archived entities and leaves input data untouched", () => {
     const before = JSON.stringify(data);
-    searchSidebar("a", "chat", data);
-    searchSidebar("a", "cowork", data);
+    expect(searchSidebar("旧的", data)).toEqual([]);
+    expect(searchSidebar("归档的", data)).toEqual([]);
+    expect(searchSidebar("", data)).toEqual([]);
     expect(JSON.stringify(data)).toBe(before);
-  });
-});
-
-describe("segmented control keyboard navigation", () => {
-  const options = ["chat", "cowork"] as const;
-
-  it("arrow keys move between segments and wrap", () => {
-    expect(nextSegment(options, "chat", "ArrowRight")).toBe("cowork");
-    expect(nextSegment(options, "cowork", "ArrowLeft")).toBe("chat");
-    expect(nextSegment(options, "cowork", "ArrowRight")).toBe("chat"); // wrap
-    expect(nextSegment(options, "chat", "ArrowLeft")).toBe("cowork"); // wrap
-  });
-
-  it("Home/End jump to the ends and unrelated keys are ignored", () => {
-    expect(nextSegment(options, "cowork", "Home")).toBe("chat");
-    expect(nextSegment(options, "chat", "End")).toBe("cowork");
-    expect(nextSegment(options, "chat", "a")).toBe("chat");
-    expect(nextSegment(options, "chat", "Enter")).toBe("chat"); // Enter 由 button 语义处理
-  });
-
-  it("recognises only the keys it handles", () => {
-    expect(isSegmentKey("ArrowLeft")).toBeTrue();
-    expect(isSegmentKey("End")).toBeTrue();
-    expect(isSegmentKey("Enter")).toBeFalse();
   });
 });
