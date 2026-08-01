@@ -5,15 +5,14 @@ import { MD_COMPONENTS } from "./markdownLink";
 import { useThrottledValue } from "./useThrottledValue";
 import { DEFAULT_WINDOW_SIZE, expandWindow, windowTail } from "./listWindow";
 import { useTransientFlag } from "./useTransientFlag";
-import { agentLabel, normalizeCollaborationSettings, validateCollaborationSettings, type Agent, type AppMode,
+import { agentLabel, normalizeCollaborationSettings, validateCollaborationSettings, type Agent,
   type ConversationSession, type RoomCollaborationSettings, type WorkspaceRecord,
   type SessionMessage, type StoredMessage, type TaskSummary,
   type ToolApprovalMode } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
 import { isOwnedManagedWorkspace, roomDraftBlocker, toggleRoomAgentSelection } from "./roomSelection";
-import ModeSegmented from "./sidebar/ModeSegmented";
-import { chatRooms, coworkGroups, searchSidebar, type SidebarRoom } from "./sidebar/sidebarLists";
+import { searchSidebar, topLevelRooms, workspaceGroups, type SidebarRoom } from "./sidebar/sidebarLists";
 import { useT, type MultiPlan, type StreamingTurn } from "./store";
 import { useStorePick } from "./selectors";
 import { sfx } from "./fx";
@@ -1797,18 +1796,12 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
   const collapsed = config?.sidebar.collapsed ?? false;
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // 侧栏统一视图：rooms（Chat）与 sessions（Co-work）折算成同一种行，
+  // 侧栏统一视图：历史 rooms 与 workspace sessions 折算成同一种行，
   // source 决定点击走 selectRoom 还是 selectAgentSession。
   const entries = useMemo<SidebarEntry[]>(() => [
     ...rooms.map((room) => ({ id: room.id, name: room.name, kind: "chat" as const, workspaceId: null, archived: room.archived, source: "room" as const })),
     ...sessions.map((session) => ({ id: session.id, name: session.title, kind: session.kind, workspaceId: session.workspaceId, archived: session.archived, source: "session" as const })),
   ], [rooms, sessions]);
-
-  // 顶层模式跟随当前选中的房间，而不是另存一份会不同步的副本
-  const currentEntry = entries.find((entry) => entry.id === (currentSessionId ?? currentRoomId));
-  // mode 是真实状态：跟随导航到房间时切换，但删除/归档清空选中时**不**跟着弹回 chat
-  const [mode, setMode] = useState<AppMode>(currentEntry?.kind ?? "chat");
-  useEffect(() => { if (currentEntry) setMode(currentEntry.kind); }, [currentEntry?.id]);
 
   const memberNamesByRoom = useMemo(() => {
     const named = (ids: string[]) => ids.map((id) => agents.find((agent) => agent.id === id)?.nickname ?? "");
@@ -1821,11 +1814,13 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
   const openEntry = (entry: SidebarEntry) =>
     void (entry.source === "room" ? selectRoom(entry.id) : selectAgentSession(entry.id));
 
-  const searchHits = searchSidebar(query, mode, {
+  const searchHits = searchSidebar(query, {
     rooms: entries,
     workspaces: workspaces.map((workspace) => ({ ...workspace, path: workspace.canonicalPath })),
     memberNamesByRoom,
   });
+  const topLevelEntries = useMemo(() => topLevelRooms(entries, workspaces) as SidebarEntry[], [entries, workspaces]);
+  const projectGroups = useMemo(() => workspaceGroups(entries, workspaces), [entries, workspaces]);
 
   const archivedRooms = rooms.filter((r) => r.archived);
   const archivedSessions = sessions.filter((session) => session.archived);
@@ -1845,7 +1840,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
           setMenu({ kind: menuKind, id: entry.id, x: event.clientX, y: event.clientY });
         }}
       >
-        <PixelIcon name={entry.kind === "cowork" ? "robot" : "chat"} size={18} />
+        <PixelIcon name="robot" size={18} />
         {!collapsed && (
           <>
             <span className="min-w-0 flex-1 truncate font-medium">{entry.name}</span>
@@ -1866,10 +1861,10 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
     );
   };
 
-  // 从工作区分组的「＋」建房：直接锁定为该工作区的 Co-work，不再走全局 activeWorkspace、不让重选
+  // 从工作区分组的「＋」建房：直接锁定该工作区，不再走全局 activeWorkspace、不让重选
   const createInWorkspace = (workspaceId: string) => setCreating({ presetWorkspaceId: workspaceId });
 
-  /** Co-work 的工作区分组；展开与选中互不影响（展开状态由 collapsedGroups 单独持有）。 */
+  /** 工作区分组；展开与选中互不影响（展开状态由 foldedGroups 单独持有）。 */
   const workspaceGroup = (group: { workspace: WorkspaceRecord; rooms: SidebarRoom[] }) => {
     const { workspace } = group;
     const folded = foldedGroups.includes(workspace.id);
@@ -1972,26 +1967,16 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
           </button>
         )}
 
-        <div className="mt-3">
-          <ModeSegmented
-            mode={mode}
-            onChange={setMode}
-            collapsed={collapsed}
-            labels={{ chat: t("room_kind_chat"), cowork: t("room_kind_cowork") }}
-          />
-        </div>
-
         {!collapsed && (
           <input
             type="search"
-            className="pixel-input mt-2 w-full px-2 py-1.5 text-xs"
+            className="pixel-input mt-3 w-full px-2 py-1.5 text-xs"
             placeholder={t("sidebar_search_placeholder")}
             aria-label={t("sidebar_search_placeholder")}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
         )}
-        {!collapsed && mode === "cowork" && <div className="mt-2"><WorkspaceChip /></div>}
         {sidebarError && <div role="alert" className="mt-2 border border-red-300 bg-red-50 px-2 py-1 text-[10px] text-red-700">{sidebarError}</div>}
 
         <div className="pixel-room-list mt-3 flex-1 overflow-y-auto pr-1">
@@ -2016,13 +2001,21 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
                 )}
               </div>
             )
-          ) : mode === "chat" ? (
-            <div className="space-y-1 px-1">
-              {chatRooms(entries).length === 0 && <p className="px-2 py-1 text-[10px] text-neutral-400">{t("project_empty")}</p>}
-              {(chatRooms(entries) as SidebarEntry[]).map(entryRow)}
-            </div>
           ) : (
-            coworkGroups(entries, workspaces).map((group) => workspaceGroup({ ...group, workspace: workspaces.find((item) => item.id === group.workspace.id)! }))
+            <div className="space-y-2">
+              {topLevelEntries.length > 0 && (
+                <div className="space-y-1 px-1">
+                  {topLevelEntries.map(entryRow)}
+                </div>
+              )}
+              {projectGroups.map((group) => workspaceGroup({
+                ...group,
+                workspace: workspaces.find((item) => item.id === group.workspace.id)!,
+              }))}
+              {topLevelEntries.length === 0 && projectGroups.length === 0 && (
+                <p className="px-2 py-1 text-[10px] text-neutral-400">{t("project_empty")}</p>
+              )}
+            </div>
           )}
         </div>
         <div className="pixel-archive-dock mt-3 pt-3">
