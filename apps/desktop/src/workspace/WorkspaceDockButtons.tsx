@@ -4,17 +4,11 @@ import type { WorkspaceDockMode } from "./workspaceDockState";
 
 export default function WorkspaceDockButtons({ mode, disabled, onSelect }: {
   mode: WorkspaceDockMode;
-  disabled: boolean;
-  onSelect: (mode: "files" | "diff") => void;
+  disabled?: boolean;
+  onSelect: (mode: "overview") => void;
 }) {
   const t = useT();
-  if (disabled) return null;
-  return <div className="flex items-center gap-1" role="group" aria-label={t("workspace_tools")}>
-    <button type="button" className={`pixel-button pixel-dock-trigger ${mode === "files" ? "pixel-button--primary" : ""}`} disabled={disabled} aria-pressed={mode === "files"} title={t("workspace_browse_files")} onClick={() => onSelect("files")}>
-      <PixelIcon name="folder" size={16} /><span>{t("workspace_files")}</span>
-    </button>
-    <button type="button" className={`pixel-button pixel-dock-trigger ${mode === "diff" ? "pixel-button--primary" : ""}`} disabled={disabled} aria-pressed={mode === "diff"} title={t("workspace_view_diff")} onClick={() => onSelect("diff")}>
-      <PixelIcon name="diff" size={16} /><span>{t("workspace_changes")}</span>
-    </button>
-  </div>;
+  return <button type="button" className={`pixel-button pixel-dock-trigger ${mode !== "closed" ? "pixel-button--primary" : ""}`} disabled={disabled} aria-pressed={mode !== "closed"} aria-label={t("workspace_overview")} title={t("workspace_overview")} onClick={() => onSelect("overview")}>
+    <PixelIcon name="sidebar" size={16} /><span className="sr-only">workspace_overview</span>
+  </button>;
 }
