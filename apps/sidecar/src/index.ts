@@ -40,6 +40,8 @@ import { multiAgentRoutes } from "./routes/multi-agent";
 import type { OrchestrationAgent } from "@socrates/core";
 import { UsageCollector } from "./services/usage-collector";
 import { ModelCatalog } from "./model-catalog";
+import { HistoryStore } from "./store/history-store";
+import { join } from "node:path";
 
 // 父进程（Tauri）异常退出（如 SIGKILL/SIGTERM 未走优雅关闭）时自动退出，避免孤儿进程占着端口
 let stopManagedServices: () => Promise<void> = async () => {};
@@ -69,6 +71,7 @@ app.use("*", async (c, next) => {
 });
 
 const db = openDb(defaultDbPath());
+const history = new HistoryStore(db, join(defaultDataDir(), "history"));
 const secrets = new KeychainSecrets();
 const config = new ConfigStore(undefined, secrets);
 // 所有出站请求（连接测试/列模型/模型调用）都按 config.toml 的代理设置走
@@ -76,7 +79,7 @@ const proxiedFetch = makeProxiedFetch(() => config.getResolved());
 const modelCatalog = new ModelCatalog(defaultDataDir(), proxiedFetch);
 const gateway = makeAiSdkGateway(proxiedFetch);
 const workspaces = new WorkspaceManager(db);
-const sessions = new SessionStore(db);
+const sessions = new SessionStore(db, history);
 const events = new EventStore(db);
 const approvals = new ApprovalManager(db);
 const attachments = new AttachmentResolver(db, defaultDataDir());
@@ -146,10 +149,11 @@ runtimes.register("native_ai_sdk", (input) => {
     },
   });
 });
-const agentRuns = new SingleAgentRunner(db, runtimes, approvals, events, attachments);
+const agentRuns = new SingleAgentRunner(db, runtimes, approvals, events, attachments, history);
+const multiTasks = new MultiTaskStore(db, history);
+await history.bootstrapAll();
 runtimes.recoverInterrupted();
 agentRuns.recoverInterrupted();
-const multiTasks = new MultiTaskStore(db);
 const usage = new UsageCollector(db);
 const resolveMultiAgent = (agentId: string, snapshot: Record<string, unknown>): OrchestrationAgent => {
   const providerId = String(snapshot.providerId ?? "");
@@ -165,8 +169,8 @@ const resolveMultiAgent = (agentId: string, snapshot: Record<string, unknown>): 
     providerType: provider.type, baseUrl: provider.base_url, apiKey,
   };
 };
-const multiCoordinator = new MultiAgentCoordinator(db, multiTasks, events, gateway, resolveMultiAgent);
-const executionRunner = new ExecutionRunner(db, multiTasks, runtimes, new WorkspaceLeaseManager(db, crypto.randomUUID()), approvals, events);
+const multiCoordinator = new MultiAgentCoordinator(db, multiTasks, events, gateway, resolveMultiAgent, history);
+const executionRunner = new ExecutionRunner(db, multiTasks, runtimes, new WorkspaceLeaseManager(db, crypto.randomUUID()), approvals, events, history);
 multiTasks.recoverInterrupted();
 
 app.get("/health", (c) => c.json({ ok: true }));

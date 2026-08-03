@@ -22,7 +22,7 @@ describe("MultiAgentCoordinator", () => {
   it("runs discussion serially, repairs a plan once and waits for exact approval", async () => {
     const valid = JSON.stringify({ objective: "build", summary: "safe", steps: [{ id: "1", title: "edit", description: "change", files: ["src/a.ts"], commands: [], risks: [], verification: ["bun test"] }], evidence: [] });
     const { store, coordinator, calls } = setup(["A view", "B view", "not-json", valid]);
-    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });
+    const task = await coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });
     const events: string[] = [];
     await coordinator.run(task.id, (event) => { events.push(event.type); });
     expect(store.get(task.id)?.state).toBe("awaiting_plan_approval");
@@ -34,7 +34,7 @@ describe("MultiAgentCoordinator", () => {
 
   it("does not call a provider twice for a completed stable turn", async () => {
     const { store, coordinator, calls } = setup([]);
-    const task = coordinator.create({ sessionId: "s", prompt: "x", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });
+    const task = await coordinator.create({ sessionId: "s", prompt: "x", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });
     store.transition(task.id, { type: "prepared_multi" });
     const turn = store.beginTurn({ taskId: task.id, stableKey: `${task.id}:1:discussing:1:0`, phase: "discussing", round: 1, participantIndex: 0, agentId: "a", snapshot: {} });
     store.completeTurn(turn.id, "cached", null);
@@ -65,7 +65,7 @@ describe("MultiAgentCoordinator", () => {
     const resolve = (id: string, snapshot: Record<string, unknown>): OrchestrationAgent => ({ id, nickname: String(snapshot.nickname), modelId: String(snapshot.modelId), role: "", systemPrompt: "", providerType: "openai_compatible", baseUrl: "http://unused", apiKey: "fixture" });
     const store = new MultiTaskStore(db);
     const coordinator = new MultiAgentCoordinator(db, store, new EventStore(db), gateway, resolve);
-    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });
+    const task = await coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });
     const firstRun = coordinator.run(task.id);
     await secondStarted;
     coordinator.pause(task.id);
@@ -93,7 +93,7 @@ describe("MultiAgentCoordinator", () => {
     const resolve = (id: string, snapshot: Record<string, unknown>): OrchestrationAgent => ({ id, nickname: String(snapshot.nickname), modelId: String(snapshot.modelId), role: "", systemPrompt: "", providerType: "openai_compatible", baseUrl: "http://unused", apiKey: "fixture" });
     const store = new MultiTaskStore(db);
     const coordinator = new MultiAgentCoordinator(db, store, new EventStore(db), gateway, resolve);
-    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a", fallbackOrderByAgent: { a: ["b"] } } });
+    const task = await coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a", fallbackOrderByAgent: { a: ["b"] } } });
     const events: Array<Record<string, unknown>> = [];
     await coordinator.run(task.id, (event) => { events.push(event as unknown as Record<string, unknown>); });
     expect(store.get(task.id)?.state).toBe("awaiting_plan_approval");
@@ -110,7 +110,7 @@ describe("MultiAgentCoordinator", () => {
     const { db, store, coordinator } = setup(["A view", "B view", PLAN]);
     setCollab(db, { collaborationMode: "agent_directed_multi_agent", boss: { enabled: true, bossAgentId: "a", allowBossExecution: false } });
     // config.synthesizerId 是 "b"，但 Boss=a 应接管综合
-    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "b" } });
+    const task = await coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "b" } });
     await coordinator.run(task.id, () => {});
     expect(store.get(task.id)?.state).toBe("awaiting_plan_approval");
     expect(store.getPlan(task.id)?.createdBy).toBe("a");
@@ -119,7 +119,7 @@ describe("MultiAgentCoordinator", () => {
   it("Boss 默认不执行：Boss 同时是执行者时直接判非法", async () => {
     const { db, store, coordinator } = setup(["A view", "B view", PLAN]);
     setCollab(db, { collaborationMode: "agent_directed_multi_agent", boss: { enabled: true, bossAgentId: "a", allowBossExecution: false } });
-    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a" } });
+    const task = await coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a" } });
     await coordinator.run(task.id, () => {});
     expect(store.get(task.id)?.state).toBe("failed");
     expect(store.get(task.id)?.terminalReason).toBe("boss_must_not_execute");
@@ -129,7 +129,7 @@ describe("MultiAgentCoordinator", () => {
     const approve = JSON.stringify({ verdict: "approve", notes: "looks good" });
     const { db, store, coordinator } = setup(["A view", "B view", PLAN, approve]);
     setCollab(db, { approvalMode: "designated_reviewer", designatedReviewerId: "b" });
-    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a" } });
+    const task = await coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a" } });
     const verdicts: Array<Record<string, unknown>> = [];
     await coordinator.run(task.id, (event) => { if (event.type === "reviewer_verdict") verdicts.push(event as unknown as Record<string, unknown>); });
     expect(store.get(task.id)?.state).toBe("awaiting_plan_approval");
@@ -143,7 +143,7 @@ describe("MultiAgentCoordinator", () => {
     const PLAN2 = JSON.stringify({ objective: "build v2", summary: "safer", steps: [{ id: "1", title: "test", description: "add test", files: ["src/a.ts"], commands: [], risks: [], verification: ["bun test"] }], evidence: [] });
     const { db, store, coordinator } = setup(["A view", "B view", PLAN, reject, PLAN2]);
     setCollab(db, { approvalMode: "designated_reviewer", designatedReviewerId: "b" });
-    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a" } });
+    const task = await coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a" } });
     const verdicts: Array<Record<string, unknown>> = [];
     await coordinator.run(task.id, (event) => { if (event.type === "reviewer_verdict") verdicts.push(event as unknown as Record<string, unknown>); });
     expect(verdicts[0]).toMatchObject({ verdict: "request_changes", requestedRevision: true });
@@ -157,7 +157,7 @@ describe("MultiAgentCoordinator", () => {
     // 只喂一条输出（综合计划）——若讨论没被跳过，这里会因缺讨论输出而失败
     const { db, store, coordinator } = setup([PLAN]);
     db.query("UPDATE sessions SET collaboration_json = ? WHERE id = 's'").run(JSON.stringify({ discussionMode: "off" }));
-    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 3, synthesizerId: "b", executionAgentId: "a" } });
+    const task = await coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 3, synthesizerId: "b", executionAgentId: "a" } });
     await coordinator.run(task.id, () => {});
     expect(store.get(task.id)?.state).toBe("awaiting_plan_approval");
     // 没有任何讨论轮次落库
@@ -168,7 +168,7 @@ describe("MultiAgentCoordinator", () => {
   it("未配置协作设置的会话保持历史行为：仍然讨论", async () => {
     // collaboration_json 为空 —— 默认值 discussionMode=off 不能被当作"已关闭"
     const { store, coordinator } = setup(["A view", "B view", PLAN]);
-    const task = coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });
+    const task = await coordinator.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });
     await coordinator.run(task.id, () => {});
     expect(store.listTurns(task.id).filter((turn) => turn.phase === "discussing").length).toBeGreaterThan(0);
   });

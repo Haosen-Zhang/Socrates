@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { hashStructuredPlan, reduceTaskState, type ReasoningEffort, type StructuredPlan, type TaskState, type TaskStateEvent, type TokenUsage } from "@socrates/core";
 import { UsageCollector, normalizeTokenUsage } from "../services/usage-collector";
+import type { HistoryStore } from "../store/history-store";
 
 type TaskRow = {
   id: string; session_id: string; prompt: string; state: TaskState; resume_from_state: string | null;
@@ -25,6 +26,15 @@ export interface MultiTaskConfig {
   fallbackOrderByAgent?: Record<string, string[]>;
 }
 
+type MultiTaskCreateProjection = {
+  id: string;
+  attemptId: string;
+  sessionId: string;
+  prompt: string;
+  config: MultiTaskConfig;
+  createdAt: string;
+};
+
 export interface PlanVersionRecord {
   id: string; taskId: string; version: number; parentVersion: number | null;
   content: StructuredPlan; contentHash: string; evidenceHash: string; createdBy: string; status: string; createdAt: string;
@@ -40,9 +50,14 @@ const toTask = (row: TaskRow): MultiTaskRecord => ({
 
 export class MultiTaskStore {
   private readonly usage: UsageCollector;
-  constructor(private readonly db: Database) { this.usage = new UsageCollector(db); }
+  constructor(private readonly db: Database, private readonly history?: HistoryStore) {
+    this.usage = new UsageCollector(db);
+    history?.registerProjectionHandler("multi_task.create", (record) => {
+      this.projectCreate(record.projectionIntent!.payload as unknown as MultiTaskCreateProjection);
+    });
+  }
 
-  create(input: { sessionId: string; prompt: string; config: MultiTaskConfig }): MultiTaskRecord {
+  async create(input: { sessionId: string; prompt: string; config: MultiTaskConfig }): Promise<MultiTaskRecord> {
     const session = this.db.query<{ mode: string; workspace_id: string | null; status: string }, [string]>("SELECT mode, workspace_id, status FROM sessions WHERE id = ?").get(input.sessionId);
     if (!session || session.mode !== "multi_agent") throw new Error("multi_agent_session_required");
     if (!session.workspace_id) throw new Error("multi_agent_workspace_required");
@@ -66,17 +81,53 @@ export class MultiTaskStore {
     const attemptId = crypto.randomUUID();
     const messageId = crypto.randomUUID();
     const now = new Date().toISOString();
-    this.db.transaction(() => {
+    const projection: MultiTaskCreateProjection = {
+      id, attemptId, sessionId: input.sessionId, prompt: input.prompt.trim(), config: input.config, createdAt: now,
+    };
+    const projectTask = () => this.projectCreate(projection);
+    if (this.history) {
+      await this.history.appendMessage({
+        messageId, roomId: input.sessionId, threadId: `thread:${input.sessionId}`,
+        runId: id, turnId: null, agentId: null, role: "user", kind: "text",
+        content: input.prompt.trim(), parts: [{ type: "text", text: input.prompt.trim() }],
+        status: "completed", idempotencyKey: `multi-task-user:${id}`, createdAt: now,
+        projectionIntent: { type: "multi_task.create", payload: projection as unknown as Record<string, unknown> },
+      }, projectTask);
+    } else {
+      this.db.transaction(() => {
+        projectTask();
+        this.db.query("INSERT INTO session_messages (id, session_id, role, content, status, created_at) VALUES (?, ?, 'user', ?, 'completed', ?)").run(messageId, input.sessionId, input.prompt.trim(), now);
+        this.db.query("INSERT INTO message_parts (id, message_id, ordinal, type, text) VALUES (?, ?, 0, 'text', ?)").run(crypto.randomUUID(), messageId, input.prompt.trim());
+      })();
+    }
+    return this.get(id)!;
+  }
+
+  private projectCreate(input: MultiTaskCreateProjection): void {
+    const existing = this.db.query<TaskRow, [string]>("SELECT * FROM multi_tasks WHERE id = ?").get(input.id);
+    if (existing) {
+      if (existing.session_id !== input.sessionId || existing.prompt !== input.prompt
+        || existing.config_json !== JSON.stringify(input.config) || existing.execution_agent_id !== input.config.executionAgentId) {
+        throw new Error("multi_task_projection_conflict");
+      }
+    } else {
       this.db.query(`INSERT INTO multi_tasks
         (id, session_id, prompt, state, attempt_no, config_json, execution_agent_id, created_at, updated_at)
         VALUES (?, ?, ?, 'preparing', 1, ?, ?, ?, ?)`)
-        .run(id, input.sessionId, input.prompt.trim(), JSON.stringify(input.config), input.config.executionAgentId, now, now);
-      this.db.query("INSERT INTO multi_task_attempts (id, task_id, attempt_no, status, started_at) VALUES (?, ?, 1, 'active', ?)").run(attemptId, id, now);
-      this.db.query("INSERT INTO session_messages (id, session_id, role, content, status, created_at) VALUES (?, ?, 'user', ?, 'completed', ?)").run(messageId, input.sessionId, input.prompt.trim(), now);
-      this.db.query("INSERT INTO message_parts (id, message_id, ordinal, type, text) VALUES (?, ?, 0, 'text', ?)").run(crypto.randomUUID(), messageId, input.prompt.trim());
-      this.db.query("UPDATE sessions SET status = 'preparing', updated_at = ? WHERE id = ?").run(now, input.sessionId);
-    })();
-    return this.get(id)!;
+        .run(input.id, input.sessionId, input.prompt, JSON.stringify(input.config), input.config.executionAgentId,
+          input.createdAt, input.createdAt);
+    }
+    const attempt = this.db.query<{ id: string; task_id: string }, [string]>(
+      "SELECT id, task_id FROM multi_task_attempts WHERE id = ?",
+    ).get(input.attemptId);
+    if (attempt) {
+      if (attempt.task_id !== input.id) throw new Error("multi_task_attempt_projection_conflict");
+    } else {
+      this.db.query("INSERT INTO multi_task_attempts (id, task_id, attempt_no, status, started_at) VALUES (?, ?, 1, 'active', ?)")
+        .run(input.attemptId, input.id, input.createdAt);
+    }
+    this.db.query("UPDATE sessions SET status = 'preparing', updated_at = ? WHERE id = ?")
+      .run(input.createdAt, input.sessionId);
   }
 
   get(id: string): MultiTaskRecord | null {

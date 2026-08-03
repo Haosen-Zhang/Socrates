@@ -13,6 +13,7 @@ import {
 import type { EventStore } from "../store/event-store";
 import { MultiTaskStore, type MultiTaskConfig } from "./task-store";
 import { ContextCompactionService } from "../services/context-compaction";
+import type { HistoryStore } from "../store/history-store";
 
 export type MultiAgentEvent =
   | { type: "task_state"; taskId: string; state: string }
@@ -66,9 +67,10 @@ export class MultiAgentCoordinator {
     private readonly events: EventStore,
     private readonly gateway: ModelGateway,
     private readonly resolveAgent: (agentId: string, snapshot: Record<string, unknown>) => OrchestrationAgent,
+    private readonly history?: HistoryStore,
   ) { this.compaction = new ContextCompactionService(db); }
 
-  create(input: { sessionId: string; prompt: string; config: MultiTaskConfig }) {
+  async create(input: { sessionId: string; prompt: string; config: MultiTaskConfig }) {
     return this.store.create(input);
   }
 
@@ -159,7 +161,7 @@ export class MultiAgentCoordinator {
           }
           this.store.completeTurn(activeTurn.id, result.content, result.usage);
           completed.push({ agentId: actualAgentId, agentName: actualAgent.nickname, round, content: result.content });
-          this.persistAssistantMessage(task.sessionId, actualAgentId, result.content);
+          await this.persistAssistantMessage(task.sessionId, actualAgentId, result.content);
           await emit({ type: "turn_completed", taskId, agentId: actualAgentId, nickname: actualAgent.nickname, model: actualAgent.modelId, round, phase: "discussing", content: result.content, usage: result.usage });
           this.store.transition(taskId, { type: "next_turn" });
           ordinal += 1;
@@ -353,9 +355,15 @@ export class MultiAgentCoordinator {
       .map((row) => ({ agentId: row.agent_id, snapshot: JSON.parse(row.snapshot_json) as Record<string, unknown>, position: row.position }));
   }
 
-  private persistAssistantMessage(sessionId: string, agentId: string, content: string): void {
+  private async persistAssistantMessage(sessionId: string, agentId: string, content: string): Promise<void> {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
+    if (this.history) {
+      await this.history.appendMessage({ messageId: id, roomId: sessionId, threadId: `thread:${sessionId}`,
+        runId: null, turnId: null, agentId, role: "assistant", kind: "text", content,
+        parts: [{ type: "text", text: content }], status: "completed", idempotencyKey: `multi-assistant:${id}`, createdAt: now });
+      return;
+    }
     this.db.transaction(() => {
       this.db.query("INSERT INTO session_messages (id, session_id, role, author_id, content, status, created_at) VALUES (?, ?, 'assistant', ?, ?, 'completed', ?)").run(id, sessionId, agentId, content, now);
       this.db.query("INSERT INTO message_parts (id, message_id, ordinal, type, text) VALUES (?, ?, 0, 'text', ?)").run(crypto.randomUUID(), id, content);

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { openDb } from "../db";
 import { ConversationMemoryStore } from "./conversation-memory-store";
+import { HistoryStore } from "./history-store";
 
 function setupRooms() {
   const db = openDb(":memory:");
@@ -13,10 +17,90 @@ function setupRooms() {
 }
 
 describe("ConversationMemoryStore", () => {
+  it("persists complete Turns through the local HistoryStore authority", async () => {
+    const { db } = setupRooms();
+    const dir = mkdtempSync(join(tmpdir(), "socrates-memory-history-"));
+    try {
+      const history = new HistoryStore(db, dir);
+      const memory = new ConversationMemoryStore(db, history);
+      const thread = memory.ensureDefaultThread("room-a");
+      const turn = await memory.beginTurn({
+        roomId: "room-a", threadId: thread.id, clientTurnKey: "durable-turn", inputHash: "input",
+        runId: "run", agentId: "agent", prompt: "hello", parts: [],
+      });
+      await memory.completeTurn({
+        roomId: "room-a", runId: "run", turnId: turn.turnId, completedAt: new Date().toISOString(),
+        assistantMessage: {
+          messageId: "assistant", roomId: "room-a", threadId: thread.id, runId: "run", turnId: turn.turnId,
+          agentId: "agent", role: "assistant", kind: "text", content: "world",
+          parts: [{ type: "text", text: "world" }], status: "completed", idempotencyKey: "assistant:durable-turn",
+        },
+      });
+
+      expect(readFileSync(history.roomPath("room-a"), "utf8").trim().split("\n")).toHaveLength(2);
+      expect((await memory.listThreadMessages(thread.id)).map((message) => message.content)).toEqual(["hello", "world"]);
+
+      db.query("DELETE FROM message_parts WHERE message_id IN (SELECT id FROM session_messages WHERE session_id = 'room-a')").run();
+      db.query("DELETE FROM session_messages WHERE session_id = 'room-a'").run();
+      await new HistoryStore(db, dir).bootstrapSession("room-a");
+      expect((await memory.listThreadMessages(thread.id)).map((message) => message.content)).toEqual(["hello", "world"]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("retries the same durable user record after its Turn projection rolls back", async () => {
+    const { db } = setupRooms();
+    const dir = mkdtempSync(join(tmpdir(), "socrates-memory-retry-"));
+    try {
+      const history = new HistoryStore(db, dir);
+      const memory = new ConversationMemoryStore(db, history);
+      const thread = memory.ensureDefaultThread("room-a");
+      const input = {
+        roomId: "room-a", threadId: thread.id, clientTurnKey: "projection-retry", inputHash: "same",
+        runId: "run", agentId: "agent", prompt: "persist once", parts: [],
+      };
+      db.exec(`CREATE TRIGGER fail_turn_projection BEFORE INSERT ON conversation_turns
+        BEGIN SELECT RAISE(ABORT, 'injected_turn_projection_failure'); END`);
+      await expect(memory.beginTurn(input)).rejects.toThrow("injected_turn_projection_failure");
+      expect(readFileSync(history.roomPath("room-a"), "utf8").trim().split("\n")).toHaveLength(1);
+      expect(db.query("SELECT id FROM session_messages WHERE session_id = 'room-a'").get()).toBeNull();
+
+      db.exec("DROP TRIGGER fail_turn_projection");
+      const retry = await memory.beginTurn(input);
+      expect(retry.replayed).toBe(false);
+      expect((await memory.listThreadMessages(thread.id)).map((message) => message.content)).toEqual(["persist once"]);
+      expect(readFileSync(history.roomPath("room-a"), "utf8").trim().split("\n")).toHaveLength(1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("replays a durable Turn projection after a sidecar restart", async () => {
+    const { db } = setupRooms();
+    const dir = mkdtempSync(join(tmpdir(), "socrates-memory-restart-"));
+    try {
+      const history = new HistoryStore(db, dir);
+      const memory = new ConversationMemoryStore(db, history);
+      const thread = memory.ensureDefaultThread("room-a");
+      db.exec(`CREATE TRIGGER fail_turn_projection BEFORE INSERT ON conversation_turns
+        BEGIN SELECT RAISE(ABORT, 'injected_turn_projection_failure'); END`);
+      await expect(memory.beginTurn({
+        roomId: "room-a", threadId: thread.id, clientTurnKey: "restart", inputHash: "same",
+        runId: "restart-run", agentId: "agent", prompt: "survive restart", parts: [],
+      })).rejects.toThrow("injected_turn_projection_failure");
+      db.exec("DROP TRIGGER fail_turn_projection");
+
+      const restartedHistory = new HistoryStore(db, dir);
+      const restartedMemory = new ConversationMemoryStore(db, restartedHistory);
+      await restartedHistory.bootstrapSession("room-a");
+      expect(db.query("SELECT id FROM conversation_turns").all()).toHaveLength(1);
+      expect(db.query("SELECT id FROM agent_runs").all()).toEqual([{ id: "restart-run" }]);
+      expect((await restartedMemory.listThreadMessages(thread.id)).map((message) => message.content))
+        .toEqual(["survive restart"]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("creates an idempotent durable Turn and retries without duplicating the user message", async () => {
     const { db, memory } = setupRooms();
     const thread = memory.ensureDefaultThread("room-a");
-    const first = memory.beginTurn({
+    const first = await memory.beginTurn({
       roomId: "room-a",
       threadId: thread.id,
       clientTurnKey: "client-turn",
@@ -29,7 +113,7 @@ describe("ConversationMemoryStore", () => {
     expect(first.replayed).toBe(false);
     memory.updateTurnStatus(first.turnId, "failed", { completedAt: new Date().toISOString() });
 
-    const retry = memory.beginTurn({
+    const retry = await memory.beginTurn({
       roomId: "room-a",
       threadId: thread.id,
       clientTurnKey: "client-turn",
@@ -45,10 +129,10 @@ describe("ConversationMemoryStore", () => {
     expect(db.query("SELECT id FROM agent_runs ORDER BY attempt_no").all()).toEqual([{ id: "run-1" }, { id: "run-2" }]);
   });
 
-  it("replays a completed client Turn and rejects key reuse with different input", () => {
+  it("replays a completed client Turn and rejects key reuse with different input", async () => {
     const { memory } = setupRooms();
     const thread = memory.ensureDefaultThread("room-a");
-    const first = memory.beginTurn({
+    const first = await memory.beginTurn({
       roomId: "room-a",
       threadId: thread.id,
       clientTurnKey: "completed-turn",
@@ -59,7 +143,7 @@ describe("ConversationMemoryStore", () => {
       parts: [],
     });
     memory.updateTurnStatus(first.turnId, "completed", { completedAt: new Date().toISOString() });
-    const replay = memory.beginTurn({
+    const replay = await memory.beginTurn({
       roomId: "room-a",
       threadId: thread.id,
       clientTurnKey: "completed-turn",
@@ -70,7 +154,7 @@ describe("ConversationMemoryStore", () => {
       parts: [],
     });
     expect(replay).toMatchObject({ replayed: true, runId: "run-completed", status: "completed" });
-    expect(() => memory.beginTurn({
+    await expect(memory.beginTurn({
       roomId: "room-a",
       threadId: thread.id,
       clientTurnKey: "completed-turn",
@@ -79,7 +163,7 @@ describe("ConversationMemoryStore", () => {
       agentId: "agent",
       prompt: "changed",
       parts: [],
-    })).toThrow("client_turn_key_conflict");
+    })).rejects.toThrow("client_turn_key_conflict");
   });
 
   it("stores locally with strict per-Thread sequence and idempotent append", async () => {

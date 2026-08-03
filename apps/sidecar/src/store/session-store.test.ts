@@ -271,7 +271,7 @@ describe("SessionStore", () => {
     expect(store.get(session.id)?.approvalPolicy.version).toBe(2);
   });
 
-  it("rewinds persisted context but never relies on reversing external workspace effects", () => {
+  it("rewinds persisted context but never relies on reversing external workspace effects", async () => {
     const db = openDb(":memory:");
     const store = new SessionStore(db);
     const session = store.create({ title: "Chat", mode: "chat", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
@@ -279,7 +279,7 @@ describe("SessionStore", () => {
     insert.run("first", session.id, "user", null, "first turn", "completed", "2026-01-01T00:00:00.000Z");
     insert.run("second", session.id, "assistant", null, "later turn", "completed", "2026-01-01T00:00:01.000Z");
 
-    store.rewind(session.id, "second");
+    await store.rewind(session.id, "second");
     expect(store.listMessages(session.id).map((message) => message.id)).toEqual(["first"]);
     expect(store.get(session.id)?.status).toBe("idle");
   });
@@ -323,7 +323,7 @@ describe("SessionStore", () => {
       status: "completed",
       idempotencyKey: "answer",
     });
-    store.rewind(session.id, answer.messageId);
+    await store.rewind(session.id, answer.messageId);
     const replacement = await memory.appendMessage({
       roomId: session.id,
       threadId: thread.id,
@@ -343,11 +343,11 @@ describe("SessionStore", () => {
       .toEqual(["question", "replacement"]);
   });
 
-  it("removes local conversation records only when the session is inactive", () => {
+  it("removes local conversation records only when the session is inactive", async () => {
     const db = openDb(":memory:");
     const store = new SessionStore(db);
     const session = store.create({ title: "Disposable", mode: "chat", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
-    store.remove(session.id);
+    await store.remove(session.id);
     expect(store.get(session.id)).toBeNull();
   });
 });

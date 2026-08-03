@@ -33,7 +33,7 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
     const body = await c.req.json().catch(() => null) as { prompt?: unknown; config?: unknown } | null;
     if (!body || typeof body.prompt !== "string" || !body.config || typeof body.config !== "object") return c.json({ error: "multi_task_input_invalid" }, 400);
     let task;
-    try { task = coordinator.create({ sessionId: c.req.param("sessionId"), prompt: body.prompt, config: body.config as MultiTaskConfig }); }
+    try { task = await coordinator.create({ sessionId: c.req.param("sessionId"), prompt: body.prompt, config: body.config as MultiTaskConfig }); }
     catch (error) { return c.json({ error: error instanceof Error ? error.message : "multi_task_create_failed" }, 400); }
     return streamSSE(c, async (stream) => {
       const emit = async (event: MultiAgentEvent) => stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
