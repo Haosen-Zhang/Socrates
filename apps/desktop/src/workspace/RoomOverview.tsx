@@ -1,7 +1,8 @@
-import type { NormalizedUsage } from "@socrates/core";
+import type { NormalizedUsage, ReasoningEffort } from "@socrates/core";
 import AgentAvatar from "../AgentAvatar";
 import PixelIcon from "../PixelIcon";
 import { useT } from "../store";
+import { contextWindowUsage } from "./contextWindowUsage";
 
 export type RoomOverviewAgent = {
   id: string;
@@ -9,6 +10,8 @@ export type RoomOverviewAgent = {
   avatar: string;
   modelId: string;
   role?: string;
+  contextWindowTokens: number | null;
+  reasoningEffort: ReasoningEffort | null;
 };
 
 type UsageSummary = {
@@ -38,6 +41,13 @@ export default function RoomOverview({ agents, usage, onManageMembers, onShowTas
       <div className="pixel-room-overview__usage-list">
         {agents.map((agent) => {
           const summary = usage.find((item) => item.agentId === agent.id);
+          const context = contextWindowUsage(summary?.current.inputTokens, agent.contextWindowTokens);
+          const displayPercent = context ? Math.min(Math.max(context.percent, 0), 100) : null;
+          const effort = summary?.current.effort ?? agent.reasoningEffort;
+          const contextTitle = context
+            ? `${t("usage_context")}: ${context.inputTokens.toLocaleString()} / ${context.capacity.toLocaleString()} (${context.percent}%${context.overCapacity ? ` · ${t("usage_over_capacity")}` : ""}) · ${t("usage_cached")}: ${formatUsage(summary?.cumulative.cachedInputTokens, unavailable)} · ${t("usage_effort")}: ${effort ?? unavailable}`
+            : `${t("usage_context")}: ${unavailable}`;
+          const contextTooltipId = `agent-context-${agent.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
           return <article key={agent.id} className="pixel-room-overview__usage-card">
             <div className="flex min-w-0 items-center gap-2">
               <AgentAvatar src={agent.avatar} label={agent.nickname} size={34} lively={false} />
@@ -45,12 +55,22 @@ export default function RoomOverview({ agents, usage, onManageMembers, onShowTas
                 <div className="truncate text-xs font-bold">{agent.nickname}</div>
                 <div className="truncate text-[10px] text-neutral-500">{agent.modelId}</div>
               </div>
+              <div className="context-window-indicator">
+                <div
+                  className={`context-window-ring ${context ? "is-available" : ""}`}
+                  style={displayPercent != null ? { "--context-percent": `${displayPercent}%` } as React.CSSProperties : undefined}
+                  aria-label={contextTitle}
+                  aria-describedby={contextTooltipId}
+                  tabIndex={0}
+                ><span>{displayPercent != null ? `${displayPercent}%` : "—"}</span></div>
+                <div id={contextTooltipId} role="tooltip" className="context-window-tooltip">{contextTitle}</div>
+              </div>
             </div>
             <dl>
               <div><dt>{t("usage_current")}</dt><dd>{formatUsage(summary?.current.totalTokens, unavailable)}</dd></div>
               <div><dt>{t("usage_total")}</dt><dd>{formatUsage(summary?.cumulative.totalTokens, unavailable)}</dd></div>
               <div><dt>{t("usage_cached")}</dt><dd>{formatUsage(summary?.cumulative.cachedInputTokens, unavailable)}</dd></div>
-              <div><dt>{t("usage_reasoning")}</dt><dd>{formatUsage(summary?.cumulative.reasoningTokens, unavailable)}</dd></div>
+              <div><dt>{t("usage_effort")}</dt><dd>{effort ?? unavailable}</dd></div>
             </dl>
           </article>;
         })}

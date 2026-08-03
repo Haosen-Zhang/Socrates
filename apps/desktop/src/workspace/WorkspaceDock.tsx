@@ -8,6 +8,7 @@ import { workspaceInspectionClient } from "./workspaceInspectionClient";
 import type { Handshake } from "../transport";
 import type { WorkspaceDockMode } from "./workspaceDockState";
 import WorkspaceDockTabs from "./WorkspaceDockTabs";
+import PanelResizeHandle from "../layout/PanelResizeHandle";
 
 type TreeRow = WorkspaceBrowserEntry & { depth: number };
 const LazyDiffView = lazy(() => import("@git-diff-view/react").then((module) => ({ default: module.DiffView })));
@@ -27,13 +28,14 @@ function patchHunks(patch: string): string[] {
   return patch.slice(first).split(/(?=^@@ )/mu).filter(Boolean);
 }
 
-export default function WorkspaceDock({ handshake, workspaceId, mode, overview, onSelect, onClose }: {
+export default function WorkspaceDock({ handshake, workspaceId, mode, overview, onSelect, onClose, resize }: {
   handshake: Handshake | null;
   workspaceId: string | null;
   mode: Exclude<WorkspaceDockMode, "closed">;
   overview: ReactNode;
   onSelect: (mode: Exclude<WorkspaceDockMode, "closed">) => void;
   onClose: () => void;
+  resize?: { size: number; min: number; max: number; label: string; onResize: (size: number) => void; onCommit: (size: number) => void };
 }) {
   const t = useT();
   const [children, setChildren] = useState<Map<string, WorkspaceBrowserEntry[]>>(new Map());
@@ -115,6 +117,7 @@ export default function WorkspaceDock({ handshake, workspaceId, mode, overview, 
 
   const label = mode === "overview" ? t("workspace_overview") : mode === "files" ? t("workspace_files") : t("workspace_changes");
   return <aside className="pixel-workspace-dock" aria-label={label}>
+    {resize && <PanelResizeHandle edge="start" {...resize} />}
     <header className="pixel-workspace-dock__header">
       <WorkspaceDockTabs mode={mode} hasWorkspace={!!handshake && !!workspaceId} onSelect={onSelect} />
       <button type="button" className="pixel-workspace-dock__close" aria-label={t("close")} onClick={onClose}>×</button>
