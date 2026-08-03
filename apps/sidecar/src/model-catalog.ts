@@ -78,6 +78,11 @@ export class ModelCatalog {
       return provider ? { id: input.catalogProviderId, provider } : null;
     }
     const target = normalizeApi(input.baseUrl);
+    const officialProviderId = OFFICIAL_PROVIDER_BY_API[target];
+    if (officialProviderId) {
+      const provider = this.cache.document[officialProviderId];
+      if (provider) return { id: officialProviderId, provider };
+    }
     const matches = Object.entries(this.cache.document).filter(([, provider]) =>
       typeof provider.api === "string" && normalizeApi(provider.api) === target,
     );
@@ -104,6 +109,11 @@ export class ModelCatalog {
     renameSync(temp, path);
   }
 }
+
+const OFFICIAL_PROVIDER_BY_API: Readonly<Record<string, string>> = Object.freeze({
+  "https://api.openai.com/v1": "openai",
+  "https://api.anthropic.com": "anthropic",
+});
 
 function normalizeApi(value: string): string {
   return value.trim().toLowerCase().replace(/\/+$/u, "");
