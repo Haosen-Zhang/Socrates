@@ -1,7 +1,7 @@
 import type { ConversationStoredMessage, RuntimeConversationMessage } from "@socrates/core";
 
 export interface ConversationContextOptions {
-  contextWindowTokens: number;
+  contextWindowTokens: number | null;
   outputReserveTokens?: number;
   instructionTokens?: number;
   /** Highest sequence omitted by the storage page before this builder ran. */
@@ -13,7 +13,7 @@ export interface ConversationContext {
   truncated: boolean;
   overflow: boolean;
   estimatedTokens: number;
-  budgetTokens: number;
+  budgetTokens: number | null;
   droppedThroughSequence: number | null;
 }
 
@@ -139,6 +139,20 @@ export function buildConversationContext(
   history: ConversationStoredMessage[],
   options: ConversationContextOptions,
 ): ConversationContext {
+  if (options.contextWindowTokens === null) {
+    const ordered = [...history].sort((left, right) => left.sequence - right.sequence);
+    const pinned = ordered.filter((message) => message.role === "system");
+    const conversational = completeToolExchanges(ordered.filter((message) => message.role !== "system"));
+    const messages = [...pinned, ...conversational].sort((left, right) => left.sequence - right.sequence);
+    return {
+      messages: messages.map(toRuntimeMessage),
+      truncated: Boolean(options.omittedBeforeSequence),
+      overflow: false,
+      estimatedTokens: messages.reduce((total, message) => total + messageTokens(message), 0),
+      budgetTokens: null,
+      droppedThroughSequence: options.omittedBeforeSequence ?? null,
+    };
+  }
   const contextWindow = Math.max(1, Math.floor(options.contextWindowTokens));
   const outputReserve = Math.max(
     1,

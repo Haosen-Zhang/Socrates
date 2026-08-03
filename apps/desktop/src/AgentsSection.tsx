@@ -28,12 +28,13 @@ function newForm(agents: Agent[]): AgentForm {
     systemPrompt: "",
     temperature: "",
     contextWindowTokens: "",
+    contextWindowDirty: false,
     reasoningEffort: "auto",
   };
 }
 
 export default function AgentsSection() {
-  const { agents, providers, modelLists, loadModels, saveAgent, removeAgent } = useStorePick(...AGENTS_SECTION_KEYS);
+  const { agents, providers, modelLists, loadModels, modelContextWindows, loadModelContextWindow, saveAgent, removeAgent } = useStorePick(...AGENTS_SECTION_KEYS);
   const t = useT();
   const [form, setForm] = useState<AgentForm>(() => newForm(agents));
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -72,6 +73,7 @@ export default function AgentsSection() {
       contextWindowTokens: typeof agent.modelCapabilities?.contextWindowTokens === "number"
         ? String(agent.modelCapabilities.contextWindowTokens)
         : "",
+      contextWindowDirty: agent.contextWindow?.source === "user_override",
       reasoningEffort: agent.reasoningEffort ?? "auto",
     });
     setOpen(true);
@@ -129,6 +131,8 @@ export default function AgentsSection() {
   const input = "pixel-input w-full px-3 py-2 text-sm";
   const selectedProvider = providers.find((provider) => provider.id === form.providerId);
   const effectiveModelId = form.modelId.trim() || selectedProvider?.defaultModel || "";
+  const catalogKey = form.providerId && effectiveModelId ? `${form.providerId}:${effectiveModelId}` : "";
+  const catalogResolution = catalogKey ? modelContextWindows[catalogKey] : undefined;
   const editingAgent = editingId ? agents.find((agent) => agent.id === editingId) : undefined;
   const capabilityOverride = editingAgent &&
     editingAgent.providerId === form.providerId &&
@@ -148,6 +152,19 @@ export default function AgentsSection() {
     if (reasoningProfile.efforts.includes(form.reasoningEffort)) return;
     setForm((current) => ({ ...current, reasoningEffort: reasoningProfile.defaultEffort }));
   }, [form.reasoningEffort, reasoningProfile]);
+
+  useEffect(() => {
+    if (!open || !form.providerId || !effectiveModelId) return;
+    void loadModelContextWindow(form.providerId, effectiveModelId);
+  }, [open, form.providerId, effectiveModelId, loadModelContextWindow]);
+
+  useEffect(() => {
+    if (form.contextWindowDirty || !catalogResolution) return;
+    setForm((current) => ({
+      ...current,
+      contextWindowTokens: catalogResolution.effectiveValue === null ? "" : String(catalogResolution.effectiveValue),
+    }));
+  }, [catalogResolution, form.contextWindowDirty]);
 
   return (
     <section className="space-y-4">
@@ -278,7 +295,7 @@ export default function AgentsSection() {
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <label className="text-sm">
                   {t("provider")}
-                  <select className={input} required value={form.providerId} onChange={(e) => setForm({ ...form, providerId: e.target.value, reasoningEffort: "auto" })}>
+                  <select className={input} required value={form.providerId} onChange={(e) => setForm({ ...form, providerId: e.target.value, modelId: "", contextWindowTokens: "", contextWindowDirty: false, reasoningEffort: "auto" })}>
                     <option value="">{t("provider_select")}</option>
                     {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
                   </select>
@@ -290,7 +307,7 @@ export default function AgentsSection() {
                       <select
                         className={input}
                         value={form.modelId}
-                        onChange={(e) => setForm({ ...form, modelId: e.target.value, reasoningEffort: "auto" })}
+                        onChange={(e) => setForm({ ...form, modelId: e.target.value, contextWindowTokens: "", contextWindowDirty: false, reasoningEffort: "auto" })}
                       >
                         <option value="">{t("model_default_option")}</option>
                         {form.modelId && !models.includes(form.modelId) && (
@@ -317,7 +334,7 @@ export default function AgentsSection() {
                         className={input}
                         placeholder={providers.find((p) => p.id === form.providerId)?.defaultModel ?? ""}
                         value={form.modelId}
-                        onChange={(e) => setForm({ ...form, modelId: e.target.value, reasoningEffort: "auto" })}
+                        onChange={(e) => setForm({ ...form, modelId: e.target.value, contextWindowTokens: "", contextWindowDirty: false, reasoningEffort: "auto" })}
                       />
                       {models && models.length > 0 && (
                         <button
@@ -346,8 +363,19 @@ export default function AgentsSection() {
                     max="4000000"
                     placeholder={t("context_window_tokens_unknown")}
                     value={form.contextWindowTokens}
-                    onChange={(event) => setForm({ ...form, contextWindowTokens: event.target.value })}
+                    onChange={(event) => setForm({
+                      ...form,
+                      contextWindowTokens: event.target.value,
+                      contextWindowDirty: event.target.value !== "",
+                    })}
                   />
+                  <span className="mt-1 block text-xs text-neutral-500">
+                    {form.contextWindowDirty
+                      ? t("context_window_source_override")
+                      : catalogResolution?.source === "catalog"
+                        ? t("context_window_source_catalog")
+                        : t("context_window_source_unavailable")}
+                  </span>
                 </label>
                 <ReasoningEffortSelect
                   profile={reasoningProfile}
