@@ -7,6 +7,7 @@ import type { WorkspaceLeaseManager } from "../workspace/leases";
 import type { RuntimeManager } from "./runtime-manager";
 import type { MultiTaskStore } from "../multi-agent/task-store";
 import { UsageCollector } from "../services/usage-collector";
+import type { HistoryStore } from "../store/history-store";
 
 type ActiveExecution = { runtimeSessionId: string; leaseId: string; calls: Map<string, { name: string; input: unknown }>; cancelled: boolean; paused: boolean };
 
@@ -21,6 +22,7 @@ export class ExecutionRunner {
     private readonly leases: WorkspaceLeaseManager,
     private readonly approvals: ApprovalManager,
     private readonly events: EventStore,
+    private readonly history?: HistoryStore,
   ) { this.usage = new UsageCollector(db); }
 
   async run(taskId: string, emit: (event: RuntimeEvent) => void | Promise<void> = () => {}): Promise<void> {
@@ -81,7 +83,7 @@ export class ExecutionRunner {
         },
       });
       if (!active.cancelled && !active.paused) {
-        if (assistantText.trim()) this.persistAssistantMessage(task.sessionId, task.executionAgentId!, assistantText);
+        if (assistantText.trim()) await this.persistAssistantMessage(task.sessionId, task.executionAgentId!, assistantText);
         this.tasks.transition(taskId, { type: "complete" });
       }
     } catch (error) {
@@ -153,9 +155,15 @@ export class ExecutionRunner {
     }
   }
 
-  private persistAssistantMessage(sessionId: string, agentId: string, content: string): void {
+  private async persistAssistantMessage(sessionId: string, agentId: string, content: string): Promise<void> {
     const messageId = crypto.randomUUID();
     const now = new Date().toISOString();
+    if (this.history) {
+      await this.history.appendMessage({ messageId, roomId: sessionId, threadId: `thread:${sessionId}`,
+        runId: null, turnId: null, agentId, role: "assistant", kind: "text", content,
+        parts: [{ type: "text", text: content }], status: "completed", idempotencyKey: `execution-assistant:${messageId}`, createdAt: now });
+      return;
+    }
     this.db.transaction(() => {
       this.db.query("INSERT INTO session_messages (id, session_id, role, author_id, content, status, created_at) VALUES (?, ?, 'assistant', ?, ?, 'completed', ?)").run(messageId, sessionId, agentId, content, now);
       this.db.query("INSERT INTO message_parts (id, message_id, ordinal, type, text) VALUES (?, ?, 0, 'text', ?)").run(crypto.randomUUID(), messageId, content);

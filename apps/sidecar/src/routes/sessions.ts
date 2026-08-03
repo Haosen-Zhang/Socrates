@@ -208,7 +208,7 @@ export function sessionRoutes(
       return c.json({ error: message }, message === "session_not_found" ? 404 : 409);
     }
   });
-  app.delete("/:id", (c) => {
+  app.delete("/:id", async (c) => {
     try {
       const sessionId = c.req.param("id");
       const session = sessions.get(sessionId);
@@ -222,14 +222,14 @@ export function sessionRoutes(
       if (owned && workspaceFiles === "delete") {
         const staged = workspaces!.stageManagedDeletion(workspace.id, sessionId);
         try {
-          sessions.remove(sessionId, staged.forgetRecord);
+          await sessions.remove(sessionId, staged.forgetRecord);
         } catch (error) {
           staged.rollback();
           throw error;
         }
         staged.finalize();
       } else {
-        sessions.remove(
+        await sessions.remove(
           sessionId,
           owned ? () => { workspaces!.releaseManaged(workspace.id, sessionId); } : undefined,
         );
@@ -244,7 +244,7 @@ export function sessionRoutes(
     const body = await c.req.json().catch(() => null) as { messageId?: unknown } | null;
     if (typeof body?.messageId !== "string") return c.json({ error: "session_message_not_found" }, 400);
     try {
-      sessions.rewind(c.req.param("id"), body.messageId);
+      await sessions.rewind(c.req.param("id"), body.messageId);
       return c.json({ ok: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : "session_rewind_failed";

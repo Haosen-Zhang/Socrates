@@ -8,6 +8,7 @@ export * from "./conversation-memory";
 export * from "./room-kind";
 export * from "./navigation";
 export * from "./model-capabilities";
+export * from "./history";
 export * from "./usage";
 export * from "./events";
 export * from "./tools";

@@ -17,7 +17,7 @@ describe("015 model catalog provenance migration", () => {
     insert.run("numeric", "Numeric", JSON.stringify({ contextWindowTokens: 128_000 }), now, now);
     insert.run("unknown", "Unknown", JSON.stringify({ contextWindowTokens: "unknown" }), now, now);
 
-    expect(runMigrations(db, migrations)).toEqual([15]);
+    expect(runMigrations(db, migrations)).toEqual([15, 16]);
     const rows = db.query<{ id: string; model_capabilities_json: string }, []>(
       "SELECT id, model_capabilities_json FROM agents ORDER BY id",
     ).all();

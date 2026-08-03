@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { HistoryStore } from "./history-store";
 import { validateConversation, type ConversationMode, type ConversationSession, type MessagePart, type SessionAgentSnapshot, type SessionMessage,
   type ToolOutputRef,
   type ToolApprovalMode,
@@ -11,6 +12,7 @@ import { validateConversation, type ConversationMode, type ConversationSession, 
   resolveCollaborationDefaults,
   validateCollaborationSettings,
   type RoomCollaborationSettings,
+  type HistoryRecord,
 } from "@socrates/core";
 
 type SessionRow = {
@@ -53,8 +55,24 @@ type PartRow = {
   metadata_json: string | null;
 };
 
+type RewindProjectionIntent = {
+  sessionId: string;
+  threadId: string;
+  messageIds: string[];
+  runIds: string[];
+  turnIds: string[];
+  targetSequence: number;
+  updatedAt: string;
+};
+
 export class SessionStore {
-  constructor(private readonly db: Database) {}
+  constructor(private readonly db: Database, private readonly history?: HistoryStore) {
+    history?.registerProjectionHandler("session.rewind", (record) => {
+      const input = record.projectionIntent!.payload as unknown as RewindProjectionIntent;
+      this.validateRewindProjection(record, input);
+      this.applyRewindProjection(input);
+    });
+  }
 
   create(input: {
     id?: string;
@@ -404,10 +422,11 @@ export class SessionStore {
     return this.get(sessionId)!;
   }
 
-  remove(sessionId: string, withinTransaction?: () => void): void {
+  async remove(sessionId: string, withinTransaction?: () => void): Promise<void> {
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
     if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) throw new Error("active_session_delete_locked");
+    const stagedHistory = this.history ? await this.history.stageSessionDeletion(sessionId) : null;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.query("DELETE FROM usage_records WHERE session_id = ?").run(sessionId);
@@ -424,12 +443,14 @@ export class SessionStore {
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
+      stagedHistory?.rollback();
       throw error;
     }
+    stagedHistory?.commit();
   }
 
   /** Context-only rewind: it never attempts to reverse workspace files or shell side effects. */
-  rewind(sessionId: string, messageId: string): void {
+  async rewind(sessionId: string, messageId: string): Promise<void> {
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
     if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) throw new Error("active_session_rewind_locked");
@@ -454,53 +475,14 @@ export class SessionStore {
     const messageIds = affected.map((message) => message.id);
     const runIds = [...new Set(affected.flatMap((message) => message.run_id ? [message.run_id] : []))];
     const turnIds = [...new Set(affected.flatMap((message) => message.turn_id ? [message.turn_id] : []))];
-    const marks = (values: string[]) => values.map(() => "?").join(",");
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
+    const updatedAt = new Date().toISOString();
+    const rewindProjection: RewindProjectionIntent | null = sequenced ? {
+      sessionId, threadId: target.thread_id!, messageIds, runIds, turnIds,
+      targetSequence: target.sequence!, updatedAt,
+    } : null;
+    const projectRewind = () => {
       if (sequenced) {
-        if (runIds.length) {
-          this.db.query(`DELETE FROM usage_records WHERE task_id IN (${marks(runIds)})`).run(...runIds);
-          this.db.query(`DELETE FROM task_events WHERE task_id IN (${marks(runIds)})`).run(...runIds);
-          this.db.query(`DELETE FROM tool_outputs WHERE tool_call_id IN (
-            SELECT id FROM tool_calls WHERE task_id IN (${marks(runIds)})
-          )`).run(...runIds);
-          this.db.query(`DELETE FROM tool_calls WHERE task_id IN (${marks(runIds)})`).run(...runIds);
-          this.db.query(`DELETE FROM agent_runs WHERE id IN (${marks(runIds)})`).run(...runIds);
-        }
-        if (messageIds.length) {
-          this.db.query(`DELETE FROM message_attachments WHERE message_id IN (${marks(messageIds)})`).run(...messageIds);
-          this.db.query(`DELETE FROM message_parts WHERE message_id IN (${marks(messageIds)})`).run(...messageIds);
-          this.db.query(`DELETE FROM session_messages WHERE id IN (${marks(messageIds)})`).run(...messageIds);
-        }
-        if (turnIds.length) {
-          const now = new Date().toISOString();
-          this.db.query(`
-            UPDATE conversation_turns
-            SET status = 'interrupted', updated_at = ?, completed_at = ?
-            WHERE id IN (${marks(turnIds)})
-              AND EXISTS (
-                SELECT 1 FROM session_messages
-                WHERE session_messages.turn_id = conversation_turns.id
-              )
-          `).run(now, now, ...turnIds);
-          this.db.query(`
-            DELETE FROM conversation_turns
-            WHERE id IN (${marks(turnIds)})
-              AND NOT EXISTS (
-                SELECT 1 FROM session_messages
-                WHERE session_messages.turn_id = conversation_turns.id
-              )
-          `).run(...turnIds);
-        }
-        this.db.query(`
-          UPDATE conversation_threads
-          SET latest_sequence = COALESCE((
-                SELECT MAX(sequence) FROM session_messages
-                WHERE thread_id = conversation_threads.id
-              ), 0),
-              updated_at = ?
-          WHERE id = ?
-        `).run(new Date().toISOString(), target.thread_id!);
+        this.applyRewindProjection(rewindProjection!);
       } else {
         // Compatibility for pre-migration/unsequenced records.
         this.db.query("DELETE FROM usage_records WHERE session_id = ? AND created_at >= ?").run(sessionId, target.created_at);
@@ -511,11 +493,87 @@ export class SessionStore {
         this.db.query("DELETE FROM message_parts WHERE message_id IN (SELECT id FROM session_messages WHERE session_id = ? AND rowid >= ?)").run(sessionId, target.rid);
         this.db.query("DELETE FROM session_messages WHERE session_id = ? AND rowid >= ?").run(sessionId, target.rid);
       }
-      this.db.query("UPDATE sessions SET status = 'idle', updated_at = ? WHERE id = ?").run(new Date().toISOString(), sessionId);
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
+      if (!sequenced) {
+        this.db.query("UPDATE sessions SET status = 'idle', updated_at = ? WHERE id = ?").run(updatedAt, sessionId);
+      }
+    };
+    if (sequenced && this.history) await this.history.rewind(
+      sessionId,
+      target.thread_id!,
+      target.sequence!,
+      projectRewind,
+      { type: "session.rewind", payload: rewindProjection! as unknown as Record<string, unknown> },
+    );
+    else if (!sequenced && this.history) throw new Error("history_legacy_rewind_unsupported");
+    else this.db.transaction(projectRewind)();
+  }
+
+  private validateRewindProjection(record: HistoryRecord, input: RewindProjectionIntent): void {
+    if (record.sessionId !== input.sessionId || record.threadId !== input.threadId
+      || record.rewind?.targetSequence !== input.targetSequence) {
+      throw new Error("history_rewind_projection_conflict");
     }
+    const affected = this.db.query<{ id: string; run_id: string | null; turn_id: string | null }, [string, string, number]>(`
+      SELECT id, run_id, turn_id FROM session_messages
+      WHERE session_id = ? AND thread_id = ? AND sequence >= ? ORDER BY sequence
+    `).all(input.sessionId, input.threadId, input.targetSequence);
+    const expectedMessages = affected.map((item) => item.id).sort();
+    const expectedRuns = [...new Set(affected.flatMap((item) => item.run_id ? [item.run_id] : []))].sort();
+    const expectedTurns = [...new Set(affected.flatMap((item) => item.turn_id ? [item.turn_id] : []))].sort();
+    const exact = (left: string[], right: string[]) => JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+    if (affected.length > 0) {
+      if (!exact(expectedMessages, input.messageIds) || !exact(expectedRuns, input.runIds)
+        || !exact(expectedTurns, input.turnIds)) throw new Error("history_rewind_projection_conflict");
+      return;
+    }
+    const remainingMessage = input.messageIds.length
+      ? this.db.query(`SELECT id FROM session_messages WHERE session_id = ? AND id IN (${input.messageIds.map(() => "?").join(",")}) LIMIT 1`)
+        .get(input.sessionId, ...input.messageIds) as { id: string } | null
+      : null;
+    if (remainingMessage) throw new Error("history_rewind_projection_conflict");
+  }
+
+  private applyRewindProjection(input: RewindProjectionIntent): void {
+    const marks = (values: string[]) => values.map(() => "?").join(",");
+    if (input.runIds.length) {
+      this.db.query(`DELETE FROM usage_records WHERE session_id = ? AND task_id IN (${marks(input.runIds)})`).run(input.sessionId, ...input.runIds);
+      this.db.query(`DELETE FROM task_events WHERE session_id = ? AND task_id IN (${marks(input.runIds)})`).run(input.sessionId, ...input.runIds);
+      this.db.query(`DELETE FROM tool_outputs WHERE tool_call_id IN (
+        SELECT id FROM tool_calls WHERE session_id = ? AND task_id IN (${marks(input.runIds)})
+      )`).run(input.sessionId, ...input.runIds);
+      this.db.query(`DELETE FROM tool_calls WHERE session_id = ? AND task_id IN (${marks(input.runIds)})`).run(input.sessionId, ...input.runIds);
+      this.db.query(`DELETE FROM agent_runs WHERE session_id = ? AND id IN (${marks(input.runIds)})`).run(input.sessionId, ...input.runIds);
+    }
+    if (input.messageIds.length) {
+      this.db.query(`DELETE FROM message_attachments WHERE message_id IN (
+        SELECT id FROM session_messages WHERE session_id = ? AND id IN (${marks(input.messageIds)})
+      )`).run(input.sessionId, ...input.messageIds);
+      this.db.query(`DELETE FROM message_parts WHERE message_id IN (
+        SELECT id FROM session_messages WHERE session_id = ? AND id IN (${marks(input.messageIds)})
+      )`).run(input.sessionId, ...input.messageIds);
+      this.db.query(`DELETE FROM session_messages WHERE session_id = ? AND id IN (${marks(input.messageIds)})`)
+        .run(input.sessionId, ...input.messageIds);
+    }
+    if (input.turnIds.length) {
+      this.db.query(`
+        UPDATE conversation_turns
+        SET status = 'interrupted', updated_at = ?, completed_at = ?
+        WHERE room_id = ? AND id IN (${marks(input.turnIds)})
+          AND EXISTS (SELECT 1 FROM session_messages WHERE session_messages.turn_id = conversation_turns.id)
+      `).run(input.updatedAt, input.updatedAt, input.sessionId, ...input.turnIds);
+      this.db.query(`
+        DELETE FROM conversation_turns
+        WHERE room_id = ? AND id IN (${marks(input.turnIds)})
+          AND NOT EXISTS (SELECT 1 FROM session_messages WHERE session_messages.turn_id = conversation_turns.id)
+      `).run(input.sessionId, ...input.turnIds);
+    }
+    this.db.query(`
+      UPDATE conversation_threads
+      SET latest_sequence = COALESCE((SELECT MAX(sequence) FROM session_messages
+            WHERE thread_id = conversation_threads.id), 0), updated_at = ?
+      WHERE id = ?
+    `).run(input.updatedAt, input.threadId);
+    this.db.query("UPDATE sessions SET status = 'idle', updated_at = ? WHERE id = ?")
+      .run(input.updatedAt, input.sessionId);
   }
 }

@@ -18,6 +18,7 @@ import { UsageCollector } from "../services/usage-collector";
 import { ConversationMemoryStore } from "../store/conversation-memory-store";
 import { buildConversationContext } from "../services/conversation-context";
 import { WorkspacePathPolicy } from "../workspace/path-policy";
+import type { HistoryStore } from "../store/history-store";
 
 type SessionRow = {
   id: string;
@@ -68,9 +69,10 @@ export class SingleAgentRunner {
     private readonly approvals: ApprovalManager,
     private readonly events: EventStore,
     private readonly attachments: AttachmentResolver,
+    history?: HistoryStore,
   ) {
     this.usage = new UsageCollector(db);
-    this.memory = new ConversationMemoryStore(db);
+    this.memory = new ConversationMemoryStore(db, history);
   }
 
   recoverInterrupted(): { runs: number; approvals: number } {
@@ -294,7 +296,7 @@ export class SingleAgentRunner {
     if (!thread || thread.roomId !== session.id) throw new Error("conversation_thread_not_found");
     const runId = crypto.randomUUID();
     const clientTurnKey = input.clientTurnKey ?? crypto.randomUUID();
-    const prepared = this.memory.beginTurn({
+    const prepared = await this.memory.beginTurn({
       roomId: session.id,
       threadId: thread.id,
       clientTurnKey,
@@ -352,7 +354,7 @@ export class SingleAgentRunner {
     });
     const failBeforeRuntime = async (error: string): Promise<AgentRunResult> => {
       const completedAt = new Date().toISOString();
-      this.memory.terminateTurn({
+      await this.memory.terminateTurn({
         roomId: session.id,
         runId: prepared.runId,
         turnId: prepared.turnId,
@@ -621,7 +623,7 @@ export class SingleAgentRunner {
       });
       const completedAt = new Date().toISOString();
       const finalContent = assistantText;
-      this.memory.completeTurn({
+      await this.memory.completeTurn({
         roomId: session.id,
         runId: prepared.runId,
         turnId: prepared.turnId,
@@ -647,7 +649,7 @@ export class SingleAgentRunner {
       const completedAt = new Date().toISOString();
       const partialContent = assistantText;
       assistantText = "";
-      this.memory.terminateTurn({
+      await this.memory.terminateTurn({
         roomId: session.id,
         runId: prepared.runId,
         turnId: prepared.turnId,

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { isActiveConversationTurnStatus } from "@socrates/core";
 import type {
   AppendMessageInput,
@@ -11,6 +12,7 @@ import type {
   StoredMessageRole,
   ToolOutputRef,
 } from "@socrates/core";
+import type { HistoryStore } from "./history-store";
 
 type ThreadRow = {
   id: string;
@@ -103,6 +105,8 @@ export interface TerminateConversationTurnInput {
   assistantMessage?: AppendMessageInput;
 }
 
+type BeginTurnProjection = BeginConversationTurnInput & { turnId: string; createdAt: string };
+
 const toThread = (row: ThreadRow): ConversationThread => ({
   id: row.id,
   roomId: row.room_id,
@@ -123,8 +127,25 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function terminalProjectionPayload(
+  input: CompleteConversationTurnInput | TerminateConversationTurnInput,
+): Record<string, unknown> {
+  const { assistantMessage: _assistantMessage, ...payload } = input;
+  return payload;
+}
+
 export class ConversationMemoryStore implements ConversationMemoryStoreContract {
-  constructor(private readonly db: Database) {}
+  constructor(private readonly db: Database, private readonly history?: HistoryStore) {
+    history?.registerProjectionHandler("conversation.begin_turn", (record) => {
+      this.beginTurnProjection(record.projectionIntent!.payload as unknown as BeginTurnProjection);
+    });
+    history?.registerProjectionHandler("conversation.complete_turn", (record) => {
+      this.completeTurnProjection(record.projectionIntent!.payload as unknown as CompleteConversationTurnInput);
+    });
+    history?.registerProjectionHandler("conversation.terminate_turn", (record) => {
+      this.terminateTurnProjection(record.projectionIntent!.payload as unknown as TerminateConversationTurnInput);
+    });
+  }
 
   createThread(roomId: string, options: { id?: string; isDefault?: boolean } = {}): ConversationThread {
     if (!this.db.query("SELECT id FROM sessions WHERE id = ?").get(roomId)) throw new Error("room_not_found");
@@ -152,6 +173,19 @@ export class ConversationMemoryStore implements ConversationMemoryStoreContract 
   }
 
   async appendMessage(input: AppendMessageInput): Promise<ConversationStoredMessage> {
+    if (this.history) {
+      const existing = this.findByIdempotencyKey(input.threadId, input.idempotencyKey);
+      if (existing) {
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+          const checked = this.appendMessageInTransaction(input);
+          this.db.exec("COMMIT");
+          return checked;
+        } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+      }
+      const record = await this.history.appendMessage(input);
+      return this.getMessage(record.message!.messageId)!;
+    }
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const message = this.appendMessageInTransaction(input);
@@ -169,7 +203,34 @@ export class ConversationMemoryStore implements ConversationMemoryStoreContract 
    * failed/interrupted key creates a new attempt without duplicating the user
    * message.
    */
-  beginTurn(input: BeginConversationTurnInput): PreparedConversationTurn {
+  async beginTurn(input: BeginConversationTurnInput): Promise<PreparedConversationTurn> {
+    if (this.history) {
+      const existing = this.db.query<TurnRow, [string, string]>(`
+        SELECT * FROM conversation_turns WHERE thread_id = ? AND client_turn_key = ?
+      `).get(input.threadId, input.clientTurnKey);
+      if (existing) return this.beginTurnInDatabase(input);
+      const thread = this.db.query<ThreadRow, [string]>("SELECT * FROM conversation_threads WHERE id = ?").get(input.threadId);
+      if (!thread || thread.room_id !== input.roomId) throw new Error("conversation_thread_not_found");
+      const now = input.createdAt ?? new Date().toISOString();
+      const turnId = `turn:${createHash("sha256").update(`${input.threadId}\0${input.clientTurnKey}`).digest("hex").slice(0, 32)}`;
+      const record = await this.history.appendMessage({
+        roomId: input.roomId, threadId: input.threadId, runId: null, turnId,
+        agentId: null, role: "user", kind: "text", content: input.prompt,
+        parts: [{ type: "text", text: input.prompt }, ...input.parts], status: "completed",
+        idempotencyKey: `turn-user:${turnId}`, createdAt: now,
+        projectionIntent: {
+          type: "conversation.begin_turn",
+          payload: { ...input, turnId, createdAt: now },
+        },
+      }, () => this.beginTurnProjection({ ...input, turnId, createdAt: now }));
+      const userMessage = this.getMessage(record.message!.messageId)!;
+      return { turnId, threadId: input.threadId, runId: input.runId, agentId: input.agentId,
+        attemptNo: 1, status: "preparing", replayed: false, userMessage };
+    }
+    return this.beginTurnInDatabase(input);
+  }
+
+  private beginTurnInDatabase(input: BeginConversationTurnInput): PreparedConversationTurn {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const now = input.createdAt ?? new Date().toISOString();
@@ -300,34 +361,24 @@ export class ConversationMemoryStore implements ConversationMemoryStoreContract 
    * one SQLite transaction. A process crash can expose either all of the final
    * Turn or none of it, never a final answer attached to a retryable Turn.
    */
-  completeTurn(input: CompleteConversationTurnInput): ConversationStoredMessage | null {
+  async completeTurn(input: CompleteConversationTurnInput): Promise<ConversationStoredMessage | null> {
+    if (this.history) {
+      if (input.assistantMessage) {
+        const record = await this.history.appendMessage({
+          ...input.assistantMessage,
+          projectionIntent: { type: "conversation.complete_turn", payload: terminalProjectionPayload(input) },
+        }, () => this.completeTurnProjection(input));
+        return this.getMessage(record.message!.messageId)!;
+      }
+      this.db.transaction(() => this.completeTurnProjection(input))();
+      return null;
+    }
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const message = input.assistantMessage
         ? this.appendMessageInTransaction(input.assistantMessage)
         : null;
-      const run = this.db.query(`
-        UPDATE agent_runs
-        SET status = 'completed', error = NULL, completed_at = ?
-        WHERE id = ? AND session_id = ? AND turn_id = ?
-      `).run(input.completedAt, input.runId, input.roomId, input.turnId);
-      if (run.changes !== 1) throw new Error("agent_run_completion_conflict");
-      const session = this.db.query(`
-        UPDATE sessions SET status = 'completed', updated_at = ? WHERE id = ?
-      `).run(input.completedAt, input.roomId);
-      if (session.changes !== 1) throw new Error("session_completion_conflict");
-      const turn = this.db.query(`
-        UPDATE conversation_turns
-        SET status = 'completed', updated_at = ?, completed_at = ?
-        WHERE id = ? AND room_id = ? AND run_id = ?
-      `).run(
-        input.completedAt,
-        input.completedAt,
-        input.turnId,
-        input.roomId,
-        input.runId,
-      );
-      if (turn.changes !== 1) throw new Error("conversation_turn_completion_conflict");
+      this.completeTurnProjection(input);
       this.db.exec("COMMIT");
       return message;
     } catch (error) {
@@ -337,13 +388,83 @@ export class ConversationMemoryStore implements ConversationMemoryStoreContract 
   }
 
   /** Atomically keeps any public partial response and records a terminal error. */
-  terminateTurn(input: TerminateConversationTurnInput): ConversationStoredMessage | null {
+  async terminateTurn(input: TerminateConversationTurnInput): Promise<ConversationStoredMessage | null> {
+    if (this.history) {
+      if (input.assistantMessage) {
+        const record = await this.history.appendMessage({
+          ...input.assistantMessage,
+          projectionIntent: { type: "conversation.terminate_turn", payload: terminalProjectionPayload(input) },
+        }, () => this.terminateTurnProjection(input));
+        return this.getMessage(record.message!.messageId)!;
+      }
+      this.db.transaction(() => this.terminateTurnProjection(input))();
+      return null;
+    }
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const message = input.assistantMessage
         ? this.appendMessageInTransaction(input.assistantMessage)
         : null;
-      const run = this.db.query(`
+      this.terminateTurnProjection(input);
+      this.db.exec("COMMIT");
+      return message;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private completeTurnProjection(input: CompleteConversationTurnInput): void {
+    const run = this.db.query(`
+      UPDATE agent_runs
+      SET status = 'completed', error = NULL, completed_at = ?
+      WHERE id = ? AND session_id = ? AND turn_id = ?
+    `).run(input.completedAt, input.runId, input.roomId, input.turnId);
+    if (run.changes !== 1) throw new Error("agent_run_completion_conflict");
+    const session = this.db.query(`
+      UPDATE sessions SET status = 'completed', updated_at = ? WHERE id = ?
+    `).run(input.completedAt, input.roomId);
+    if (session.changes !== 1) throw new Error("session_completion_conflict");
+    const turn = this.db.query(`
+      UPDATE conversation_turns
+      SET status = 'completed', updated_at = ?, completed_at = ?
+      WHERE id = ? AND room_id = ? AND run_id = ?
+    `).run(input.completedAt, input.completedAt, input.turnId, input.roomId, input.runId);
+    if (turn.changes !== 1) throw new Error("conversation_turn_completion_conflict");
+  }
+
+  private beginTurnProjection(input: BeginTurnProjection): void {
+    const existing = this.db.query<TurnRow, [string]>("SELECT * FROM conversation_turns WHERE id = ?").get(input.turnId);
+    if (existing) {
+      if (existing.room_id !== input.roomId || existing.thread_id !== input.threadId
+        || existing.client_turn_key !== input.clientTurnKey || existing.input_hash !== input.inputHash
+        || existing.run_id !== input.runId || existing.agent_id !== input.agentId) {
+        throw new Error("conversation_turn_projection_conflict");
+      }
+    } else {
+      this.db.query(`INSERT INTO conversation_turns
+        (id, room_id, thread_id, client_turn_key, input_hash, run_id, agent_id,
+         status, attempt_no, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'preparing', 1, ?, ?)`)
+        .run(input.turnId, input.roomId, input.threadId, input.clientTurnKey, input.inputHash,
+          input.runId, input.agentId, input.createdAt, input.createdAt);
+    }
+    const run = this.db.query<{ id: string; session_id: string; thread_id: string | null; turn_id: string | null }, [string]>(
+      "SELECT id, session_id, thread_id, turn_id FROM agent_runs WHERE id = ?",
+    ).get(input.runId);
+    if (run) {
+      if (run.session_id !== input.roomId || run.thread_id !== input.threadId || run.turn_id !== input.turnId) {
+        throw new Error("agent_run_projection_conflict");
+      }
+    } else {
+      this.insertAgentRun(input.runId, input.roomId, input.prompt, input.threadId, input.turnId, 1, input.createdAt);
+    }
+    this.db.query("UPDATE sessions SET status = 'preparing', updated_at = ? WHERE id = ?")
+      .run(input.createdAt, input.roomId);
+  }
+
+  private terminateTurnProjection(input: TerminateConversationTurnInput): void {
+    const run = this.db.query(`
         UPDATE agent_runs
         SET status = ?, error = ?, completed_at = ?
         WHERE id = ? AND session_id = ? AND turn_id = ?
@@ -355,30 +476,17 @@ export class ConversationMemoryStore implements ConversationMemoryStoreContract 
         input.roomId,
         input.turnId,
       );
-      if (run.changes !== 1) throw new Error("agent_run_termination_conflict");
-      const session = this.db.query(`
-        UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?
-      `).run(input.status, input.completedAt, input.roomId);
-      if (session.changes !== 1) throw new Error("session_termination_conflict");
-      const turn = this.db.query(`
-        UPDATE conversation_turns
-        SET status = ?, updated_at = ?, completed_at = ?
-        WHERE id = ? AND room_id = ? AND run_id = ?
-      `).run(
-        input.status,
-        input.completedAt,
-        input.completedAt,
-        input.turnId,
-        input.roomId,
-        input.runId,
-      );
-      if (turn.changes !== 1) throw new Error("conversation_turn_termination_conflict");
-      this.db.exec("COMMIT");
-      return message;
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    if (run.changes !== 1) throw new Error("agent_run_termination_conflict");
+    const session = this.db.query(`
+      UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?
+    `).run(input.status, input.completedAt, input.roomId);
+    if (session.changes !== 1) throw new Error("session_termination_conflict");
+    const turn = this.db.query(`
+      UPDATE conversation_turns
+      SET status = ?, updated_at = ?, completed_at = ?
+      WHERE id = ? AND room_id = ? AND run_id = ?
+    `).run(input.status, input.completedAt, input.completedAt, input.turnId, input.roomId, input.runId);
+    if (turn.changes !== 1) throw new Error("conversation_turn_termination_conflict");
   }
 
   getTurn(turnId: string): TurnRow | null {

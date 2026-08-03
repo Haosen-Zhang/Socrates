@@ -33,7 +33,7 @@ async function setup() {
   db.query("INSERT INTO sessions (id, title, mode, workspace_id, status, created_at, updated_at) VALUES ('s', 'multi', 'multi_agent', 'w', 'idle', ?, ?)").run(now, now);
   for (const [position, id] of ["a", "b"].entries()) db.query("INSERT INTO session_agents (session_id, agent_id, snapshot_json, position, execution_eligible) VALUES ('s', ?, ?, ?, 1)").run(id, JSON.stringify({ nickname: id, modelId: "fake" }), position);
   const tasks = new MultiTaskStore(db);
-  const task = tasks.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });
+  const task = await tasks.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });
   tasks.transition(task.id, { type: "prepared_multi" });
   tasks.transition(task.id, { type: "discussion_complete" });
   const plan = await tasks.addPlan({ taskId: task.id, createdBy: "b", content: { objective: "build", summary: "safe", steps: [{ id: "1", title: "test", description: "run", files: [], commands: ["bun test"], risks: [], verification: ["bun test"] }], evidence: [] } });
