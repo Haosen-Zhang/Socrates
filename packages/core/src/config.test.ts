@@ -54,6 +54,10 @@ describe("normalizeConfig", () => {
     const c = normalizeConfig({ appearance: { uiTheme: "future-neon" } });
     expect(c.appearance.uiTheme).toBe("socrates-classic");
   });
+
+  it("persists the OpenCode-inspired flat theme", () => {
+    expect(normalizeConfig({ appearance: { uiTheme: "opencode-flat" } }).appearance.uiTheme).toBe("opencode-flat");
+  });
 });
 
 describe("mergeConfig", () => {
