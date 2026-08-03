@@ -6,6 +6,7 @@ export type Provider = {
   type: ProviderType;
   baseUrl: string;
   defaultModel?: string;
+  catalogProviderId?: string;
   /** Keychain 条目引用，明文 key 永不出现在存储与传输中 */
   apiKeyRef: string;
   enabled: boolean;
@@ -23,6 +24,7 @@ export type ProviderInput = {
   type: ProviderType;
   baseUrl?: string;
   defaultModel?: string;
+  catalogProviderId?: string;
 };
 
 export function validateProviderInput(input: ProviderInput): string | null {

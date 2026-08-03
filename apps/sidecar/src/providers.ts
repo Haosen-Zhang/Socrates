@@ -20,6 +20,7 @@ type Row = {
   enabled: number;
   created_at: string;
   updated_at: string;
+  catalog_provider_id: string | null;
 };
 
 function toProvider(r: Row): Provider {
@@ -31,6 +32,7 @@ function toProvider(r: Row): Provider {
     defaultModel: r.default_model ?? undefined,
     apiKeyRef: r.api_key_ref,
     enabled: r.enabled === 1,
+    catalogProviderId: r.catalog_provider_id ?? undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -55,6 +57,7 @@ export function providerRoutes(db: Database, secrets: SecretStore, fetchFn: Fetc
       baseUrl?: string;
       defaultModel?: string;
       apiKey: string;
+      catalogProviderId?: string;
     }>();
     const invalid = validateProviderInput(body);
     if (invalid) return c.json({ error: invalid }, 400);
@@ -65,9 +68,9 @@ export function providerRoutes(db: Database, secrets: SecretStore, fetchFn: Fetc
     const now = new Date().toISOString();
     secrets.set(ref, body.apiKey);
     db.run(
-      `INSERT INTO providers (id, name, type, base_url, default_model, api_key_ref, enabled, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-      [id, body.name.trim(), body.type, resolveBaseUrl(body.type, body.baseUrl), body.defaultModel ?? null, ref, now, now],
+      `INSERT INTO providers (id, name, type, base_url, default_model, api_key_ref, enabled, created_at, updated_at, catalog_provider_id)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+      [id, body.name.trim(), body.type, resolveBaseUrl(body.type, body.baseUrl), body.defaultModel ?? null, ref, now, now, body.catalogProviderId?.trim() || null],
     );
     return c.json(toProvider(byId(id)!), 201);
   });
@@ -81,15 +84,17 @@ export function providerRoutes(db: Database, secrets: SecretStore, fetchFn: Fetc
       defaultModel?: string;
       apiKey?: string;
       enabled?: boolean;
+      catalogProviderId?: string | null;
     }>();
     const name = body.name?.trim() || row.name;
     const baseUrl = body.baseUrl !== undefined ? resolveBaseUrl(row.type, body.baseUrl) : row.base_url;
     const defaultModel = body.defaultModel !== undefined ? body.defaultModel || null : row.default_model;
     const enabled = body.enabled !== undefined ? (body.enabled ? 1 : 0) : row.enabled;
+    const catalogProviderId = body.catalogProviderId === undefined ? row.catalog_provider_id : body.catalogProviderId?.trim() || null;
     if (body.apiKey?.trim()) secrets.set(row.api_key_ref, body.apiKey);
     db.run(
-      "UPDATE providers SET name = ?, base_url = ?, default_model = ?, enabled = ?, updated_at = ? WHERE id = ?",
-      [name, baseUrl, defaultModel, enabled, new Date().toISOString(), row.id],
+      "UPDATE providers SET name = ?, base_url = ?, default_model = ?, enabled = ?, catalog_provider_id = ?, updated_at = ? WHERE id = ?",
+      [name, baseUrl, defaultModel, enabled, catalogProviderId, new Date().toISOString(), row.id],
     );
     return c.json(toProvider(byId(row.id)!));
   });

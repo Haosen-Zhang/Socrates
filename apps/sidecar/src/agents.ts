@@ -6,12 +6,15 @@ import {
   normalizeAgentNickname,
   randomAgentIdentity,
   resolveReasoningProfile,
+  resolveContextWindow,
   UNKNOWN_MODEL_CAPABILITIES,
   type ModelCapabilities,
   type ProviderType,
   type ReasoningEffort,
   type Agent,
+  type ContextWindowResolution,
 } from "@socrates/core";
+import type { ModelCatalog } from "./model-catalog";
 
 export type AgentRow = {
   id: string;
@@ -31,6 +34,7 @@ export type AgentRow = {
 
 export function toAgent(r: AgentRow): Agent {
   const fallback = agentIdentityFromSeed(r.id);
+  const modelCapabilities = r.model_capabilities_json ? JSON.parse(r.model_capabilities_json) as ModelCapabilities : { ...UNKNOWN_MODEL_CAPABILITIES };
   return {
     id: r.id,
     // display_name 列保留（NOT NULL / 老数据），但 nickname 是唯一对外名称
@@ -41,18 +45,19 @@ export function toAgent(r: AgentRow): Agent {
     role: r.role,
     systemPrompt: r.system_prompt,
     temperature: r.temperature ?? undefined,
-    modelCapabilities: r.model_capabilities_json ? JSON.parse(r.model_capabilities_json) : { ...UNKNOWN_MODEL_CAPABILITIES },
+    modelCapabilities,
+    contextWindow: modelCapabilities.contextWindow,
     reasoningEffort: r.reasoning_effort ? r.reasoning_effort as ReasoningEffort : "auto",
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
 }
 
-export function agentRoutes(db: Database) {
+export function agentRoutes(db: Database, modelCatalog?: ModelCatalog) {
   const app = new Hono();
   const byId = (id: string) => db.query<AgentRow, [string]>("SELECT * FROM agents WHERE id = ?").get(id);
   const providerById = (id: string) =>
-    db.query<{ id: string; type: string }, [string]>("SELECT id, type FROM providers WHERE id = ?").get(id);
+    db.query<{ id: string; type: string; base_url: string; catalog_provider_id: string | null }, [string]>("SELECT id, type, base_url, catalog_provider_id FROM providers WHERE id = ?").get(id);
   const nicknameTaken = (nickname: string, excludingId?: string) => {
     const key = normalizeAgentNickname(nickname);
     return db
@@ -68,6 +73,14 @@ export function agentRoutes(db: Database) {
     return c.json(rows.map(toAgent));
   });
 
+  app.get("/context-window", async (c) => {
+    const provider = providerById(c.req.query("providerId") ?? "");
+    const modelId = c.req.query("modelId")?.trim() ?? "";
+    if (!provider) return c.json({ error: "供应商不存在" }, 404);
+    if (!modelId) return c.json({ error: "模型不能为空" }, 400);
+    return c.json(await resolveCatalogWindow(modelCatalog, provider, modelId, null));
+  });
+
   app.post("/", async (c) => {
     const b = await c.req.json<{
       nickname?: string;
@@ -78,7 +91,7 @@ export function agentRoutes(db: Database) {
       systemPrompt?: string;
       temperature?: number;
       reasoningEffort?: ReasoningEffort;
-      contextWindowTokens?: number;
+      userOverride?: number | null;
     }>();
     if (!b.nickname?.trim()) return c.json({ error: "昵称不能为空" }, 400);
     if (!b.modelId?.trim()) return c.json({ error: "模型不能为空" }, 400);
@@ -86,8 +99,9 @@ export function agentRoutes(db: Database) {
     if (!provider) return c.json({ error: "供应商不存在" }, 400);
     const reasoning = validateReasoning(provider.type as ProviderType, b.modelId, b.reasoningEffort);
     if (reasoning.error) return c.json({ error: reasoning.error }, 400);
-    const contextWindow = validateContextWindow(b.contextWindowTokens);
-    if (contextWindow.error) return c.json({ error: contextWindow.error }, 400);
+    const userOverride = validateContextWindow(b.userOverride);
+    if (userOverride.error) return c.json({ error: userOverride.error }, 400);
+    const contextWindow = await resolveCatalogWindow(modelCatalog, provider, b.modelId.trim(), userOverride.value);
     const nickname = b.nickname.trim();
     if (nicknameTaken(nickname)) return c.json({ error: "昵称已被使用" }, 409);
     if (b.avatar !== undefined && !isAgentAvatarSource(b.avatar)) return c.json({ error: "头像格式不受支持或文件过大" }, 400);
@@ -111,7 +125,8 @@ export function agentRoutes(db: Database) {
         JSON.stringify({
           ...UNKNOWN_MODEL_CAPABILITIES,
           reasoningEfforts: reasoning.efforts,
-          contextWindowTokens: contextWindow.value,
+          contextWindowTokens: contextWindow.effectiveValue ?? "unknown",
+          contextWindow,
         }),
         now,
         now,
@@ -132,7 +147,7 @@ export function agentRoutes(db: Database) {
       systemPrompt: string;
       temperature: number | null;
       reasoningEffort: ReasoningEffort | null;
-      contextWindowTokens: number | null;
+      userOverride: number | null;
     }>>();
     if (b.providerId !== undefined && !providerById(b.providerId)) {
       return c.json({ error: "供应商不存在" }, 400);
@@ -165,12 +180,15 @@ export function agentRoutes(db: Database) {
       capabilityOverride,
     );
     if (reasoning.error) return c.json({ error: reasoning.error }, 400);
-    const contextWindow = validateContextWindow(
-      b.contextWindowTokens === undefined
-        ? currentCapabilities.contextWindowTokens
-        : b.contextWindowTokens ?? undefined,
-    );
-    if (contextWindow.error) return c.json({ error: contextWindow.error }, 400);
+    const existingResolution = currentCapabilities.contextWindow as ContextWindowResolution | undefined;
+    const requestedOverride = b.userOverride === undefined
+      ? existingResolution?.userOverride ?? (typeof currentCapabilities.contextWindowTokens === "number" ? currentCapabilities.contextWindowTokens : null)
+      : b.userOverride;
+    const userOverride = validateContextWindow(requestedOverride);
+    if (userOverride.error) return c.json({ error: userOverride.error }, 400);
+    const contextWindow = providerChanged || modelChanged || b.userOverride !== undefined
+      ? await resolveCatalogWindow(modelCatalog, nextProvider, nextModelId, userOverride.value)
+      : existingResolution ?? await resolveCatalogWindow(modelCatalog, nextProvider, nextModelId, userOverride.value);
     const nickname = b.nickname?.trim() || row.nickname || agentIdentityFromSeed(row.id).nickname;
     if (nicknameTaken(nickname, row.id)) return c.json({ error: "昵称已被使用" }, 409);
     db.run(
@@ -189,7 +207,8 @@ export function agentRoutes(db: Database) {
         JSON.stringify({
           ...currentCapabilities,
           reasoningEfforts: reasoning.efforts,
-          contextWindowTokens: contextWindow.value,
+          contextWindowTokens: contextWindow.effectiveValue ?? "unknown",
+          contextWindow,
         }),
         new Date().toISOString(),
         row.id,
@@ -223,13 +242,25 @@ function validateReasoning(
   return { efforts: profile.efforts, effort: selected };
 }
 
-function validateContextWindow(value: number | "unknown" | undefined): {
-  value: number | "unknown";
+function validateContextWindow(value: number | null | undefined): {
+  value: number | null;
   error?: string;
 } {
-  if (value === undefined || value === "unknown") return { value: "unknown" };
+  if (value === undefined || value === null) return { value: null };
   if (!Number.isSafeInteger(value) || value < 1_024 || value > 4_000_000) {
-    return { value: "unknown", error: "context_window_tokens_invalid" };
+    return { value: null, error: "context_window_tokens_invalid" };
   }
   return { value };
+}
+
+async function resolveCatalogWindow(
+  catalog: ModelCatalog | undefined,
+  provider: { base_url: string; catalog_provider_id: string | null },
+  modelId: string,
+  userOverride: number | null,
+): Promise<ContextWindowResolution> {
+  if (catalog) return catalog.resolve({ baseUrl: provider.base_url, catalogProviderId: provider.catalog_provider_id }, modelId, userOverride);
+  return resolveContextWindow(null, userOverride, {
+    catalogProviderId: null, catalogRevision: null, resolvedAt: new Date().toISOString(),
+  });
 }

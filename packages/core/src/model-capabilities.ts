@@ -1,6 +1,32 @@
 import type { ProviderType } from "./provider";
 
 export type CapabilityState = boolean | "unknown";
+export type ContextWindowSource = "catalog" | "user_override" | "unavailable";
+
+export interface ContextWindowResolution {
+  catalogValue: number | null;
+  userOverride: number | null;
+  effectiveValue: number | null;
+  source: ContextWindowSource;
+  catalogProviderId: string | null;
+  catalogRevision: string | null;
+  resolvedAt: string;
+}
+
+export function resolveContextWindow(
+  catalogValue: number | null,
+  userOverride: number | null,
+  metadata: Pick<ContextWindowResolution, "catalogProviderId" | "catalogRevision" | "resolvedAt">,
+): ContextWindowResolution {
+  const effectiveValue = userOverride ?? catalogValue;
+  return {
+    catalogValue,
+    userOverride,
+    effectiveValue,
+    source: userOverride !== null ? "user_override" : catalogValue !== null ? "catalog" : "unavailable",
+    ...metadata,
+  };
+}
 export type ReasoningEffort = "auto" | "disabled" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export type ReasoningModelFamily =
@@ -92,8 +118,9 @@ export interface ModelCapabilities {
   streaming: CapabilityState;
   reasoningEfforts: ReasoningEffort[] | "unknown";
   runtimeKinds: ("native" | "langgraph_socrates")[] | "unknown";
-  /** Provider/model context limit when known; unknown uses a conservative runtime fallback. */
+  /** Compatibility projection of ContextWindowResolution.effectiveValue. */
   contextWindowTokens?: number | "unknown";
+  contextWindow?: ContextWindowResolution;
 }
 
 export const UNKNOWN_MODEL_CAPABILITIES: Readonly<ModelCapabilities> = Object.freeze({

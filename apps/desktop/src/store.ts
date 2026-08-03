@@ -57,7 +57,8 @@ export type AgentForm = {
   role: string;
   systemPrompt: string;
   temperature: string; // 表单态，空串=未设置
-  contextWindowTokens: string; // 空串=未知，运行时使用保守上限
+  contextWindowTokens: string; // 空串=目录不可用；不会猜测默认值
+  contextWindowDirty: boolean;
   reasoningEffort: ReasoningEffort;
 };
 
@@ -216,6 +217,8 @@ export type Store = {
   /** providerId → 该供应商的可用模型型号（拉取失败为 []，前端退化为手输） */
   modelLists: Record<string, string[]>;
   loadModels: (providerId: string, force?: boolean) => Promise<void>;
+  modelContextWindows: Record<string, import("@socrates/core").ContextWindowResolution>;
+  loadModelContextWindow: (providerId: string, modelId: string) => Promise<void>;
 
   agents: Agent[];
   loadAgents: () => Promise<void>;
@@ -1012,6 +1015,16 @@ export const useStore = create<Store>((set, get) => {
       set((s) => ({ modelLists: { ...s.modelLists, [providerId]: models } }));
     },
 
+    modelContextWindows: {},
+    loadModelContextWindow: async (providerId, modelId) => {
+      if (!providerId || !modelId) return;
+      const key = `${providerId}:${modelId}`;
+      const res = await sidecarFetch(hs(), `/agents/context-window?providerId=${encodeURIComponent(providerId)}&modelId=${encodeURIComponent(modelId)}`);
+      if (!res.ok) return;
+      const resolution = await res.json() as import("@socrates/core").ContextWindowResolution;
+      set((s) => ({ modelContextWindows: { ...s.modelContextWindows, [key]: resolution } }));
+    },
+
     loadAgents: async () => {
       set({ agents: await (await sidecarFetch(hs(), "/agents")).json() });
     },
@@ -1024,9 +1037,9 @@ export const useStore = create<Store>((set, get) => {
         role: form.role,
         systemPrompt: form.systemPrompt,
         temperature: form.temperature === "" ? undefined : Number(form.temperature),
-        contextWindowTokens: form.contextWindowTokens === ""
-          ? (editingId ? null : undefined)
-          : Number(form.contextWindowTokens),
+        userOverride: form.contextWindowDirty && form.contextWindowTokens !== ""
+          ? Number(form.contextWindowTokens)
+          : null,
         reasoningEffort: form.reasoningEffort,
       };
       const res = editingId

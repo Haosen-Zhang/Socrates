@@ -6,7 +6,7 @@ import { migrations } from "./index";
 describe("014 collaboration settings migration", () => {
   it("converts legacy Boss and approval fields without changing room identity", () => {
     const db = new Database(":memory:");
-    expect(runMigrations(db, migrations.slice(0, -1))).toEqual([
+    expect(runMigrations(db, migrations.filter((migration) => migration.version < 14))).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
     ]);
     db.query(`
@@ -38,7 +38,7 @@ describe("014 collaboration settings migration", () => {
       `).run(agentId, position);
     }
 
-    expect(runMigrations(db, migrations)).toEqual([14]);
+    expect(runMigrations(db, migrations.filter((migration) => migration.version <= 14))).toEqual([14]);
 
     const row = db.query<{ collaboration_json: string }, []>(
       "SELECT collaboration_json FROM sessions WHERE id = 'room'",

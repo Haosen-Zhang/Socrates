@@ -7,6 +7,7 @@ import type {
   MessagePart,
   RuntimeEvent,
   WorkspaceRecord,
+  ContextWindowResolution,
 } from "@socrates/core";
 import type { ApprovalManager, DurableApprovalDecision } from "../approvals/manager";
 import { hashToolInput } from "../tools/executor";
@@ -380,8 +381,9 @@ export class SingleAgentRunner {
     };
 
     let resolvedHistory: ConversationStoredMessage[];
-    let contextWindowTokens: number;
-    let outputReserveTokens: number;
+    let contextWindowTokens: number | null;
+    let outputReserveTokens: number | undefined;
+    let contextWindowResolution: ContextWindowResolution | null = null;
     let omittedBeforeSequence: number | null;
     try {
       const history = await this.memory.listThreadMessages(prepared.threadId);
@@ -394,17 +396,19 @@ export class SingleAgentRunner {
       const capabilities = snapshot.modelCapabilities && typeof snapshot.modelCapabilities === "object"
         ? snapshot.modelCapabilities as Record<string, unknown>
         : {};
-      const configuredWindow = capabilities.contextWindowTokens ?? snapshot.contextWindowTokens;
+      const resolution = capabilities.contextWindow && typeof capabilities.contextWindow === "object"
+        ? capabilities.contextWindow as Record<string, unknown>
+        : null;
+      contextWindowResolution = resolution &&
+        ["catalog", "user_override", "unavailable"].includes(String(resolution.source))
+        ? resolution as unknown as ContextWindowResolution
+        : null;
+      const configuredWindow = resolution?.effectiveValue ?? capabilities.contextWindowTokens ?? snapshot.contextWindowTokens;
       contextWindowTokens = typeof configuredWindow === "number" && Number.isFinite(configuredWindow)
         ? Math.min(4_000_000, Math.max(1_024, Math.floor(configuredWindow)))
-        // "unknown" is not evidence for a 4K limit. The native tool catalog
-        // itself is now larger than that legacy fallback, which prevented even
-        // a one-word prompt from reaching the Provider. Known limits still take
-        // the exact guarded path above.
-        : 32_768;
-      outputReserveTokens = Math.min(
-        4_096,
-        Math.max(256, Math.floor(contextWindowTokens * 0.2)),
+        : null;
+      outputReserveTokens = contextWindowTokens === null ? undefined : Math.min(
+        4_096, Math.max(256, Math.floor(contextWindowTokens * 0.2)),
       );
       omittedBeforeSequence = history[0] && history[0].sequence > 1
         ? history[0].sequence - 1
@@ -469,10 +473,7 @@ export class SingleAgentRunner {
         sessionId: session.id,
         agentId: agent.agent_id,
         workspaceId: session.workspace_id,
-        runtimeOptions: {
-          contextWindowTokens,
-          outputReserveTokens,
-        },
+        runtimeOptions: contextWindowTokens === null ? {} : { contextWindowTokens, outputReserveTokens },
       });
       runtimeSessionId = handle.id;
       const runtimeOverheadTokens = this.runtimes.contextOverheadTokens(handle.id);
@@ -491,6 +492,7 @@ export class SingleAgentRunner {
           runtimeOverheadTokens,
           droppedThroughSequence: context.droppedThroughSequence,
           overflow: context.overflow,
+          contextWindow: contextWindowResolution,
         },
       });
       if (contextLimited) {

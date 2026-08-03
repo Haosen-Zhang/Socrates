@@ -39,6 +39,7 @@ import { WorkspaceLeaseManager } from "./workspace/leases";
 import { multiAgentRoutes } from "./routes/multi-agent";
 import type { OrchestrationAgent } from "@socrates/core";
 import { UsageCollector } from "./services/usage-collector";
+import { ModelCatalog } from "./model-catalog";
 
 // 父进程（Tauri）异常退出（如 SIGKILL/SIGTERM 未走优雅关闭）时自动退出，避免孤儿进程占着端口
 let stopManagedServices: () => Promise<void> = async () => {};
@@ -72,6 +73,7 @@ const secrets = new KeychainSecrets();
 const config = new ConfigStore(undefined, secrets);
 // 所有出站请求（连接测试/列模型/模型调用）都按 config.toml 的代理设置走
 const proxiedFetch = makeProxiedFetch(() => config.getResolved());
+const modelCatalog = new ModelCatalog(defaultDataDir(), proxiedFetch);
 const gateway = makeAiSdkGateway(proxiedFetch);
 const workspaces = new WorkspaceManager(db);
 const sessions = new SessionStore(db);
@@ -170,7 +172,7 @@ multiTasks.recoverInterrupted();
 app.get("/health", (c) => c.json({ ok: true }));
 app.route("/config", configRoutes(config));
 app.route("/providers", providerRoutes(db, secrets, proxiedFetch));
-app.route("/agents", agentRoutes(db));
+app.route("/agents", agentRoutes(db, modelCatalog));
 app.route("/rooms", roomRoutes(db, secrets, gateway, usage));
 app.route("/workspaces", workspaceRoutes(workspaces));
 app.route(

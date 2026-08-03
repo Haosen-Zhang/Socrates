@@ -98,6 +98,7 @@ export type Agent = {
   systemPrompt: string;
   temperature?: number;
   modelCapabilities?: ModelCapabilities;
+  contextWindow?: import("./model-capabilities").ContextWindowResolution;
   reasoningEffort?: ReasoningEffort;
   createdAt: string;
   updatedAt: string;

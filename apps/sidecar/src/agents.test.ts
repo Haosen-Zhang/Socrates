@@ -5,11 +5,25 @@ import { openDb } from "./db";
 import { MemorySecrets } from "./secrets";
 import { providerRoutes } from "./providers";
 import { agentRoutes } from "./agents";
+import { ModelCatalog } from "./model-catalog";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function makeApp(db = openDb(":memory:")) {
   const app = new Hono();
   app.route("/providers", providerRoutes(db, new MemorySecrets()));
   app.route("/agents", agentRoutes(db));
+  return app;
+}
+
+function makeCatalogApp(db: ReturnType<typeof openDb>, dir: string) {
+  const app = new Hono();
+  const catalog = new ModelCatalog(dir, async () => new Response(JSON.stringify({
+    openai: { api: "https://api.openai.com/v1", models: { "gpt-test": { limit: { context: 128_000 } } } },
+  })));
+  app.route("/providers", providerRoutes(db, new MemorySecrets()));
+  app.route("/agents", agentRoutes(db, catalog));
   return app;
 }
 
@@ -176,11 +190,12 @@ describe("agent identity validation", () => {
         avatar: AGENT_AVATARS[2],
         providerId,
         modelId: "long-model",
-        contextWindowTokens: 128_000,
+        userOverride: 128_000,
       }),
     });
     expect(valid.status).toBe(201);
     expect(await valid.json()).toMatchObject({
+      contextWindow: { catalogValue: null, userOverride: 128_000, effectiveValue: 128_000, source: "user_override" },
       modelCapabilities: { contextWindowTokens: 128_000 },
     });
     const invalid = await app.request("/agents", {
@@ -190,10 +205,30 @@ describe("agent identity validation", () => {
         avatar: AGENT_AVATARS[3],
         providerId,
         modelId: "tiny-model",
-        contextWindowTokens: 512,
+        userOverride: 512,
       }),
     });
     expect(invalid.status).toBe(400);
     expect(await invalid.json()).toEqual({ error: "context_window_tokens_invalid" });
+  });
+});
+
+describe("agent context-window catalog", () => {
+  it("prefills through the resolver endpoint and freezes catalog provenance on create", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "socrates-agent-catalog-"));
+    try {
+      const db = openDb(":memory:");
+      const app = makeCatalogApp(db, dir);
+      const providerId = await createProvider(app);
+      const resolved = await app.request(`/agents/context-window?providerId=${providerId}&modelId=gpt-test`);
+      expect(await resolved.json()).toMatchObject({ catalogValue: 128_000, userOverride: null, effectiveValue: 128_000, source: "catalog" });
+      const created = await app.request("/agents", {
+        method: "POST",
+        body: JSON.stringify({ nickname: "Catalog Agent", providerId, modelId: "gpt-test", userOverride: null }),
+      });
+      expect(await created.json()).toMatchObject({
+        contextWindow: { catalogValue: 128_000, userOverride: null, effectiveValue: 128_000, source: "catalog", catalogProviderId: "openai" },
+      });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

@@ -52,6 +52,8 @@ export const AGENTS_SECTION_KEYS = [
   "providers",
   "modelLists",
   "loadModels",
+  "modelContextWindows",
+  "loadModelContextWindow",
   "saveAgent",
   "removeAgent",
 ] as const;
