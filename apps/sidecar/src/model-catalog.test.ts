@@ -7,8 +7,10 @@ import { ModelCatalog } from "./model-catalog";
 const document = {
   openai: {
     id: "openai",
-    api: "https://api.openai.com/v1",
-    models: { "gpt-test": { limit: { context: 128_000 } } },
+    models: {
+      "gpt-test": { limit: { context: 128_000 } },
+      "gpt-5.6-luna": { limit: { context: 1_050_000, input: 922_000, output: 128_000 } },
+    },
   },
 };
 
@@ -24,6 +26,24 @@ describe("ModelCatalog", () => {
         catalogValue: 128_000, userOverride: 64_000, effectiveValue: 64_000, source: "user_override",
       });
       expect(JSON.parse(readFileSync(join(dir, "model-catalog.json"), "utf8"))).toMatchObject({ etag: "rev-1" });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("maps the official OpenAI origin when the catalog provider omits its api field", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "socrates-catalog-"));
+    try {
+      const catalog = new ModelCatalog(dir, async () => new Response(JSON.stringify(document)));
+      expect(await catalog.resolve({ baseUrl: "https://api.openai.com/v1/" }, "gpt-5.6-luna", null)).toMatchObject({
+        catalogValue: 1_050_000,
+        effectiveValue: 1_050_000,
+        source: "catalog",
+        catalogProviderId: "openai",
+      });
+      expect(await catalog.resolve({ baseUrl: "https://openai-compatible.example/v1" }, "gpt-5.6-luna", null)).toMatchObject({
+        catalogValue: null,
+        effectiveValue: null,
+        source: "unavailable",
+      });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
