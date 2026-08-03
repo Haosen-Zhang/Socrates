@@ -40,6 +40,8 @@ import { canEditCollaboration, collaborationStrategyOptions } from "./collaborat
 import { taskStatusKey } from "./taskSurface";
 import RoomTaskComposer from "./TaskComposer";
 import WindowRoomToolbar from "./window/WindowRoomToolbar";
+import PanelResizeHandle from "./layout/PanelResizeHandle";
+import { clampPanelSize } from "./layout/panelResize";
 import {
   deriveWindowChromeLayout,
   useWindowChromeState,
@@ -1992,6 +1994,9 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
       avatar: String(entry.snapshot.avatar ?? ""),
       modelId: String(entry.snapshot.modelId ?? t("usage_unavailable")),
       role: String(entry.snapshot.role ?? ""),
+      contextWindowTokens: typeof (entry.snapshot.modelCapabilities as { contextWindowTokens?: unknown } | undefined)?.contextWindowTokens === "number"
+        ? (entry.snapshot.modelCapabilities as { contextWindowTokens: number }).contextWindowTokens : null,
+      reasoningEffort: typeof entry.snapshot.reasoningEffort === "string" ? entry.snapshot.reasoningEffort as RoomOverviewAgent["reasoningEffort"] : null,
     }));
     return roomAgents.map((agent) => ({
       id: agent.id,
@@ -1999,6 +2004,9 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
       avatar: agent.avatar,
       modelId: agent.modelId,
       role: agent.role,
+      contextWindowTokens: typeof agent.modelCapabilities?.contextWindowTokens === "number"
+        ? agent.modelCapabilities.contextWindowTokens : null,
+      reasoningEffort: agent.reasoningEffort ?? null,
     }));
   }, [currentSession, roomAgents, t]);
 
@@ -2022,13 +2030,36 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
   const streamingDivider =
     streaming?.round !== undefined && streaming.round !== lastRound && streaming.phase !== "summary";
 
+  const [sidebarWidth, setSidebarWidth] = useState(config?.sidebar.width ?? 256);
+  const [dockWidth, setDockWidth] = useState(config?.sidebar.dockWidth ?? 420);
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  useEffect(() => setSidebarWidth(config?.sidebar.width ?? 256), [config?.sidebar.width]);
+  useEffect(() => setDockWidth(config?.sidebar.dockWidth ?? 420), [config?.sidebar.dockWidth]);
+  useEffect(() => {
+    let frame = 0;
+    const resize = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => setViewportWidth(window.innerWidth)); };
+    window.addEventListener("resize", resize);
+    return () => { cancelAnimationFrame(frame); window.removeEventListener("resize", resize); };
+  }, []);
+  const sidebarMax = Math.min(480, Math.max(180, viewportWidth - 720));
+  const effectiveSidebarWidth = clampPanelSize(sidebarWidth, 180, sidebarMax);
+  const dockMax = Math.min(640, Math.max(300, viewportWidth - (collapsed ? 0 : effectiveSidebarWidth) - 420));
+  const effectiveDockWidth = clampPanelSize(dockWidth, 300, dockMax);
+  const commitSidebarWidth = (width: number) => {
+    if (config) void updateConfig({ sidebar: { ...config.sidebar, width } });
+  };
+  const commitDockWidth = (width: number) => {
+    if (config) void updateConfig({ sidebar: { ...config.sidebar, dockWidth: width } });
+  };
+
   return (
-    <div className="flex h-[100dvh]" style={{ "--room-sidebar-width": `${config?.sidebar.width ?? 256}px` } as React.CSSProperties}>
+    <div className="flex h-[100dvh]" style={{ "--room-sidebar-width": `${effectiveSidebarWidth}px`, "--workspace-dock-width": `${effectiveDockWidth}px` } as React.CSSProperties}>
       <aside
         className={`pixel-room-sidebar flex shrink-0 flex-col p-3 ${collapsed ? "is-hidden" : ""}`}
         aria-hidden={collapsed}
         inert={collapsed ? true : undefined}
       >
+        {!collapsed && <PanelResizeHandle edge="end" size={effectiveSidebarWidth} min={180} max={sidebarMax} label={t("resize_sidebar")} onResize={setSidebarWidth} onCommit={commitSidebarWidth} />}
         <div className="pixel-sidebar-brand" data-tauri-drag-region>
           <span>Socrates</span>
         </div>
@@ -2243,6 +2274,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
           />}
           onSelect={setDockMode}
           onClose={() => setDockMode("closed")}
+          resize={{ size: effectiveDockWidth, min: 300, max: dockMax, label: t("resize_workspace_dock"), onResize: setDockWidth, onCommit: commitDockWidth }}
         />
       )}
     </div>

@@ -28,7 +28,7 @@ export default function WorkspaceDockTabs({ mode, hasWorkspace, onSelect }: {
         onClick={() => onSelect(tab.mode)}
       >
         <PixelIcon name={tab.icon} size={16} />
-        <span>{t(tab.label)}</span>
+        <span className="truncate">{t(tab.label)}</span>
       </button>;
     })}
   </div>;

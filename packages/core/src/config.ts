@@ -30,7 +30,7 @@ export type AppConfig = {
   /** 8-bit 界面音效 */
   soundEnabled: boolean;
   /** 侧栏 UI 偏好（收起状态与宽度），重启后恢复 */
-  sidebar: { collapsed: boolean; width: number };
+  sidebar: { collapsed: boolean; width: number; dockWidth: number };
   proxy: ProxyConfig;
   appearance: { fontSize: number; fontFamily: string; uiTheme: UiTheme };
   collaborationDefaults: RoomCollaborationSettings;
@@ -41,7 +41,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   theme: "light",
   closeBehavior: "background",
   soundEnabled: true,
-  sidebar: { collapsed: false, width: 256 },
+  sidebar: { collapsed: false, width: 256, dockWidth: 420 },
   proxy: {
     mode: "off",
     type: "http",
@@ -82,9 +82,13 @@ export function normalizeConfig(raw: unknown): AppConfig {
     sidebar: (() => {
       const sb = (r.sidebar ?? {}) as Record<string, unknown>;
       const width = Number(sb.width);
+      const dockWidth = Number(sb.dockWidth);
       return {
         collapsed: sb.collapsed === true,
-        width: Number.isFinite(width) && width >= 180 && width <= 480 ? width : DEFAULT_CONFIG.sidebar.width,
+        width: Number.isFinite(width) ? Math.min(480, Math.max(180, width)) : DEFAULT_CONFIG.sidebar.width,
+        dockWidth: Number.isFinite(dockWidth)
+          ? Math.min(640, Math.max(300, dockWidth))
+          : DEFAULT_CONFIG.sidebar.dockWidth,
       };
     })(),
     proxy: {
