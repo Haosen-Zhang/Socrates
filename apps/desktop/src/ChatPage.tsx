@@ -9,7 +9,7 @@ import { useTransientFlag } from "./useTransientFlag";
 import { agentLabel, normalizeCollaborationSettings, validateCollaborationSettings, type Agent,
   type ConversationSession, type RoomCollaborationSettings, type WorkspaceRecord,
   type SessionMessage, type StoredMessage, type TaskSummary,
-  type ToolApprovalMode } from "@socrates/core";
+} from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
 import { isOwnedManagedWorkspace, roomDraftBlocker, toggleRoomAgentSelection } from "./roomSelection";
@@ -34,6 +34,7 @@ import {
 } from "./tooling/ToolActivityTimeline";
 import { projectPublicReasoning, projectToolActivities, toolActivityId } from "./tooling/toolActivity";
 import { approvalModeOptions } from "./approvalPolicyUi";
+import ApprovalPolicySegmented from "./ApprovalPolicySegmented";
 import { resolveSidebarRevealPath, revealResolvedSidebarTarget } from "./sidebar/revealInFinder";
 import { agentRunErrorKey } from "./agentRunErrorUi";
 import { canEditCollaboration, collaborationStrategyOptions } from "./collaborationSettingsUi";
@@ -602,7 +603,7 @@ function TaskComposer({ agents }: { agents: Agent[] }) {
         >
           <PixelIcon name="gear" size={18} />
         </button>
-        <span className="pixel-composer-chevron mb-1.5 shrink-0">›</span>
+        <span className="pixel-composer-chevron mt-1 shrink-0 self-start">›</span>
         <ComposerTextarea
           placeholder={
             busy
@@ -649,7 +650,7 @@ function SimpleComposer() {
       className="composer-dock"
     >
       <ResizableComposer label={t("composer_resize")}>
-        <span className="pixel-composer-chevron mb-1.5 shrink-0">›</span>
+        <span className="pixel-composer-chevron mt-1 shrink-0 self-start">›</span>
         <ComposerTextarea
           placeholder={streaming || roomSending ? t("replying") : t("message_placeholder")}
           value={draft}
@@ -817,33 +818,32 @@ function SingleAgentSession({ chrome }: { chrome: RoomChromeControls }) {
         )}
         <AttachmentTray />
         <ResizableComposer label={t("composer_resize")}>
-          <span className="pixel-composer-chevron mb-1.5 shrink-0">›</span>
+          <span className="pixel-composer-chevron mt-1 shrink-0 self-start">›</span>
           <ComposerTextarea placeholder={agentRunning ? t("replying") : t("message_placeholder")} value={draft} disabled={agentRunning} onChange={updateDraft} onSubmit={() => void submit()} />
           <button className="pixel-send shrink-0" type="submit" disabled={agentRunning || !draft.trim()} aria-label={t("send")}><PixelIcon name="send" size={18} /></button>
         </ResizableComposer>
         {session && (
-          <label className="mt-2 flex items-center gap-2 px-1 text-[11px] text-neutral-600">
-            <span>{t("approval_policy_label")}</span>
-            <select
-              className="pixel-input min-w-44 px-2 py-1 text-xs"
+          <div className="approval-policy-row mt-2 flex min-w-0 items-center gap-2 px-1 text-[11px] text-neutral-600">
+            <span className="shrink-0">{t("approval_policy_label")}</span>
+            <ApprovalPolicySegmented
               value={session.approvalPolicy.mode}
-              title={t(`approval_mode_${session.approvalPolicy.mode}_description`)}
-              onChange={(event) => void updateApprovalPolicy(session.id, event.target.value as ToolApprovalMode)}
-            >
-              {approvalOptions.map(({ mode, supported, labelKey }) => (
-                <option
-                  key={mode}
-                  value={mode}
-                  disabled={!supported}
-                >
-                  {t(labelKey)}
-                </option>
-              ))}
-            </select>
+              options={approvalOptions}
+              labels={{
+                ask: t("approval_mode_ask_short"),
+                auto_safe: t("approval_mode_auto_safe_short"),
+                workspace_full: t("approval_mode_workspace_full_short"),
+              }}
+              descriptions={{
+                ask: t("approval_mode_ask_description"),
+                auto_safe: t("approval_mode_auto_safe_description"),
+                workspace_full: t("approval_mode_workspace_full_description"),
+              }}
+              onChange={(mode) => void updateApprovalPolicy(session.id, mode)}
+            />
             <span className="truncate" title={t(`approval_mode_${session.approvalPolicy.mode}_description`)}>
               {t(`approval_mode_${session.approvalPolicy.mode}_description`)}
             </span>
-          </label>
+          </div>
         )}
       </form>
       {showCollab && session && <CoworkRoomSettingsDialog session={session} onClose={() => setShowCollab(false)} />}
