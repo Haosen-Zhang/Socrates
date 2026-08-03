@@ -318,11 +318,12 @@ function AppearanceSection() {
         <div className="border-b border-neutral-200 pb-4">
           <div className="text-sm font-medium">{t("ui_theme")}</div>
           <div className="mb-3 text-xs text-neutral-500">{t("ui_theme_desc")}</div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {(
               [
                 { value: "socrates-classic", label: t("ui_theme_classic"), desc: t("ui_theme_classic_desc") },
                 { value: "pixel-1998", label: t("ui_theme_pixel_1998"), desc: t("ui_theme_pixel_1998_desc") },
+                { value: "opencode-flat", label: t("ui_theme_opencode_flat"), desc: t("ui_theme_opencode_flat_desc") },
               ] as const
             ).map((option) => (
               <button

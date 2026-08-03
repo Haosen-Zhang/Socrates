@@ -399,6 +399,174 @@ body.is-resizing-panel { cursor: col-resize; user-select: none; }
   .pixel-window-toolbar__sidebar-toggle { transition: none; }
 }
 
+/* OpenCode Flat — an independent React/CSS adaptation of OpenCode's layered,
+   low-chrome desktop design. Existing Classic and Pixel 1998 selectors remain
+   untouched and selectable. */
+:root[data-ui-theme="opencode-flat"] .pixel-app {
+  --pixel-ink: #171717;
+  --pixel-paper: #ffffff;
+  --pixel-accent: #3b5cf6;
+  --pixel-bg: #f7f7f7;
+  --pixel-grid: transparent;
+  --pixel-shadow: rgba(0, 0, 0, 0.12);
+  --pixel-muted: #666666;
+  background: var(--pixel-bg);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+:root[data-theme="dark"][data-ui-theme="opencode-flat"] .pixel-app {
+  --pixel-ink: #e8e8e8;
+  --pixel-paper: #171717;
+  --pixel-accent: #7698fd;
+  --pixel-bg: #0f0f0f;
+  --pixel-shadow: rgba(0, 0, 0, 0.46);
+  --pixel-muted: #989898;
+}
+:root[data-ui-theme="opencode-flat"] .pixel-icon {
+  --pixel-icon-ink: currentColor;
+  --pixel-icon-light: currentColor;
+  --pixel-icon-highlight: currentColor;
+}
+:root[data-ui-theme="opencode-flat"] .pixel-app :is(.rounded, .rounded-md, .rounded-lg) { border-radius: 7px; }
+:root[data-ui-theme="opencode-flat"] .pixel-app :is(
+  .pixel-card, .pixel-dialog, .pixel-identity-panel, .pixel-empty,
+  .pixel-room-agent-card, .pixel-theme-choice, .pixel-tool-card,
+  .pixel-mode-card, .pixel-archive-panel, .pixel-project-menu
+) {
+  border: 1px solid color-mix(in srgb, var(--pixel-ink) 12%, transparent);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--pixel-shadow) 45%, transparent), 0 1px 2px var(--pixel-shadow);
+}
+:root[data-ui-theme="opencode-flat"] .pixel-card { box-shadow: 0 1px 2px color-mix(in srgb, var(--pixel-shadow) 55%, transparent); }
+:root[data-ui-theme="opencode-flat"] .pixel-header,
+:root[data-ui-theme="opencode-flat"] .pixel-window-toolbar {
+  border-bottom: 1px solid color-mix(in srgb, var(--pixel-ink) 12%, transparent);
+  background: color-mix(in srgb, var(--pixel-paper) 96%, transparent);
+  box-shadow: none;
+  backdrop-filter: blur(16px) saturate(130%);
+}
+:root[data-ui-theme="opencode-flat"] .pixel-window-toolbar__sidebar-toggle,
+:root[data-ui-theme="opencode-flat"] .pixel-workspace-chip,
+:root[data-ui-theme="opencode-flat"] .pixel-button,
+:root[data-ui-theme="opencode-flat"] .pixel-member-button,
+:root[data-ui-theme="opencode-flat"] .pixel-composer-tool,
+:root[data-ui-theme="opencode-flat"] .pixel-send {
+  border: 1px solid color-mix(in srgb, var(--pixel-ink) 14%, transparent);
+  border-radius: 6px;
+  box-shadow: 0 1px 2px var(--pixel-shadow);
+  transform: none;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, opacity 120ms ease;
+}
+:root[data-ui-theme="opencode-flat"] .pixel-app :is(.pixel-button, .pixel-member-button, .pixel-window-toolbar__sidebar-toggle, .pixel-workspace-chip):hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--pixel-ink) 20%, transparent);
+  background: color-mix(in srgb, var(--pixel-ink) 5%, var(--pixel-paper));
+}
+:root[data-ui-theme="opencode-flat"] .pixel-app :is(.pixel-button, .pixel-member-button, .pixel-window-toolbar__sidebar-toggle):active:not(:disabled) {
+  box-shadow: 0 1px 1px color-mix(in srgb, var(--pixel-shadow) 60%, transparent);
+  transform: none;
+}
+:root[data-ui-theme="opencode-flat"] .pixel-button--primary,
+:root[data-ui-theme="opencode-flat"] .pixel-new-room-button,
+:root[data-ui-theme="opencode-flat"] .pixel-send {
+  border-color: transparent;
+  background: var(--pixel-accent);
+  color: #fff;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--pixel-accent) 38%, transparent);
+}
+:root[data-ui-theme="opencode-flat"] .pixel-new-room-button {
+  border: 0;
+  border-radius: 7px;
+  box-shadow: none;
+  transition: background-color 120ms ease, opacity 120ms ease;
+}
+:root[data-ui-theme="opencode-flat"] .pixel-new-room-button:hover { background: color-mix(in srgb, var(--pixel-accent) 90%, black); transform: none; box-shadow: none; }
+:root[data-ui-theme="opencode-flat"] .pixel-new-room-button:active { transform: none; box-shadow: none; opacity: 0.86; }
+:root[data-ui-theme="opencode-flat"] .pixel-room-sidebar {
+  border-right: 1px solid color-mix(in srgb, var(--pixel-ink) 11%, transparent);
+  background: color-mix(in srgb, var(--pixel-paper) 72%, var(--pixel-bg));
+  box-shadow: none;
+}
+:root[data-ui-theme="opencode-flat"] .pixel-sidebar-brand { font-weight: 650; letter-spacing: -0.025em; }
+:root[data-ui-theme="opencode-flat"] .pixel-project-group {
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  box-shadow: none;
+}
+:root[data-ui-theme="opencode-flat"] .pixel-project-group.is-current { background: color-mix(in srgb, var(--pixel-ink) 4%, transparent); box-shadow: none; }
+:root[data-ui-theme="opencode-flat"] .pixel-project-heading { border-bottom: 0; }
+:root[data-ui-theme="opencode-flat"] .pixel-room-row {
+  min-height: 38px;
+  border: 0;
+  border-radius: 6px;
+}
+:root[data-ui-theme="opencode-flat"] .pixel-room-row:hover { border: 0; background: color-mix(in srgb, var(--pixel-ink) 5%, transparent); }
+:root[data-ui-theme="opencode-flat"] .pixel-room-row.is-active {
+  border: 0;
+  background: color-mix(in srgb, var(--pixel-accent) 12%, var(--pixel-paper));
+  box-shadow: inset 2px 0 0 var(--pixel-accent);
+  color: var(--pixel-ink);
+}
+:root[data-ui-theme="opencode-flat"] .pixel-avatar { border-width: 1px; border-radius: 7px; box-shadow: none; }
+:root[data-ui-theme="opencode-flat"] .pixel-avatar img { image-rendering: auto; }
+:root[data-ui-theme="opencode-flat"] .pixel-input,
+:root[data-ui-theme="opencode-flat"] .pixel-app :is(input, select, textarea) {
+  border-color: color-mix(in srgb, var(--pixel-ink) 15%, transparent);
+  border-radius: 6px;
+  box-shadow: none;
+}
+:root[data-ui-theme="opencode-flat"] .pixel-input:focus,
+:root[data-ui-theme="opencode-flat"] .pixel-app :is(input, select, textarea):focus-visible {
+  border-color: var(--pixel-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pixel-accent) 22%, transparent);
+  outline: none;
+}
+:root[data-ui-theme="opencode-flat"] .pixel-dialog-backdrop { background: rgba(0, 0, 0, 0.42); backdrop-filter: blur(6px); }
+:root[data-ui-theme="opencode-flat"] .pixel-dialog { border-width: 1px; border-radius: 10px; box-shadow: 0 18px 56px rgba(0, 0, 0, 0.24), 0 0 0 1px color-mix(in srgb, var(--pixel-ink) 7%, transparent); }
+:root[data-ui-theme="opencode-flat"] .pixel-kicker { font-size: 9px; font-weight: 650; letter-spacing: 0.1em; }
+:root[data-ui-theme="opencode-flat"] .pixel-workspace-dock {
+  border-left: 1px solid color-mix(in srgb, var(--pixel-ink) 12%, transparent);
+  background: var(--pixel-paper);
+  box-shadow: none;
+}
+:root[data-ui-theme="opencode-flat"] .pixel-workspace-dock__header,
+:root[data-ui-theme="opencode-flat"] .pixel-workspace-tree,
+:root[data-ui-theme="opencode-flat"] .pixel-workspace-diff-list { border-color: color-mix(in srgb, var(--pixel-ink) 10%, transparent); border-width: 0 0 1px; }
+:root[data-ui-theme="opencode-flat"] .pixel-workspace-dock__tabs button { border-radius: 5px; border-bottom: 0; }
+:root[data-ui-theme="opencode-flat"] .pixel-workspace-dock__tabs button[aria-selected="true"] { background: color-mix(in srgb, var(--pixel-accent) 10%, transparent); color: var(--pixel-ink); }
+:root[data-ui-theme="opencode-flat"] .pixel-room-overview__section,
+:root[data-ui-theme="opencode-flat"] .pixel-room-overview__usage-card {
+  border-color: color-mix(in srgb, var(--pixel-ink) 10%, transparent);
+  border-radius: 8px;
+  background: var(--pixel-paper);
+}
+:root[data-ui-theme="opencode-flat"] .pixel-composer-config {
+  border: 1px solid color-mix(in srgb, var(--pixel-ink) 10%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--pixel-paper) 94%, var(--pixel-bg));
+  box-shadow: none;
+}
+:root[data-ui-theme="opencode-flat"] .composer-dock { background: color-mix(in srgb, var(--pixel-paper) 96%, transparent); backdrop-filter: blur(18px); }
+:root[data-ui-theme="opencode-flat"] .pixel-composer {
+  border: 1px solid color-mix(in srgb, var(--pixel-ink) 14%, transparent);
+  border-radius: 10px;
+  box-shadow: 0 4px 18px color-mix(in srgb, var(--pixel-shadow) 35%, transparent);
+}
+:root[data-ui-theme="opencode-flat"] .pixel-composer:focus-within {
+  border-color: color-mix(in srgb, var(--pixel-accent) 65%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pixel-accent) 16%, transparent), 0 6px 24px color-mix(in srgb, var(--pixel-shadow) 38%, transparent);
+  transform: none;
+}
+:root[data-ui-theme="opencode-flat"] .pixel-composer-resize-handle::after { border-radius: 999px; background: color-mix(in srgb, var(--pixel-muted) 50%, transparent); }
+:root[data-ui-theme="opencode-flat"] .pixel-composer-tool:active,
+:root[data-ui-theme="opencode-flat"] .pixel-send:active:not(:disabled) { transform: none; box-shadow: 0 1px 2px var(--pixel-shadow); }
+:root[data-ui-theme="opencode-flat"] .pixel-theme-choice:hover:not(:disabled) { transform: none; border-color: color-mix(in srgb, var(--pixel-accent) 55%, transparent); }
+:root[data-ui-theme="opencode-flat"] .pixel-theme-choice.is-selected { border-color: var(--pixel-accent); background: color-mix(in srgb, var(--pixel-accent) 7%, var(--pixel-paper)); box-shadow: 0 0 0 1px var(--pixel-accent); }
+:root[data-ui-theme="opencode-flat"] .approval-shelf,
+:root[data-ui-theme="opencode-flat"] .tool-activity,
+:root[data-ui-theme="opencode-flat"] .public-reasoning { border-width: 1px; border-radius: 8px; box-shadow: none; }
+
 .pixel-new-room-button {
   border: 3px solid var(--pixel-ink);
   border-radius: 2px;

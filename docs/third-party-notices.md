@@ -1,11 +1,11 @@
 # Third-party notices
 
-## OpenCode interaction reference
+## OpenCode design references
 
-The resizable panel interaction in Socrates was informed by the resize-handle pattern in
+The resizable panel interaction and optional modern flat theme in Socrates were informed by patterns in
 [anomalyco/opencode](https://github.com/anomalyco/opencode), licensed under the MIT License
 (Copyright 2025 opencode). The Socrates implementation is an independent React adaptation;
-OpenCode's SolidJS component is not bundled.
+OpenCode's SolidJS components and stylesheets are not bundled.
 
 Socrates uses the following third-party packages for bounded document creation
 and desktop interface icons. Packages are consumed as dependencies; no upstream
