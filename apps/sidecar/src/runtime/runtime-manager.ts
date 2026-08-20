@@ -6,7 +6,7 @@ import type {
   RuntimeEvent,
   RuntimeStatus,
 } from "@socrates/core";
-import type { EventStore } from "../store/event-store";
+import type { ExecutionEventStore } from "../store/execution-event-store";
 
 export interface RuntimeSessionHandle {
   id: string;
@@ -39,9 +39,14 @@ export interface RuntimeOpenInput {
 
 export class RuntimeManager {
   private readonly factories = new Map<string, RuntimeFactory>();
-  private readonly active = new Map<string, { runtime: AgentRuntime; sessionId: string; agentId: string }>();
+  private readonly active = new Map<string, {
+    runtime: AgentRuntime;
+    sessionId: string;
+    agentId: string;
+    journalBlocked: boolean;
+  }>();
 
-  constructor(private readonly db: Database, private readonly events: EventStore) {}
+  constructor(private readonly db: Database, private readonly events: ExecutionEventStore) {}
 
   register(kind: string, factory: RuntimeFactory): void {
     if (this.factories.has(kind)) throw new Error(`duplicate_runtime:${kind}`);
@@ -61,7 +66,9 @@ export class RuntimeManager {
     try {
       await runtime.open({ sessionId: input.sessionId, workspaceId: input.workspaceId });
       this.updateStatus(id, "ready");
-      this.active.set(id, { runtime, sessionId: input.sessionId, agentId: input.agentId });
+      this.active.set(id, {
+        runtime, sessionId: input.sessionId, agentId: input.agentId, journalBlocked: false,
+      });
       return this.get(id)!;
     } catch (error) {
       this.updateStatus(id, "failed");
@@ -71,6 +78,7 @@ export class RuntimeManager {
 
   async run(runtimeSessionId: string, input: {
     taskId: string;
+    turnId?: string;
     prompt: string;
     parts?: MessagePart[];
     messages?: RuntimeConversationMessage[];
@@ -82,6 +90,7 @@ export class RuntimeManager {
     this.updateStatus(runtimeSessionId, "running");
     const seen: RuntimeEvent[] = [];
     let ordinal = 0;
+    let eventConsumerFailed = false;
     try {
       for await (const event of active.runtime.start({
         prompt: input.prompt,
@@ -90,15 +99,24 @@ export class RuntimeManager {
         signal: input.signal,
       })) {
         ordinal += 1;
-        this.events.append({
-          eventId: `${runtimeSessionId}:${ordinal}`,
-          sessionId: active.sessionId,
-          taskId: input.taskId,
-          type: `runtime.${event.type}`,
-          payload: { agentId: active.agentId, runtimeSessionId, event },
-        });
+        if (input.turnId && !active.journalBlocked) {
+          this.events.append({
+            eventId: `${runtimeSessionId}:${input.taskId}:${ordinal}`,
+            sessionId: active.sessionId,
+            runId: input.taskId,
+            agentId: active.agentId,
+            type: "runtime.event",
+            coordinates: { turnId: input.turnId },
+            payload: { runtimeSessionId, event },
+          });
+        }
         seen.push(event);
-        await input.onEvent?.(event);
+        try {
+          await input.onEvent?.(event);
+        } catch (error) {
+          eventConsumerFailed = true;
+          throw error;
+        }
         if (event.type === "status") this.updateStatus(runtimeSessionId, event.status);
       }
       const handle = this.get(runtimeSessionId);
@@ -106,13 +124,25 @@ export class RuntimeManager {
       return seen;
     } catch (error) {
       this.updateStatus(runtimeSessionId, input.signal?.aborted ? "interrupted" : "failed");
-      this.events.append({
-        eventId: `${runtimeSessionId}:terminal:${crypto.randomUUID()}`,
-        sessionId: active.sessionId,
-        taskId: input.taskId,
-        type: "runtime.status",
-        payload: { agentId: active.agentId, runtimeSessionId, event: { type: "status", status: this.get(runtimeSessionId)?.status, message: error instanceof Error ? error.message : String(error) } },
-      });
+      const status = input.signal?.aborted ? "interrupted" : "failed";
+      if (input.turnId && !eventConsumerFailed && !active.journalBlocked) {
+        this.events.append({
+          eventId: `${runtimeSessionId}:${input.taskId}:terminal:${status}`,
+          sessionId: active.sessionId,
+          runId: input.taskId,
+          agentId: active.agentId,
+          type: "runtime.event",
+          coordinates: { turnId: input.turnId },
+          payload: {
+            runtimeSessionId,
+            event: {
+              type: "status",
+              status,
+              message: error instanceof Error ? error.message : String(error),
+            },
+          },
+        });
+      }
       throw error;
     }
   }
@@ -122,6 +152,12 @@ export class RuntimeManager {
     if (!active) throw new Error("runtime_not_active");
     const value = active.runtime.contextOverheadTokens?.() ?? 0;
     return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  }
+
+  setExecutionJournalBlocked(runtimeSessionId: string, blocked: boolean): void {
+    const active = this.active.get(runtimeSessionId);
+    if (!active) throw new Error("runtime_not_active");
+    active.journalBlocked = blocked;
   }
 
   async interrupt(runtimeSessionId: string): Promise<void> {

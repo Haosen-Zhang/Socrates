@@ -9,10 +9,14 @@ import type {
   WorkspaceRecord,
   ContextWindowResolution,
 } from "@socrates/core";
-import type { ApprovalManager, DurableApprovalDecision } from "../approvals/manager";
+import type {
+  ApprovalManager,
+  DurableApprovalDecision,
+  DurableApprovalRequest,
+} from "../approvals/manager";
 import { hashToolInput } from "../tools/executor";
 import type { RuntimeManager } from "./runtime-manager";
-import type { EventStore } from "../store/event-store";
+import type { ExecutionEventStore } from "../store/execution-event-store";
 import type { AttachmentResolver } from "../attachments/resolver";
 import { UsageCollector } from "../services/usage-collector";
 import { ConversationMemoryStore } from "../store/conversation-memory-store";
@@ -43,8 +47,12 @@ type AgentRow = { agent_id: string; snapshot_json: string };
 type WorkspaceRefRow = { id: string; workspace_id: string; relative_path: string; snapshot_hash: string | null };
 type ActiveRun = {
   runtimeSessionId: string;
+  sessionId: string;
+  agentId: string;
   turnId: string;
   calls: Map<string, { name: string; input: unknown }>;
+  deliveredApprovalIds: Set<string>;
+  journalBlocked: boolean;
   cancelled: boolean;
 };
 
@@ -67,7 +75,7 @@ export class SingleAgentRunner {
     private readonly db: Database,
     private readonly runtimes: RuntimeManager,
     private readonly approvals: ApprovalManager,
-    private readonly events: EventStore,
+    private readonly events: ExecutionEventStore,
     private readonly attachments: AttachmentResolver,
     history?: HistoryStore,
   ) {
@@ -76,6 +84,31 @@ export class SingleAgentRunner {
   }
 
   recoverInterrupted(): { runs: number; approvals: number } {
+    this.reconcileDurableExecutionFacts();
+    const interrupted = this.db.query<{
+      id: string;
+      session_id: string;
+      turn_id: string | null;
+      agent_id: string | null;
+    }, []>(`
+      SELECT agent_runs.id, agent_runs.session_id, agent_runs.turn_id,
+             COALESCE(
+               conversation_turns.agent_id,
+               sessions.primary_agent_id,
+               (SELECT session_agents.agent_id FROM session_agents
+                WHERE session_agents.session_id = agent_runs.session_id
+                ORDER BY session_agents.position LIMIT 1)
+             ) AS agent_id
+      FROM agent_runs
+      JOIN sessions ON sessions.id = agent_runs.session_id
+      LEFT JOIN conversation_turns ON conversation_turns.id = agent_runs.turn_id
+      WHERE agent_runs.status IN ('preparing', 'running', 'awaiting_approval')
+        AND NOT EXISTS (
+          SELECT 1 FROM runtime_events
+          WHERE runtime_events.run_id = agent_runs.id
+            AND runtime_events.schema_version = 0
+        )
+    `).all();
     let runs = 0;
     let approvals = 0;
     this.db.transaction(() => {
@@ -104,7 +137,218 @@ export class SingleAgentRunner {
         WHERE status IN ('preparing', 'running', 'awaiting_approval')
       `).run(new Date().toISOString(), new Date().toISOString());
     })();
+    for (const run of interrupted) {
+      if (!run.agent_id) continue;
+      this.events.append({
+        eventId: `run-interrupted:${run.id}`,
+        sessionId: run.session_id,
+        runId: run.id,
+        agentId: run.agent_id,
+        type: "run.interrupted",
+        coordinates: run.turn_id ? { turnId: run.turn_id } : {},
+        payload: { reason: "sidecar_restarted" },
+      });
+    }
+    this.reconcileDurableExecutionFacts();
     return { runs, approvals };
+  }
+
+  private reconcileDurableExecutionFacts(): void {
+    const createdRuns = this.db.query<{
+      id: string;
+      session_id: string;
+      turn_id: string | null;
+      agent_id: string | null;
+      thread_id: string;
+      attempt_no: number;
+      created_at: string;
+    }, []>(`
+      SELECT agent_runs.id, agent_runs.session_id, agent_runs.turn_id,
+             COALESCE(
+               conversation_turns.agent_id,
+               sessions.primary_agent_id,
+               (SELECT session_agents.agent_id FROM session_agents
+                WHERE session_agents.session_id = agent_runs.session_id
+                ORDER BY session_agents.position LIMIT 1)
+             ) AS agent_id,
+             agent_runs.thread_id, agent_runs.attempt_no, agent_runs.created_at
+      FROM agent_runs
+      JOIN sessions ON sessions.id = agent_runs.session_id
+      LEFT JOIN conversation_turns ON conversation_turns.id = agent_runs.turn_id
+      WHERE agent_runs.thread_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM runtime_events
+          WHERE runtime_events.run_id = agent_runs.id
+            AND runtime_events.schema_version = 0
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM runtime_events
+          WHERE runtime_events.run_id = agent_runs.id
+            AND runtime_events.schema_version = 1
+        )
+    `).all();
+    for (const run of createdRuns) {
+      if (!run.agent_id) continue;
+      this.events.append({
+        eventId: `run-created:${run.id}`,
+        sessionId: run.session_id,
+        runId: run.id,
+        agentId: run.agent_id,
+        type: "run.created",
+        coordinates: run.turn_id ? { turnId: run.turn_id } : {},
+        payload: { threadId: run.thread_id, attemptNo: run.attempt_no },
+        occurredAt: run.created_at,
+      });
+    }
+
+    const requests = this.db.query<{
+      id: string;
+      subject_id: string;
+      created_at: string;
+      run_id: string;
+      session_id: string;
+      turn_id: string | null;
+      agent_id: string | null;
+    }, []>(`
+      SELECT approval_requests.id, approval_requests.subject_id,
+             approval_requests.created_at, agent_runs.id AS run_id,
+             agent_runs.session_id, agent_runs.turn_id,
+             COALESCE(
+               conversation_turns.agent_id,
+               sessions.primary_agent_id,
+               (SELECT session_agents.agent_id FROM session_agents
+                WHERE session_agents.session_id = agent_runs.session_id
+                ORDER BY session_agents.position LIMIT 1)
+             ) AS agent_id
+      FROM approval_requests
+      JOIN agent_runs ON agent_runs.id = approval_requests.task_id
+      JOIN sessions ON sessions.id = agent_runs.session_id
+      LEFT JOIN conversation_turns ON conversation_turns.id = agent_runs.turn_id
+      WHERE NOT EXISTS (
+        SELECT 1 FROM runtime_events
+        WHERE runtime_events.run_id = agent_runs.id
+          AND runtime_events.schema_version = 0
+      )
+        AND NOT EXISTS (
+          SELECT 1 FROM runtime_events
+          WHERE runtime_events.id = 'approval:' || approval_requests.id
+        )
+    `).all();
+    for (const request of requests) {
+      if (!request.agent_id) continue;
+      this.events.append({
+        eventId: `approval:${request.id}`,
+        sessionId: request.session_id,
+        runId: request.run_id,
+        agentId: request.agent_id,
+        type: "approval.requested",
+        coordinates: request.turn_id ? { turnId: request.turn_id } : {},
+        payload: { requestId: request.id, subjectId: request.subject_id },
+        occurredAt: request.created_at,
+      });
+    }
+
+    const decisions = this.db.query<{
+      id: string;
+      request_id: string;
+      decision: ApprovalDecision;
+      decided_at: string;
+      run_id: string;
+      session_id: string;
+      turn_id: string | null;
+      agent_id: string | null;
+    }, []>(`
+      SELECT approval_decisions.id, approval_decisions.request_id,
+             approval_decisions.decision, approval_decisions.decided_at,
+             agent_runs.id AS run_id, agent_runs.session_id, agent_runs.turn_id,
+             COALESCE(
+               conversation_turns.agent_id,
+               sessions.primary_agent_id,
+               (SELECT session_agents.agent_id FROM session_agents
+                WHERE session_agents.session_id = agent_runs.session_id
+                ORDER BY session_agents.position LIMIT 1)
+             ) AS agent_id
+      FROM approval_decisions
+      JOIN approval_requests ON approval_requests.id = approval_decisions.request_id
+      JOIN agent_runs ON agent_runs.id = approval_requests.task_id
+      JOIN sessions ON sessions.id = agent_runs.session_id
+      LEFT JOIN conversation_turns ON conversation_turns.id = agent_runs.turn_id
+      WHERE NOT EXISTS (
+        SELECT 1 FROM runtime_events
+        WHERE runtime_events.run_id = agent_runs.id
+          AND runtime_events.schema_version = 0
+      )
+        AND NOT EXISTS (
+        SELECT 1 FROM runtime_events
+        WHERE runtime_events.id = 'approval-decision:' || approval_decisions.id
+      )
+    `).all();
+    for (const decision of decisions) {
+      if (!decision.agent_id) continue;
+      this.events.append({
+        eventId: `approval-decision:${decision.id}`,
+        sessionId: decision.session_id,
+        runId: decision.run_id,
+        agentId: decision.agent_id,
+        type: "approval.decided",
+        coordinates: decision.turn_id ? { turnId: decision.turn_id } : {},
+        payload: { requestId: decision.request_id, decision: decision.decision },
+        occurredAt: decision.decided_at,
+      });
+    }
+
+    const terminalRuns = this.db.query<{
+      id: string;
+      session_id: string;
+      turn_id: string | null;
+      agent_id: string | null;
+      status: "completed" | "failed" | "cancelled" | "interrupted";
+      error: string | null;
+      completed_at: string | null;
+    }, []>(`
+      SELECT agent_runs.id, agent_runs.session_id, agent_runs.turn_id,
+             COALESCE(
+               conversation_turns.agent_id,
+               sessions.primary_agent_id,
+               (SELECT session_agents.agent_id FROM session_agents
+                WHERE session_agents.session_id = agent_runs.session_id
+                ORDER BY session_agents.position LIMIT 1)
+             ) AS agent_id,
+             agent_runs.status, agent_runs.error, agent_runs.completed_at
+      FROM agent_runs
+      JOIN sessions ON sessions.id = agent_runs.session_id
+      LEFT JOIN conversation_turns ON conversation_turns.id = agent_runs.turn_id
+      WHERE agent_runs.status IN ('completed', 'failed', 'cancelled', 'interrupted')
+        AND NOT EXISTS (
+          SELECT 1 FROM runtime_events
+          WHERE runtime_events.run_id = agent_runs.id
+            AND runtime_events.schema_version = 0
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM runtime_events
+          WHERE runtime_events.run_id = agent_runs.id
+            AND runtime_events.schema_version = 1
+            AND runtime_events.type = 'run.' || agent_runs.status
+        )
+    `).all();
+    for (const run of terminalRuns) {
+      if (!run.agent_id) continue;
+      const reason = run.error ?? (
+        run.status === "interrupted" ? "sidecar_restarted" : run.status
+      );
+      this.events.append({
+        eventId: `run-${run.status}:${run.id}`,
+        sessionId: run.session_id,
+        runId: run.id,
+        agentId: run.agent_id,
+        type: `run.${run.status}`,
+        coordinates: run.turn_id ? { turnId: run.turn_id } : {},
+        payload: run.status === "completed"
+          ? {}
+          : run.status === "failed" ? { error: reason } : { reason },
+        occurredAt: run.completed_at ?? undefined,
+      });
+    }
   }
 
   /**
@@ -327,6 +571,7 @@ export class SingleAgentRunner {
       },
     };
     if (prepared.replayed) {
+      this.reconcileDurableExecutionFacts();
       await emit(startedEvent);
       const previous = this.db.query<{ runtime_session_id: string | null }, [string]>(
         "SELECT runtime_session_id FROM agent_runs WHERE id = ?",
@@ -341,13 +586,13 @@ export class SingleAgentRunner {
       };
     }
     this.events.append({
-      eventId: `run-started:${prepared.runId}`,
+      eventId: `run-created:${prepared.runId}`,
       sessionId: session.id,
-      taskId: prepared.runId,
-      type: "run.started",
+      runId: prepared.runId,
+      agentId: agent.agent_id,
+      type: "run.created",
+      coordinates: { turnId: prepared.turnId },
       payload: {
-        runId: prepared.runId,
-        turnId: prepared.turnId,
         threadId: prepared.threadId,
         attemptNo: prepared.attemptNo,
       },
@@ -365,9 +610,11 @@ export class SingleAgentRunner {
       this.events.append({
         eventId: `run-failed:${prepared.runId}`,
         sessionId: session.id,
-        taskId: prepared.runId,
+        runId: prepared.runId,
+        agentId: agent.agent_id,
         type: "run.failed",
-        payload: { turnId: prepared.turnId, error },
+        coordinates: { turnId: prepared.turnId },
+        payload: { error },
       });
       await emit(startedEvent);
       await emit({ type: "status", status: "failed", message: error });
@@ -424,6 +671,8 @@ export class SingleAgentRunner {
     let publicReasoningSummary = "";
     let assistantSegmentIndex = 0;
     let usageIndex = 0;
+    let turnCompleted = false;
+    let approvalJournalFailed = false;
     const finalAssistantMessage = (
       content: string,
       status: string,
@@ -501,11 +750,12 @@ export class SingleAgentRunner {
         this.events.append({
           eventId: `context-truncated:${prepared.runId}`,
           sessionId: session.id,
-          taskId: prepared.runId,
-          type: "memory.context_truncated",
+          runId: prepared.runId,
+          agentId: agent.agent_id,
+          type: "context.truncated",
+          coordinates: { turnId: prepared.turnId },
           payload: {
             threadId: prepared.threadId,
-            turnId: prepared.turnId,
             estimatedTokens: context.estimatedTokens,
             budgetTokens: context.budgetTokens,
             runtimeOverheadTokens,
@@ -515,20 +765,35 @@ export class SingleAgentRunner {
         });
       }
       if (context.overflow) throw new Error("context_current_unit_exceeds_budget");
-      this.db.query("UPDATE agent_runs SET runtime_session_id = ?, status = 'running' WHERE id = ?")
-        .run(handle.id, prepared.runId);
-      this.db.query("UPDATE sessions SET status = 'running', updated_at = ? WHERE id = ?")
-        .run(new Date().toISOString(), session.id);
-      this.memory.updateTurnStatus(prepared.turnId, "running");
+      this.events.append({
+        eventId: `run-started:${prepared.runId}`,
+        sessionId: session.id,
+        runId: prepared.runId,
+        agentId: agent.agent_id,
+        type: "run.started",
+        coordinates: { turnId: prepared.turnId },
+        payload: {},
+      }, () => {
+        this.db.query("UPDATE agent_runs SET runtime_session_id = ?, status = 'running' WHERE id = ?")
+          .run(handle.id, prepared.runId);
+        this.db.query("UPDATE sessions SET status = 'running', updated_at = ? WHERE id = ?")
+          .run(new Date().toISOString(), session.id);
+        this.memory.updateTurnStatus(prepared.turnId, "running");
+      });
       const active: ActiveRun = {
         runtimeSessionId: handle.id,
+        sessionId: session.id,
+        agentId: agent.agent_id,
         turnId: prepared.turnId,
         calls: new Map(),
+        deliveredApprovalIds: new Set(),
+        journalBlocked: false,
         cancelled: false,
       };
       this.active.set(prepared.runId, active);
       await this.runtimes.run(handle.id, {
         taskId: prepared.runId,
+        turnId: prepared.turnId,
         prompt: input.prompt,
         // Local files have already been resolved into the durable message
         // context and budgeted. Never ask a remote runtime to dereference IDs.
@@ -593,13 +858,20 @@ export class SingleAgentRunner {
             });
             this.db.query("UPDATE agent_runs SET status = 'awaiting_approval' WHERE id = ?").run(prepared.runId);
             this.memory.updateTurnStatus(prepared.turnId, "awaiting_approval");
-            this.events.append({
-              eventId: `approval:${approval.id}`,
-              sessionId: session.id,
-              taskId: prepared.runId,
-              type: "approval.requested",
-              payload: approval,
-            });
+            try {
+              this.events.append({
+                eventId: `approval:${approval.id}`,
+                sessionId: session.id,
+                runId: prepared.runId,
+                agentId: agent.agent_id,
+                type: "approval.requested",
+                coordinates: { turnId: prepared.turnId },
+                payload: { requestId: approval.id, subjectId: approval.subjectId },
+              });
+            } catch (error) {
+              approvalJournalFailed = true;
+              throw error;
+            }
             await emit({ ...event, requestId: approval.id });
             return;
           } else if (event.type === "text_delta") {
@@ -634,6 +906,16 @@ export class SingleAgentRunner {
           `assistant-final:${prepared.turnId}`,
         ),
       });
+      turnCompleted = true;
+      this.events.append({
+        eventId: `run-completed:${prepared.runId}`,
+        sessionId: session.id,
+        runId: prepared.runId,
+        agentId: agent.agent_id,
+        type: "run.completed",
+        coordinates: { turnId: prepared.turnId },
+        payload: {},
+      });
       assistantText = "";
       return {
         id: prepared.runId,
@@ -644,8 +926,10 @@ export class SingleAgentRunner {
         status: "completed",
       };
     } catch (error) {
+      if (turnCompleted) throw error;
       const message = error instanceof Error ? error.message : String(error);
-      const status = input.signal?.aborted || this.active.get(prepared.runId)?.cancelled ? "cancelled" : "failed";
+      const activeRun = this.active.get(prepared.runId);
+      const status = input.signal?.aborted || activeRun?.cancelled ? "cancelled" : "failed";
       const completedAt = new Date().toISOString();
       const partialContent = assistantText;
       assistantText = "";
@@ -661,6 +945,20 @@ export class SingleAgentRunner {
           status,
           `assistant-partial:${prepared.runId}`,
         ),
+      });
+      if (approvalJournalFailed || activeRun?.journalBlocked) {
+        this.approvals.expireForTask(prepared.runId);
+        this.reconcileDurableExecutionFacts();
+        throw error;
+      }
+      this.events.append({
+        eventId: `run-${status}:${prepared.runId}`,
+        sessionId: session.id,
+        runId: prepared.runId,
+        agentId: agent.agent_id,
+        type: status === "cancelled" ? "run.cancelled" : "run.failed",
+        coordinates: { turnId: prepared.turnId },
+        payload: status === "cancelled" ? { reason: message } : { error: message },
       });
       await emit({
         type: "status",
@@ -685,31 +983,92 @@ export class SingleAgentRunner {
   async decide(requestId: string, input: { clientDecisionKey: string; decision: ApprovalDecision; reason?: string }): Promise<DurableApprovalDecision> {
     const request = this.approvals.getRequest(requestId);
     if (!request) throw new Error("approval_request_not_found");
-    if (request.status !== "pending") return this.approvals.decide(requestId, input);
     const separator = request.subjectId.indexOf(":");
     if (separator < 1) throw new Error("approval_subject_invalid");
-    const runId = request.subjectId.slice(0, separator);
+    const runId = request.taskId;
+    if (request.subjectId.slice(0, separator) !== runId) throw new Error("approval_subject_invalid");
     const runtimeRequestId = request.subjectId.slice(separator + 1);
     const active = this.active.get(runId);
-    if (!active) throw new Error("agent_run_not_active");
+    if (request.status === "pending" && !active) throw new Error("agent_run_not_active");
     const decision = this.approvals.decide(requestId, input);
+    try {
+      this.appendApprovalDecisionEvent(request, decision, active);
+    } catch (error) {
+      if (active) {
+        active.journalBlocked = true;
+        this.runtimes.setExecutionJournalBlocked(active.runtimeSessionId, true);
+      }
+      try {
+        this.reconcileDurableExecutionFacts();
+        if (active) {
+          active.journalBlocked = false;
+          this.runtimes.setExecutionJournalBlocked(active.runtimeSessionId, false);
+        }
+      } catch {
+        throw error;
+      }
+      throw error;
+    }
+    if (!active || active.deliveredApprovalIds.has(decision.id)) return decision;
     await this.runtimes.answerApproval(active.runtimeSessionId, runtimeRequestId, input.decision);
+    active.deliveredApprovalIds.add(decision.id);
     this.db.query("UPDATE agent_runs SET status = 'running' WHERE id = ?").run(runId);
     this.memory.updateTurnStatus(active.turnId, "running");
-    const run = this.db.query<{ session_id: string }, [string]>("SELECT session_id FROM agent_runs WHERE id = ?").get(runId);
-    if (run) this.events.append({
-      eventId: `approval-decision:${decision.id}`,
-      sessionId: run.session_id,
-      taskId: runId,
-      type: "approval.decided",
-      payload: decision,
-    });
     return decision;
+  }
+
+  private appendApprovalDecisionEvent(
+    request: DurableApprovalRequest,
+    decision: DurableApprovalDecision,
+    active?: ActiveRun,
+  ): void {
+    const stored = active ? null : this.db.query<{
+      session_id: string;
+      turn_id: string | null;
+      agent_id: string | null;
+    }, [string]>(`
+      SELECT agent_runs.session_id, agent_runs.turn_id,
+             COALESCE(
+               conversation_turns.agent_id,
+               sessions.primary_agent_id,
+               (SELECT session_agents.agent_id FROM session_agents
+                WHERE session_agents.session_id = agent_runs.session_id
+                ORDER BY session_agents.position LIMIT 1)
+             ) AS agent_id
+      FROM agent_runs
+      JOIN sessions ON sessions.id = agent_runs.session_id
+      LEFT JOIN conversation_turns ON conversation_turns.id = agent_runs.turn_id
+      WHERE agent_runs.id = ?
+    `).get(request.taskId);
+    const sessionId = active?.sessionId ?? stored?.session_id;
+    const turnId = active?.turnId ?? stored?.turn_id;
+    const agentId = active?.agentId ?? stored?.agent_id;
+    if (!sessionId || !agentId) throw new Error("approval_execution_identity_missing");
+    this.events.append({
+      eventId: `approval-decision:${decision.id}`,
+      sessionId,
+      runId: request.taskId,
+      agentId,
+      type: "approval.decided",
+      coordinates: turnId ? { turnId } : {},
+      payload: { requestId: request.id, decision: decision.decision },
+      occurredAt: decision.decidedAt,
+    });
   }
 
   async cancel(runId: string): Promise<void> {
     const active = this.active.get(runId);
     if (!active) throw new Error("agent_run_not_active");
+    if (active.journalBlocked) throw new Error("execution_journal_blocked");
+    this.events.append({
+      eventId: `run-cancel-requested:${runId}`,
+      sessionId: active.sessionId,
+      runId,
+      agentId: active.agentId,
+      type: "run.cancel_requested",
+      coordinates: { turnId: active.turnId },
+      payload: { reason: "user_cancelled" },
+    });
     active.cancelled = true;
     await this.runtimes.interrupt(active.runtimeSessionId);
   }

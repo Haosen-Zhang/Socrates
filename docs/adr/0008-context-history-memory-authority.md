@@ -1,6 +1,6 @@
 # ADR 0008: Context, history, and memory authority
 
-- Status: Accepted; implementation pending
+- Status: Accepted; CAT-001, HIST-001, and Phase 1A execution authority implemented
 - Date: 2026-08-03
 - Supersedes: ADR-0003 only for unconditional full-history forwarding after
   the migration gates in this ADR are complete
@@ -39,17 +39,19 @@ Socrates assigns one authority to each class of fact:
 | --- | --- | --- |
 | Public conversation content and order | append-only `room.jsonl` HistoryStore | SQLite messages, FTS5, UI lists |
 | Agent-private execution trace | per-Agent trace JSONL | user-visible trace projection |
-| Task, Run, Turn, approval, lease, recovery, and domain events | SQLite | renderer and runtime projections |
+| Single-Agent Run execution facts | SQLite `runtime_events` | `agent_runs.event_seq`, future renderer/runtime projections |
+| Existing Session and Multi-Agent domain events | SQLite `task_events` | renderer projections |
+| Approval, lease, ToolCall, and current relational state | dedicated SQLite tables | execution/audit events where implemented |
 | Large tool output and attachment bytes | content-addressed payload store | hash, size, and storage key in HistoryRecord |
 | Current Memory and Charter views | SQLite projection | source mutations remain in HistoryStore |
 | Model catalog response | verified app-data cache | immutable resolution snapshot on Agent and Turn |
 | Compaction summary | immutable archive linked to source range | pointer and selected Memory enter context |
 
-`session_messages` becomes a rebuildable projection only after HIST-001 has
-implemented append, reconciliation, migration, and recovery. Until that gate is
-complete, the existing SQLite conversation path remains authoritative. There is
-never a supported state in which JSONL and SQLite independently accept public
-conversation writes.
+HIST-001 has made `session_messages` a rebuildable projection of HistoryStore.
+There is never a supported state in which JSONL and SQLite independently accept
+public conversation writes. Phase 1A likewise makes `runtime_events`, rather
+than `task_events`, the authority for normalized single-Agent execution facts;
+neither journal is a source of model-visible conversation content.
 
 ### History write protocol
 

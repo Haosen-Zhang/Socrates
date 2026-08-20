@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { AgentRuntime, RuntimeEvent } from "@socrates/core";
 import { UNKNOWN_MODEL_CAPABILITIES } from "@socrates/core";
 import { openDb } from "../db";
-import { EventStore } from "../store/event-store";
+import { ExecutionEventStore } from "../store/execution-event-store";
 import { RuntimeManager } from "./runtime-manager";
 
 class FakeRuntime implements AgentRuntime {
@@ -27,15 +27,25 @@ describe("RuntimeManager", () => {
     const db = openDb(":memory:");
     db.query("INSERT INTO sessions (id, title, mode, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
       .run("s", "Session", "single_agent", "idle", "now", "now");
-    const events = new EventStore(db);
+    const events = new ExecutionEventStore(db);
     const manager = new RuntimeManager(db, events);
     manager.register("fake", () => new FakeRuntime());
     const handle = await manager.open({ runtimeKind: "fake", agentSessionId: "as", sessionId: "s", agentId: "a" });
     const delivered: string[] = [];
-    const seen = await manager.run(handle.id, { taskId: "task", prompt: "go", onEvent: (event) => { delivered.push(event.type); } });
+    const seen = await manager.run(handle.id, { taskId: "task", turnId: "turn", prompt: "go", onEvent: (event) => { delivered.push(event.type); } });
     expect(seen.map((event) => event.type)).toEqual(["text_delta", "tool_call", "approval_required", "extension", "status"]);
-    expect(events.listAfter("s", 0).map((event) => event.type)).toEqual([
-      "runtime.text_delta", "runtime.tool_call", "runtime.approval_required", "runtime.extension", "runtime.status",
+    expect(events.listAfter("task", 0).map((event) => ({
+      type: event.type,
+      runtimeType: event.type === "runtime.event"
+        ? (event.payload as { event: RuntimeEvent }).event.type
+        : null,
+      turnId: event.coordinates.turnId,
+    }))).toEqual([
+      { type: "runtime.event", runtimeType: "text_delta", turnId: "turn" },
+      { type: "runtime.event", runtimeType: "tool_call", turnId: "turn" },
+      { type: "runtime.event", runtimeType: "approval_required", turnId: "turn" },
+      { type: "runtime.event", runtimeType: "extension", turnId: "turn" },
+      { type: "runtime.event", runtimeType: "status", turnId: "turn" },
     ]);
     expect(manager.get(handle.id)?.status).toBe("completed");
     expect(delivered).toEqual(seen.map((event) => event.type));
@@ -43,7 +53,7 @@ describe("RuntimeManager", () => {
 
   it("marks non-authoritative active sessions interrupted on recovery", async () => {
     const db = openDb(":memory:");
-    const manager = new RuntimeManager(db, new EventStore(db));
+    const manager = new RuntimeManager(db, new ExecutionEventStore(db));
     db.query("INSERT INTO runtime_sessions (id, agent_session_id, runtime_kind, protocol_version, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("old", "as", "fake", "1", "running", "now", "now");
     expect(manager.recoverInterrupted()).toBe(1);

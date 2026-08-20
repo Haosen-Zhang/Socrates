@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { openDb } from "../db";
 import { ApprovalManager } from "../approvals/manager";
-import { EventStore } from "../store/event-store";
+import { ExecutionEventStore } from "../store/execution-event-store";
 import { SessionStore } from "../store/session-store";
 import { ConversationMemoryStore } from "../store/conversation-memory-store";
 import { RuntimeManager } from "./runtime-manager";
@@ -42,6 +42,46 @@ class ApprovalRuntime implements AgentRuntime {
     else this.pendingDecision = decision;
   }
   async interrupt() {}
+  async close() {}
+}
+
+class FlakyApprovalDeliveryRuntime extends ApprovalRuntime {
+  attempts = 0;
+  override async answerApproval(requestId: string, decision: ApprovalDecision) {
+    this.attempts += 1;
+    if (this.attempts === 1) throw new Error("approval_delivery_failed");
+    await super.answerApproval(requestId, decision);
+  }
+}
+
+class CancellableApprovalRuntime implements AgentRuntime {
+  readonly kind = "cancellable-approval";
+  readonly capabilities = {
+    ...UNKNOWN_MODEL_CAPABILITIES, textInput: true as const, toolCalling: true as const,
+  };
+  private resolve: ((decision: ApprovalDecision) => void) | null = null;
+  private reject: ((error: Error) => void) | null = null;
+  private interrupted = false;
+  async open() {}
+  async *start(input: { signal?: AbortSignal } = {}): AsyncIterable<RuntimeEvent> {
+    yield { type: "status", status: "running" };
+    yield { type: "tool_call", callId: "call", name: "shell_command", input: { command: "pwd" } };
+    yield { type: "approval_required", requestId: "call", callId: "call" };
+    if (this.interrupted || input.signal?.aborted) throw new Error("interrupted");
+    await new Promise<ApprovalDecision>((resolve, reject) => {
+      this.resolve = resolve;
+      this.reject = reject;
+      input.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    });
+    yield { type: "text_delta", text: "done" };
+  }
+  async answerApproval(_requestId: string, decision: ApprovalDecision) {
+    this.resolve?.(decision);
+  }
+  async interrupt() {
+    this.interrupted = true;
+    this.reject?.(new Error("interrupted"));
+  }
   async close() {}
 }
 
@@ -138,7 +178,7 @@ function setup() {
     agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: true }],
   });
   const approvals = new ApprovalManager(db);
-  const events = new EventStore(db);
+  const events = new ExecutionEventStore(db);
   const runtimes = new RuntimeManager(db, events);
   runtimes.register("fake", () => new ApprovalRuntime());
   runtimes.register("public-summary", () => new PublicSummaryRuntime());
@@ -177,7 +217,7 @@ function setupRecording(
   });
   const seen = options.seen ?? [];
   const approvals = new ApprovalManager(db);
-  const events = new EventStore(db);
+  const events = new ExecutionEventStore(db);
   const runtimes = new RuntimeManager(db, events);
   runtimes.register("recording", () => new RecordingRuntime(
     seen,
@@ -221,6 +261,27 @@ function setContextWindow(db: ReturnType<typeof openDb>, sessionId: string, toke
 }
 
 describe("SingleAgentRunner", () => {
+  it("records one reconstructable Run lifecycle only in the execution journal", async () => {
+    const { db, session, runner } = setupRecording({ response: "done" });
+    const result = await runner.run({
+      sessionId: session.id,
+      runtimeKind: "recording",
+      clientTurnKey: "execution-lifecycle",
+      prompt: "record the lifecycle",
+    });
+
+    expect(db.query<{ type: string }, [string]>(
+      "SELECT type FROM runtime_events WHERE run_id = ? ORDER BY seq",
+    ).all(result.id).map(({ type }) => type)).toEqual([
+      "run.created",
+      "run.started",
+      "runtime.event",
+      "run.completed",
+    ]);
+    expect(db.query("SELECT COUNT(*) AS count FROM task_events WHERE task_id = ?").get(result.id))
+      .toEqual({ count: 0 });
+  });
+
   it("samples an unknown-window model with the complete registered native tool set", async () => {
     const root = `${tmpdir()}/socrates-context-tools-${crypto.randomUUID()}`;
     mkdirSync(root, { recursive: true });
@@ -499,7 +560,7 @@ describe("SingleAgentRunner", () => {
     const { db, session } = setupRecording();
     const attempts = { count: 0 };
     const approvals = new ApprovalManager(db);
-    const events = new EventStore(db);
+    const events = new ExecutionEventStore(db);
     const runtimes = new RuntimeManager(db, events);
     runtimes.register("flaky", () => new FlakyRuntime(attempts));
     const runner = new SingleAgentRunner(
@@ -568,7 +629,7 @@ describe("SingleAgentRunner", () => {
       budgetTokens: 768,
       droppedThroughSequence: 2,
     });
-    expect(db.query("SELECT COUNT(*) AS count FROM task_events WHERE type = 'memory.context_truncated'").get())
+    expect(db.query("SELECT COUNT(*) AS count FROM runtime_events WHERE type = 'context.truncated'").get())
       .toEqual({ count: 1 });
   });
 
@@ -650,7 +711,7 @@ describe("SingleAgentRunner", () => {
     await expect(runner.run({ sessionId: session.id, runtimeKind: "fake", prompt: "do it" })).rejects.toThrow("message part rejected");
     expect(db.query("SELECT COUNT(*) AS count FROM agent_runs").get()).toEqual({ count: 0 });
     expect(db.query("SELECT COUNT(*) AS count FROM session_messages").get()).toEqual({ count: 0 });
-    expect(db.query("SELECT COUNT(*) AS count FROM task_events").get()).toEqual({ count: 0 });
+    expect(db.query("SELECT COUNT(*) AS count FROM runtime_events").get()).toEqual({ count: 0 });
     expect(db.query("SELECT status FROM sessions WHERE id = ?").get(session.id)).toEqual({ status: "idle" });
   });
 
@@ -676,6 +737,194 @@ describe("SingleAgentRunner", () => {
     await expect(runner.decide(pending.id, { clientDecisionKey: "again", decision: "allow_once" })).rejects.toThrow("approval_already_decided");
   });
 
+  it("retries approval delivery without duplicating its durable decision event", async () => {
+    const { db, session, approvals } = setup();
+    const events = new ExecutionEventStore(db);
+    const runtimes = new RuntimeManager(db, events);
+    const runtime = new FlakyApprovalDeliveryRuntime();
+    runtimes.register("flaky-approval", () => runtime);
+    const runner = new SingleAgentRunner(
+      db, runtimes, approvals, events,
+      new AttachmentResolver(db, `${tmpdir()}/unused-${crypto.randomUUID()}`),
+    );
+    let approvalReady!: () => void;
+    const ready = new Promise<void>((resolve) => { approvalReady = resolve; });
+    const running = runner.run({
+      sessionId: session.id, runtimeKind: "flaky-approval", prompt: "approve",
+    }, (event) => {
+      if (event.type === "approval_required") approvalReady();
+    });
+    await ready;
+    const request = approvals.recoverPending().pending[0]!;
+    const input = { clientDecisionKey: "stable-delivery", decision: "allow_once" as const };
+    await expect(runner.decide(request.id, input)).rejects.toThrow("approval_delivery_failed");
+    expect(db.query("SELECT COUNT(*) AS count FROM runtime_events WHERE type = 'approval.decided'").get())
+      .toEqual({ count: 1 });
+    await runner.decide(request.id, input);
+    expect((await running).status).toBe("completed");
+    expect(runtime.attempts).toBe(2);
+    expect(db.query("SELECT COUNT(*) AS count FROM runtime_events WHERE type = 'approval.decided'").get())
+      .toEqual({ count: 1 });
+  });
+
+  it("repairs a failed approval-request append before writing the terminal event", async () => {
+    const { db, session, approvals } = setup();
+    const events = new ExecutionEventStore(db);
+    const append = events.append.bind(events);
+    let failRequest = true;
+    events.append = ((input, project) => {
+      if (failRequest && input.type === "approval.requested") {
+        failRequest = false;
+        throw new Error("approval_journal_failed");
+      }
+      return append(input, project);
+    }) as typeof events.append;
+    const runtimes = new RuntimeManager(db, events);
+    runtimes.register("approval-gap", () => new ApprovalRuntime());
+    const runner = new SingleAgentRunner(
+      db, runtimes, approvals, events,
+      new AttachmentResolver(db, `${tmpdir()}/unused-${crypto.randomUUID()}`),
+    );
+
+    await expect(runner.run({
+      sessionId: session.id, runtimeKind: "approval-gap", prompt: "approve",
+    })).rejects.toThrow("approval_journal_failed");
+
+    const lifecycle = db.query<{ type: string; seq: number }, []>(`
+      SELECT type, seq FROM runtime_events ORDER BY seq
+    `).all();
+    const request = lifecycle.find((event) => event.type === "approval.requested")!;
+    const terminal = lifecycle.find((event) => event.type === "run.failed")!;
+    expect(request.seq).toBeLessThan(terminal.seq);
+    expect(lifecycle.at(-1)?.type).toBe("run.failed");
+    expect(approvals.recoverPending().pending).toEqual([]);
+  });
+
+  it("repairs a failed approval-decision append before cancellation can continue", async () => {
+    const { db, session, approvals } = setup();
+    const events = new ExecutionEventStore(db);
+    const append = events.append.bind(events);
+    let failDecision = true;
+    events.append = ((input, project) => {
+      if (failDecision && input.type === "approval.decided") {
+        failDecision = false;
+        throw new Error("decision_journal_failed");
+      }
+      return append(input, project);
+    }) as typeof events.append;
+    const runtimes = new RuntimeManager(db, events);
+    runtimes.register("cancellable-approval", () => new CancellableApprovalRuntime());
+    const runner = new SingleAgentRunner(
+      db, runtimes, approvals, events,
+      new AttachmentResolver(db, `${tmpdir()}/unused-${crypto.randomUUID()}`),
+    );
+    let runId = "";
+    let approvalReady!: () => void;
+    const ready = new Promise<void>((resolve) => { approvalReady = resolve; });
+    const running = runner.run({
+      sessionId: session.id, runtimeKind: "cancellable-approval", prompt: "approve",
+    }, (event) => {
+      if (event.type === "extension" && event.name === "run_started") {
+        runId = String((event.payload as { runId: unknown }).runId);
+      }
+      if (event.type === "approval_required") approvalReady();
+    });
+    await ready;
+    const request = approvals.recoverPending().pending[0]!;
+    await expect(runner.decide(request.id, {
+      clientDecisionKey: "failed-decision-event", decision: "allow_once",
+    })).rejects.toThrow("decision_journal_failed");
+    await runner.cancel(runId);
+    expect((await running).status).toBe("cancelled");
+
+    const types = db.query<{ type: string }, [string]>(`
+      SELECT type FROM runtime_events WHERE run_id = ? ORDER BY seq
+    `).all(runId).map(({ type }) => type);
+    expect(types.indexOf("approval.decided")).toBeLessThan(types.indexOf("run.cancel_requested"));
+    expect(types.indexOf("run.cancel_requested")).toBeLessThan(types.indexOf("run.cancelled"));
+  });
+
+  it("keeps terminal events blocked while approval-decision reconciliation is unavailable", async () => {
+    const { db, session, approvals } = setup();
+    const events = new ExecutionEventStore(db);
+    const append = events.append.bind(events);
+    let blockDecisions = true;
+    events.append = ((input, project) => {
+      if (blockDecisions && input.type === "approval.decided") {
+        throw new Error("decision_journal_unavailable");
+      }
+      return append(input, project);
+    }) as typeof events.append;
+    const runtimes = new RuntimeManager(db, events);
+    runtimes.register("blocked-approval", () => new CancellableApprovalRuntime());
+    const runner = new SingleAgentRunner(
+      db, runtimes, approvals, events,
+      new AttachmentResolver(db, `${tmpdir()}/unused-${crypto.randomUUID()}`),
+    );
+    const controller = new AbortController();
+    let approvalReady!: () => void;
+    const ready = new Promise<void>((resolve) => { approvalReady = resolve; });
+    const running = runner.run({
+      sessionId: session.id,
+      runtimeKind: "blocked-approval",
+      prompt: "approve",
+      signal: controller.signal,
+    }, (event) => {
+      if (event.type === "approval_required") approvalReady();
+    });
+    await ready;
+    const request = approvals.recoverPending().pending[0]!;
+    await expect(runner.decide(request.id, {
+      clientDecisionKey: "persistently-blocked-decision", decision: "allow_once",
+    })).rejects.toThrow("decision_journal_unavailable");
+
+    controller.abort();
+    await expect(running).rejects.toThrow("decision_journal_unavailable");
+    expect(db.query("SELECT COUNT(*) AS count FROM runtime_events WHERE type IN ('run.failed', 'run.cancelled')").get())
+      .toEqual({ count: 0 });
+
+    blockDecisions = false;
+    runner.recoverInterrupted();
+    const repaired = db.query<{ type: string }, []>(`
+      SELECT type FROM runtime_events
+      WHERE type IN ('approval.decided', 'run.cancelled') ORDER BY seq
+    `).all().map(({ type }) => type);
+    expect(repaired).toEqual(["approval.decided", "run.cancelled"]);
+  });
+
+  it("does not rewrite a completed Turn when terminal journaling fails", async () => {
+    const { db, session, approvals } = setup();
+    const events = new ExecutionEventStore(db);
+    const append = events.append.bind(events);
+    let failCompletion = true;
+    events.append = ((input, project) => {
+      if (failCompletion && input.type === "run.completed") {
+        failCompletion = false;
+        throw new Error("terminal_journal_failed");
+      }
+      return append(input, project);
+    }) as typeof events.append;
+    const runtimes = new RuntimeManager(db, events);
+    runtimes.register("recording", () => new RecordingRuntime([], "final"));
+    const runner = new SingleAgentRunner(
+      db, runtimes, approvals, events,
+      new AttachmentResolver(db, `${tmpdir()}/unused-${crypto.randomUUID()}`),
+    );
+    const input = {
+      sessionId: session.id,
+      runtimeKind: "recording",
+      clientTurnKey: "terminal-reconcile",
+      prompt: "finish",
+    };
+    await expect(runner.run(input)).rejects.toThrow("terminal_journal_failed");
+    expect(db.query("SELECT status FROM agent_runs").get()).toEqual({ status: "completed" });
+    expect(db.query("SELECT content, status FROM session_messages WHERE role = 'assistant'").get())
+      .toEqual({ content: "final", status: "completed" });
+    expect((await runner.run(input)).status).toBe("completed");
+    expect(db.query("SELECT COUNT(*) AS count FROM runtime_events WHERE type = 'run.completed'").get())
+      .toEqual({ count: 1 });
+  });
+
   it("persists only an explicit public reasoning summary extension", async () => {
     const { db, session, runner } = setup();
     await runner.run({
@@ -695,7 +944,7 @@ describe("SingleAgentRunner", () => {
 
   it("records an explicit user cancellation as cancelled rather than failed", async () => {
     const { db, session, approvals } = setup();
-    const events = new EventStore(db);
+    const events = new ExecutionEventStore(db);
     const runtimes = new RuntimeManager(db, events);
     runtimes.register("interruptible", () => new InterruptibleRuntime());
     const runner = new SingleAgentRunner(db, runtimes, approvals, events, new AttachmentResolver(db, `${tmpdir()}/unused-${crypto.randomUUID()}`));
@@ -721,10 +970,23 @@ describe("SingleAgentRunner", () => {
     const { db, session, approvals, runner } = setup();
     const now = new Date().toISOString();
     db.query("INSERT INTO agent_runs (id, session_id, prompt, status, created_at) VALUES ('orphan', ?, 'work', 'awaiting_approval', ?)").run(session.id, now);
+    db.query(`
+      INSERT INTO agent_runs (id, session_id, prompt, status, created_at, completed_at)
+      VALUES ('completed-with-gap', ?, 'done', 'completed', ?, ?)
+    `).run(session.id, now, now);
+    db.query("UPDATE sessions SET primary_agent_id = NULL WHERE id = ?").run(session.id);
     db.query("UPDATE sessions SET status = 'awaiting_approval' WHERE id = ?").run(session.id);
     approvals.request({
       taskId: "orphan", kind: "tool", subjectId: "orphan:call", inputHash: "hash",
       workspaceIdentity: "workspace", attemptId: "orphan", policyVersion: 1, risk: "medium", freshHumanRequired: false,
+    });
+    const decidedRequest = approvals.request({
+      taskId: "completed-with-gap", kind: "tool", subjectId: "completed-with-gap:call",
+      inputHash: "decided-hash", workspaceIdentity: "workspace",
+      attemptId: "completed-with-gap", policyVersion: 1, risk: "medium", freshHumanRequired: false,
+    });
+    approvals.decide(decidedRequest.id, {
+      clientDecisionKey: "recovered-decision", decision: "allow_once",
     });
     db.query(`
       INSERT INTO tool_calls
@@ -735,8 +997,39 @@ describe("SingleAgentRunner", () => {
     `).run(session.id, now, now);
     expect(runner.recoverInterrupted()).toEqual({ runs: 1, approvals: 1 });
     expect(db.query("SELECT status, error FROM agent_runs WHERE id = 'orphan'").get()).toEqual({ status: "interrupted", error: "sidecar_restarted" });
+    expect(db.query<{ type: string }, [string]>(
+      "SELECT type FROM runtime_events WHERE run_id = ? ORDER BY seq",
+    ).all("orphan").map(({ type }) => type))
+      .toEqual(["approval.requested", "run.interrupted"]);
+    expect(db.query<{ type: string }, [string]>(
+      "SELECT type FROM runtime_events WHERE run_id = ? ORDER BY seq",
+    ).all("completed-with-gap").map(({ type }) => type))
+      .toEqual(["approval.requested", "approval.decided", "run.completed"]);
     expect(approvals.recoverPending().pending).toEqual([]);
     expect(db.query("SELECT status, error FROM tool_calls WHERE id = 'old-call'").get())
       .toEqual({ status: "cancelled", error: "sidecar_restarted" });
+  });
+
+  it("attributes repaired terminal events to the immutable Turn agent", async () => {
+    const { db, session, runner } = setupRecording({ response: "done" });
+    const result = await runner.run({
+      sessionId: session.id, runtimeKind: "recording", prompt: "remember the agent",
+    });
+    db.query(`
+      INSERT INTO session_agents
+        (session_id, agent_id, snapshot_json, position, execution_eligible)
+      VALUES (?, 'replacement', '{}', 1, 1)
+    `).run(session.id);
+    db.query("UPDATE sessions SET primary_agent_id = 'replacement' WHERE id = ?").run(session.id);
+    db.query("DELETE FROM runtime_events WHERE run_id = ?").run(result.id);
+
+    runner.recoverInterrupted();
+
+    expect(db.query<{ type: string; agent_id: string }, [string]>(
+      "SELECT type, agent_id FROM runtime_events WHERE run_id = ? ORDER BY seq",
+    ).all(result.id)).toEqual([
+      { type: "run.created", agent_id: "a" },
+      { type: "run.completed", agent_id: "a" },
+    ]);
   });
 });

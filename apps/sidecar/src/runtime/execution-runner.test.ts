@@ -4,6 +4,7 @@ import { ApprovalManager } from "../approvals/manager";
 import { openDb } from "../db";
 import { MultiTaskStore } from "../multi-agent/task-store";
 import { EventStore } from "../store/event-store";
+import { ExecutionEventStore } from "../store/execution-event-store";
 import { WorkspaceLeaseManager } from "../workspace/leases";
 import { ExecutionRunner } from "./execution-runner";
 import { RuntimeManager } from "./runtime-manager";
@@ -40,7 +41,7 @@ async function setup() {
   tasks.transition(task.id, { type: "plan_ready" });
   tasks.decidePlan({ taskId: task.id, version: plan.version, hash: plan.contentHash, clientDecisionKey: "plan-decision", decision: "approve_exact_plan" });
   const events = new EventStore(db);
-  const runtimes = new RuntimeManager(db, events);
+  const runtimes = new RuntimeManager(db, new ExecutionEventStore(db));
   runtimes.register("native_ai_sdk", () => new ApprovalRuntime());
   const approvals = new ApprovalManager(db);
   const runner = new ExecutionRunner(db, tasks, runtimes, new WorkspaceLeaseManager(db, "test-instance"), approvals, events);
@@ -61,6 +62,8 @@ describe("ExecutionRunner", () => {
     await runner.decide(request.id, { clientDecisionKey: "tool-decision", decision: "allow_once" });
     await running;
     expect(tasks.get(task.id)?.state).toBe("completed");
+    expect(db.query("SELECT COUNT(*) AS count FROM runtime_events WHERE run_id = ?").get(task.id))
+      .toEqual({ count: 0 });
     expect(db.query("SELECT COUNT(*) AS count FROM workspace_leases").get()).toEqual({ count: 0 });
   });
 
