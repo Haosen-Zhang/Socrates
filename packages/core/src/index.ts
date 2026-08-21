@@ -11,6 +11,7 @@ export * from "./model-capabilities";
 export * from "./history";
 export * from "./usage";
 export * from "./events";
+export * from "./execution-events";
 export * from "./tools";
 export * from "./permissions";
 export * from "./approvals";

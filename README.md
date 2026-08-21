@@ -6,7 +6,7 @@ Socrates 是一个多模型群聊式 Agent 工作台。它允许用户把不同�
 
 ## 当前阶段
 
-MVP 开发中。产品与工程设计见 `docs/`，实现按 GitHub Issues 的票逐张推进（spec 见 issue #2）。
+MVP 已完成，当前按独立分支与 PR 推进运行可靠性建设。产品与工程设计见 `docs/`。
 
 ## 开发
 
@@ -37,6 +37,7 @@ bun run typecheck  # TypeScript 类型检查
 | `docs/04-orchestration-protocol.md` | 多模型群聊编排协议、发言策略、黑板机制、执行契约 |
 | `docs/05-security-permissions.md` | API Key、权限、工具执行、安全边界、审计日志 |
 | `docs/06-mvp-roadmap.md` | MVP 迭代路线、阶段目标、验收标准、主要风险 |
+| `docs/07-execution-event-authority.md` | Phase 1A 执行事件权威、身份层级、投影边界和迁移约束 |
 
 ## 一句话定位
 

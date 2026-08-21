@@ -13,6 +13,7 @@ import { WorkspaceManager } from "./workspace/manager";
 import { workspaceRoutes } from "./routes/workspaces";
 import { SessionStore } from "./store/session-store";
 import { EventStore } from "./store/event-store";
+import { ExecutionEventStore } from "./store/execution-event-store";
 import { sessionRoutes } from "./routes/sessions";
 import { isAllowedLoopbackHost, isAllowedRendererOrigin } from "./security/loopback";
 import { ApprovalManager } from "./approvals/manager";
@@ -81,11 +82,12 @@ const gateway = makeAiSdkGateway(proxiedFetch);
 const workspaces = new WorkspaceManager(db);
 const sessions = new SessionStore(db, history);
 const events = new EventStore(db);
+const executionEvents = new ExecutionEventStore(db);
 const approvals = new ApprovalManager(db);
 const attachments = new AttachmentResolver(db, defaultDataDir());
 const mcpStore = new McpStore(db, secrets);
 const mcp = new McpManager(db, mcpStore, new OfficialMcpClientAdapter(proxiedFetch));
-const runtimes = new RuntimeManager(db, events);
+const runtimes = new RuntimeManager(db, executionEvents);
 runtimes.register("native_ai_sdk", (input) => {
   const workspace = input.workspaceId ? workspaces.get(input.workspaceId) : null;
   if (!workspace) throw new Error("native_workspace_required");
@@ -149,7 +151,7 @@ runtimes.register("native_ai_sdk", (input) => {
     },
   });
 });
-const agentRuns = new SingleAgentRunner(db, runtimes, approvals, events, attachments, history);
+const agentRuns = new SingleAgentRunner(db, runtimes, approvals, executionEvents, attachments, history);
 const multiTasks = new MultiTaskStore(db, history);
 await history.bootstrapAll();
 runtimes.recoverInterrupted();
