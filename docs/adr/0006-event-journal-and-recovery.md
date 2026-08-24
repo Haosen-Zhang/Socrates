@@ -1,8 +1,8 @@
 # ADR 0006: Execution event journal and recovery
 
-- Status: Accepted; Phase 1A authority and Phase 1B Run ownership implemented
+- Status: Accepted; Phase 1A authority, Phase 1B Run ownership, and Phase 1C durable replay implemented
 - Date: 2026-07-16
-- Updated: 2026-08-21
+- Updated: 2026-08-24
 
 ## Decision
 
@@ -26,10 +26,10 @@ Conversation and execution authority remain separate:
   events until those paths receive an explicit migration.
 
 Execution events must never be replayed into model history. UI and audit
-projections may be rebuilt from them after Phase 1C adds cursor-based delivery.
+projections can be rebuilt through cursor-based delivery.
 
 Single-Agent Run lifetime is owned by a sidecar `RunSupervisor`, not by the
-HTTP request or SSE observer. Starting a Run, observing its current live events,
+HTTP request or SSE observer. Starting a Run, observing its durable events,
 reading its durable status projection, and explicitly cancelling it are
 separate operations. Every supervised Run has its own `AbortController`.
 Observer failure only detaches that observer; explicit cancellation or
@@ -54,12 +54,13 @@ truncation, and normalized Runtime events. The event vocabulary also fixes the
 future Provider and Tool attempt identity contract, but those attempt events are
 not emitted until the Provider/Tool execution loop is migrated.
 
-Phase 1B separates create/start from live observation and moves startup
-reconciliation under the independent supervisor. Its bounded in-process buffer
-only bridges the POST-to-GET hand-off and reports overflow as an observer gap;
-it is not replay authority. Phase 1C will
-replace that limitation with durable sequence replay and an ordered
-replay-to-live transition.
+Phase 1B separates create/start from observation and moves startup
+reconciliation under the independent supervisor. Phase 1C removes the bounded
+in-process hand-off buffer: `GET /agent/runs/:runId/events?afterSeq=N` reads
+committed events by sequence, uses the durable sequence as the SSE ID, then waits
+for later commits without making observer speed part of execution flow control.
+The Desktop reconnects from its last confirmed sequence, rejects gaps and
+identity mismatches, and rebuilds a fresh WebView projection from sequence zero.
 
 Terminal HistoryStore and execution-journal writes remain deliberately separate
 authorities. On startup, deterministic reconciliation repairs a missing terminal

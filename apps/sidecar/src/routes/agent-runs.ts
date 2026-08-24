@@ -4,11 +4,11 @@ import {
   COLLABORATION_RUNTIME_CAPABILITIES,
   TOOL_APPROVAL_CAPABILITIES,
   type ApprovalDecision,
-  type RuntimeEvent,
 } from "@socrates/core";
 import type { ApprovalManager } from "../approvals/manager";
 import type { RunSupervisor } from "../runtime/run-supervisor";
 import type { SingleAgentRunner } from "../runtime/single-agent-runner";
+import type { ExecutionEventStore } from "../store/execution-event-store";
 
 const DECISIONS = new Set<ApprovalDecision>(["allow_once", "allow_session", "deny"]);
 
@@ -16,6 +16,7 @@ export function agentRunRoutes(
   supervisor: RunSupervisor,
   runner: SingleAgentRunner,
   approvals: ApprovalManager,
+  events: ExecutionEventStore,
 ): Hono {
   const app = new Hono();
   app.get("/capabilities", (c) => c.json({
@@ -57,40 +58,41 @@ export function agentRunRoutes(
     return run ? c.json(run) : c.json({ error: "agent_run_not_found" }, 404);
   });
   app.get("/runs/:id/events", (c) => {
-    let resolveWriter!: (writer: (event: RuntimeEvent) => Promise<void>) => void;
-    const writer = new Promise<(event: RuntimeEvent) => Promise<void>>((resolve) => {
-      resolveWriter = resolve;
-    });
-    let observation;
-    try {
-      observation = supervisor.observe(c.req.param("id"), async (event) => {
-        await (await writer)(event);
-      });
-    } catch (error) {
-      return c.json({
-        error: error instanceof Error ? error.message : "agent_run_observe_failed",
-      }, 404);
+    const runId = c.req.param("id");
+    const run = supervisor.get(runId);
+    if (!run) return c.json({ error: "agent_run_not_found" }, 404);
+    const rawCursor = c.req.query("afterSeq") ?? "0";
+    if (!/^(0|[1-9]\d*)$/.test(rawCursor)) {
+      return c.json({ error: "invalid_execution_event_cursor" }, 400);
+    }
+    const afterSeq = Number(rawCursor);
+    if (!Number.isSafeInteger(afterSeq)) {
+      return c.json({ error: "invalid_execution_event_cursor" }, 400);
+    }
+    if (events.hasLegacyEvents(runId)) {
+      return c.json({ error: "execution_event_legacy_run_quarantined" }, 409);
+    }
+    if (afterSeq > events.latestSeq(runId)) {
+      return c.json({ error: "execution_event_cursor_ahead" }, 409);
     }
     return streamSSE(c, async (stream) => {
-      resolveWriter(async (event) => {
-        await stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
-      });
-      try {
-        const disconnected = new Promise<null>((resolve) => {
-          if (c.req.raw.signal.aborted) resolve(null);
-          else c.req.raw.signal.addEventListener("abort", () => resolve(null), { once: true });
-        });
-        const result = await Promise.race([
-          observation.completion,
-          disconnected,
-          observation.closed.then(() => null),
-        ]);
-        if (!result) return;
-        await observation.drained();
-        if (observation.isClosed()) return;
-        await stream.writeSSE({ event: "run_terminal", data: JSON.stringify(result) });
-      } finally {
-        observation.detach();
+      let cursor = afterSeq;
+      while (!c.req.raw.signal.aborted) {
+        const batch = events.listAfter(runId, cursor);
+        for (const event of batch) {
+          await stream.writeSSE({
+            id: String(event.seq),
+            event: event.type,
+            data: JSON.stringify(event),
+          });
+          cursor = event.seq;
+          if (["run.completed", "run.failed", "run.cancelled", "run.interrupted"]
+            .includes(event.type)) return;
+        }
+        const current = supervisor.get(runId);
+        if (!current || ["completed", "failed", "cancelled", "interrupted"]
+          .includes(current.status)) return;
+        await events.waitForAppend(runId, cursor, c.req.raw.signal);
       }
     });
   });

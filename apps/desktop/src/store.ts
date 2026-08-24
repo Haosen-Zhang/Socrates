@@ -29,19 +29,32 @@ import {
   type ToolApprovalMode,
   type CollaborationRuntimeCapabilities,
   type TaskState,
+  executionEventToRuntimeEvent,
 } from "@socrates/core";
 import { relativeWorkspacePath } from "./workspace/workspacePath";
 import { resolveActiveWorkspace } from "./workspace/projectSelection";
 import { sidecarFetch, requireOk, streamSseEvents } from "./transport";
-import { decodeRuntimeEvent } from "./protocol";
+import { decodeExecutionEvent } from "./protocol";
 import { commitApprovalPolicyUpdate } from "./approvalPolicyUi";
 import { deriveRoomTaskConfig } from "./taskSurface";
 import { canCommitMultiTaskLoad } from "./multiTaskSelection";
 import {
+  type ActiveAgentRunObserver,
+  captureActiveAgentRun,
+  RetryableAgentRunProjectionError,
   agentRunStateAfterObservation,
+  observeDurableRun,
   pollAgentRunUntilTerminal,
+  stopAgentObservers,
   type AgentRunStatusView,
 } from "./agentRunTransport";
+import {
+  advanceActiveAgentRunCursor,
+  clearActiveAgentRunCursor,
+  readActiveAgentRunCursor,
+  selectActiveAgentRunCursor,
+  writeActiveAgentRunCursor,
+} from "./agentRunCursor";
 
 type Handshake = { port: number; token: string };
 export type ConnStatus = "connecting" | "connected" | "disconnected";
@@ -172,6 +185,7 @@ export type Store = {
   removeSession: (id: string, workspaceFiles?: "keep" | "delete") => Promise<void>;
   rewindSessionTo: (messageId: string) => Promise<void>;
   sendAgentPrompt: (prompt: string) => Promise<boolean>;
+  resumeAgentRun: (sessionId: string, runId: string, afterSeq?: number) => Promise<boolean>;
   decideAgentApproval: (requestId: string, decision: ApprovalDecision) => Promise<void>;
   cancelAgentRun: () => Promise<void>;
   usageSummaries: UsageSummaryView[];
@@ -290,10 +304,52 @@ function persistActiveWorkspaceId(workspaceId: string | null): void {
 
 
 export const useStore = create<Store>((set, get) => {
+  const activeAgentObservers = new Map<string, ActiveAgentRunObserver>();
+  const backgroundAgentRunMonitors = new Map<string, ActiveAgentRunObserver>();
   const hs = () => {
     const h = get().handshake;
     if (!h) throw new Error("sidecar 未连接");
     return h;
+  };
+  const cursorStorage = () => {
+    try {
+      return typeof window === "undefined" ? null : window.localStorage;
+    } catch {
+      return null;
+    }
+  };
+  const monitorAgentRunInBackground = (sessionId: string, runId: string) => {
+    const existing = backgroundAgentRunMonitors.get(runId);
+    if (existing) return existing.promise;
+    const controller = new AbortController();
+    const promise = (async () => {
+      const terminal = await pollAgentRunUntilTerminal(
+        async () => requireOk<AgentRunStatusView>(
+          await sidecarFetch(hs(), `/agent/runs/${runId}`, { signal: controller.signal }),
+        ),
+        () => !controller.signal.aborted && get().activeAgentRunId === runId,
+        (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+      );
+      if (!terminal || get().activeAgentRunId !== runId) return false;
+      const storage = cursorStorage();
+      if (storage) clearActiveAgentRunCursor(storage, runId);
+      const state = agentRunStateAfterObservation(runId, terminal, null);
+      set({
+        ...state,
+        pendingApprovals: [],
+        agentError: get().currentSessionId === sessionId ? state.agentError : null,
+      });
+      await Promise.allSettled([get().loadSessions()]);
+      return terminal.status === "completed";
+    })();
+    const monitor = { sessionId, controller, promise };
+    backgroundAgentRunMonitors.set(runId, monitor);
+    void promise.finally(() => {
+      if (backgroundAgentRunMonitors.get(runId) === monitor) {
+        backgroundAgentRunMonitors.delete(runId);
+      }
+    });
+    return promise;
   };
 
   /** POST 到当前房间的流式端点并消费 SSE，把事件映射进 store。
@@ -616,11 +672,56 @@ export const useStore = create<Store>((set, get) => {
       await get().selectAgentSession(sessionId);
     },
     selectAgentSession: async (id) => {
+      // Selecting a Session clears its transient projection. Detach the observer
+      // first so a later replay from seq 0 cannot race a background cursor.
+      const inMemoryRun = captureActiveAgentRun(
+        get().activeAgentRunId,
+        activeAgentObservers,
+        backgroundAgentRunMonitors,
+      );
+      await Promise.all([
+        stopAgentObservers(activeAgentObservers),
+        stopAgentObservers(backgroundAgentRunMonitors),
+      ]);
       const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${id}/messages`));
       set({ currentSessionId: id, currentRoomId: null, messages: [], sessionMessages, agentEvents: [], agentStreamText: "", pendingApprovals: [], agentError: null, multiTasks: [], currentMultiTask: null, multiError: null, usageSummaries: [] });
       await get().loadCurrentUsage();
       if (get().sessions.find((session) => session.id === id)?.collaboration.strategy === "team") {
         await get().loadMultiTasks();
+      }
+      const storage = cursorStorage();
+      const resumable = selectActiveAgentRunCursor(
+        storage ? readActiveAgentRunCursor(storage) : null,
+        inMemoryRun,
+      );
+      if (resumable) {
+        const response = await sidecarFetch(hs(), `/agent/runs/${resumable.runId}`).catch(() => null);
+        if (response?.status === 404) {
+          clearActiveAgentRunCursor(storage!, resumable.runId);
+          if (get().activeAgentRunId === resumable.runId) {
+            set({ agentRunning: false, activeAgentRunId: null, pendingApprovals: [] });
+          }
+          return;
+        }
+        const run = response
+          ? await requireOk<AgentRunStatusView>(response).catch(() => null)
+          : null;
+        const state = agentRunStateAfterObservation(resumable.runId, run, null);
+        set({
+          ...state,
+          agentError: resumable.sessionId === id ? state.agentError : null,
+        });
+        if (state.agentRunning) {
+          if (resumable.sessionId === id) {
+            // A fresh WebView has no live projection, so rebuild it from seq 0.
+            void get().resumeAgentRun(id, resumable.runId, 0);
+          } else {
+            // Keep global Run ownership accurate while another Session is viewed.
+            void monitorAgentRunInBackground(resumable.sessionId, resumable.runId);
+          }
+        } else {
+          clearActiveAgentRunCursor(storage!, resumable.runId);
+        }
       }
     },
     sendAgentPrompt: async (prompt) => {
@@ -650,8 +751,6 @@ export const useStore = create<Store>((set, get) => {
         agentError: null,
         sessionMessages: [...state.sessionMessages, optimisticMessage],
       }));
-      let runError: string | null = null;
-      let startedRunId: string | null = null;
       try {
         const started = await requireOk<{
           runId: string;
@@ -668,12 +767,28 @@ export const useStore = create<Store>((set, get) => {
             runtimeKind: "native_ai_sdk",
           }),
         }));
-        startedRunId = started.runId;
         set({ activeAgentRunId: started.runId });
-        const response = await sidecarFetch(hs(), `/agent/runs/${started.runId}/events`);
-        if (!response.ok || !response.body) await requireOk(response);
-
-        // Frame-buffered delta batching (rAF) — decoupled from transport
+        const storage = cursorStorage();
+        if (storage) {
+          writeActiveAgentRunCursor(storage, {
+            sessionId,
+            runId: started.runId,
+            afterSeq: 0,
+          });
+        }
+        return await get().resumeAgentRun(sessionId, started.runId, 0);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        set({ agentRunning: false, activeAgentRunId: null, agentError: message });
+        return false;
+      }
+    },
+    resumeAgentRun: async (sessionId, runId, afterSeq = 0) => {
+      const existing = activeAgentObservers.get(runId);
+      if (existing) return existing.promise;
+      const controller = new AbortController();
+      const observation = (async () => {
+        let runError: string | null = null;
         let pendingText = "";
         let rafHandle: number | null = null;
         const flushText = () => {
@@ -681,115 +796,125 @@ export const useStore = create<Store>((set, get) => {
           if (!pendingText) return;
           const chunk = pendingText;
           pendingText = "";
+          if (get().currentSessionId !== sessionId) return;
           set((state) => ({ agentStreamText: state.agentStreamText + chunk }));
-        };
-        const scheduleFlush = () => {
-          if (rafHandle === null) rafHandle = requestAnimationFrame(flushText);
         };
         const flushNow = () => {
           if (rafHandle !== null) { cancelAnimationFrame(rafHandle); rafHandle = null; }
           flushText();
         };
-
         try {
-          for await (const raw of streamSseEvents(response)) {
-            const event = decodeRuntimeEvent(raw);
-            if (!event) continue;
-
-            if (event.type === "text_delta") {
-              pendingText += event.text;
-              scheduleFlush();
-              continue;
-            }
-
-            flushNow();
-            set((state) => ({ agentEvents: [...state.agentEvents, event] }));
-
-            if (event.type === "extension" && event.name === "run_started" && event.payload && typeof event.payload === "object" && "runId" in event.payload) {
-              set({ activeAgentRunId: String((event.payload as { runId: unknown }).runId) });
-            }
-            if (event.type === "approval_required") {
-              const pendingApprovals = await requireOk<PendingApproval[]>(await sidecarFetch(hs(), "/agent/approvals"));
-              set({ pendingApprovals });
-            }
-            if (event.type === "status") {
-              if (event.status === "failed") {
-                runError = event.message ?? "agent_run_failed";
-                set({ agentError: runError });
-              } else if (event.status === "interrupted") {
-                runError = tr(get().lang, "task_cancelled_notice");
-                set({ agentError: runError });
+          const result = await observeDurableRun({
+            runId,
+            afterSeq,
+            open: (cursor) => (async function* () {
+              const response = await sidecarFetch(
+                hs(),
+                `/agent/runs/${runId}/events?afterSeq=${cursor}`,
+                { signal: controller.signal },
+              );
+              if (!response.ok || !response.body) await requireOk(response);
+              for await (const raw of streamSseEvents(response)) {
+                const event = decodeExecutionEvent(raw);
+                if (!event) throw new Error("invalid_execution_event");
+                yield event;
               }
-            }
-          }
+            })(),
+            shouldContinue: () => !controller.signal.aborted && get().activeAgentRunId === runId,
+            onEvent: async (executionEvent) => {
+              if (controller.signal.aborted || get().activeAgentRunId !== runId) return;
+              const event = executionEventToRuntimeEvent(executionEvent);
+              let pendingApprovals: PendingApproval[] | null = null;
+              if (event && get().currentSessionId === sessionId) {
+                if (event.type === "text_delta") {
+                  pendingText += event.text;
+                  if (rafHandle === null) rafHandle = requestAnimationFrame(flushText);
+                } else {
+                  if (event.type === "approval_required") {
+                    try {
+                      pendingApprovals = await requireOk<PendingApproval[]>(
+                        await sidecarFetch(hs(), "/agent/approvals", { signal: controller.signal }),
+                      );
+                    } catch (error) {
+                      if (controller.signal.aborted || get().activeAgentRunId !== runId) return;
+                      throw new RetryableAgentRunProjectionError(error);
+                    }
+                  }
+                  if (controller.signal.aborted || get().activeAgentRunId !== runId) return;
+                  flushNow();
+                  set((state) => ({
+                    agentEvents: [...state.agentEvents, event],
+                    ...(pendingApprovals ? { pendingApprovals } : {}),
+                  }));
+                  if (event.type === "status" && event.status === "failed") {
+                    runError = event.message ?? "agent_run_failed";
+                    set({ agentError: runError });
+                  } else if (event.type === "status" && event.status === "interrupted") {
+                    runError = tr(get().lang, "task_cancelled_notice");
+                    set({ agentError: runError });
+                  }
+                }
+              }
+              const storage = cursorStorage();
+              if (storage) {
+                advanceActiveAgentRunCursor(storage, {
+                  sessionId,
+                  runId,
+                  afterSeq: executionEvent.seq,
+                });
+              }
+            },
+            wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+          });
+          if (!result.terminal || get().activeAgentRunId !== runId) return false;
+        } catch (error) {
+          runError = error instanceof Error ? error.message : String(error);
+          if (get().activeAgentRunId === runId) set({ agentError: runError });
+          const run = await pollAgentRunUntilTerminal(
+            async () => requireOk<AgentRunStatusView>(
+              await sidecarFetch(hs(), `/agent/runs/${runId}`),
+            ),
+            () => get().activeAgentRunId === runId,
+            (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+          );
+          if (!run || get().activeAgentRunId !== runId) return false;
+          if (run.status === "failed") runError = run.error ?? runError;
         } finally {
           flushNow();
         }
-      } catch (error) {
-        runError = error instanceof Error ? error.message : String(error);
-        set({ agentError: runError });
-      } finally {
-        let observationState = {
-          agentRunning: false,
-          activeAgentRunId: null as string | null,
-          agentError: runError,
-        };
-        if (startedRunId) {
-          try {
-            const run = await requireOk<AgentRunStatusView>(
-              await sidecarFetch(hs(), `/agent/runs/${startedRunId}`),
-            );
-            observationState = agentRunStateAfterObservation(startedRunId, run, runError);
-          } catch (statusError) {
-            observationState = agentRunStateAfterObservation(
-              startedRunId,
-              null,
-              runError ?? (statusError instanceof Error ? statusError.message : String(statusError)),
-            );
+
+        const storage = cursorStorage();
+        if (storage) clearActiveAgentRunCursor(storage, runId);
+        if (get().activeAgentRunId === runId) {
+          set({
+            agentRunning: false,
+            activeAgentRunId: null,
+            pendingApprovals: [],
+            agentError: runError,
+          });
+          if (!runError) {
+            set({ draftAttachments: [], draftWorkspaceRefs: [], workspacePathResults: [] });
           }
         }
-        runError = observationState.agentError;
-        try {
-          const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${sessionId}/messages`));
-          set({ sessionMessages });
-        } catch (refreshError) {
-          set({ agentError: refreshError instanceof Error ? refreshError.message : String(refreshError) });
-        }
-        if (!observationState.agentRunning && !observationState.agentError) {
-          set({ draftAttachments: [], draftWorkspaceRefs: [], workspacePathResults: [] });
-        }
-        set(observationState);
-        await Promise.allSettled([get().loadCurrentUsage(), get().loadSessions()]);
-        if (startedRunId && observationState.agentRunning) {
-          const terminal = await pollAgentRunUntilTerminal(
-            async () => requireOk<AgentRunStatusView>(
-              await sidecarFetch(hs(), `/agent/runs/${startedRunId}`),
-            ),
-            () => get().activeAgentRunId === startedRunId,
-            (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+        const refreshMessages = async () => {
+          const sessionMessages = await requireOk<SessionMessage[]>(
+            await sidecarFetch(hs(), `/sessions/${sessionId}/messages`),
           );
-          if (terminal && get().activeAgentRunId === startedRunId) {
-            const terminalState = agentRunStateAfterObservation(startedRunId, terminal, null);
-            runError = terminalState.agentError;
-            set(terminalState);
-            if (!terminalState.agentError) {
-              set({ draftAttachments: [], draftWorkspaceRefs: [], workspacePathResults: [] });
-            }
-            const refreshMessages = async () => {
-              const sessionMessages = await requireOk<SessionMessage[]>(
-                await sidecarFetch(hs(), `/sessions/${sessionId}/messages`),
-              );
-              if (get().currentSessionId === sessionId) set({ sessionMessages });
-            };
-            await Promise.allSettled([
-              refreshMessages(),
-              get().loadCurrentUsage(),
-              get().loadSessions(),
-            ]);
-          }
-        }
-      }
-      return runError === null;
+          if (get().currentSessionId === sessionId) set({ sessionMessages });
+        };
+        await Promise.allSettled([
+          refreshMessages(),
+          get().loadCurrentUsage(),
+          get().loadSessions(),
+        ]);
+        return runError === null;
+      })();
+      const observer = { sessionId, controller, promise: observation };
+      activeAgentObservers.set(runId, observer);
+      void observation.finally(() => {
+        if (activeAgentObservers.get(runId) === observer) activeAgentObservers.delete(runId);
+      });
+      return observation;
     },
     decideAgentApproval: async (requestId, decision) => {
       await requireOk(await sidecarFetch(hs(), `/agent/approvals/${requestId}/decision`, {
@@ -802,6 +927,8 @@ export const useStore = create<Store>((set, get) => {
       const runId = get().activeAgentRunId;
       if (!runId) return;
       await requireOk(await sidecarFetch(hs(), `/agent/runs/${runId}/cancel`, { method: "POST" }));
+      const storage = cursorStorage();
+      if (storage) clearActiveAgentRunCursor(storage, runId);
       set({
         agentRunning: false,
         activeAgentRunId: null,

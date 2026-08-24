@@ -1,7 +1,7 @@
 /**
  * Agent SSE Transport — Socrates Desktop
  *
- * 职责：HTTP/SSE 连接、ReadableStream 消费、重连（Phase 1 最小实现）。
+ * 职责：HTTP/SSE 连接与 ReadableStream 消费。
  * 不包含：协议解析、业务状态迁移、UI 状态。
  */
 import { parseSseChunk } from "@socrates/core";
@@ -23,13 +23,8 @@ export async function requireOk<T>(res: Response): Promise<T> {
   return body as T;
 }
 
-/** SSE stream consumer — yields parsed JSON events.
- *  When lastEventId is provided, events are skipped until one with a matching
- *  event id field ("id") is found; subsequent events are yielded normally. */
-export async function* streamSseEvents(
-  response: Response,
-  lastEventId?: string,
-): AsyncIterable<Record<string, unknown>> {
+/** SSE stream consumer — yields parsed JSON events, including their `_sseId`. */
+export async function* streamSseEvents(response: Response): AsyncIterable<Record<string, unknown>> {
   if (!response.body) {
     await requireOk(response);
     return;
@@ -38,8 +33,6 @@ export async function* streamSseEvents(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let resumed = lastEventId === undefined || lastEventId === "";
-
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -48,15 +41,6 @@ export async function* streamSseEvents(
       const { events, rest } = parseSseChunk(buffer);
       buffer = rest;
       for (const e of events) {
-        if (!resumed) {
-          // Check SSE "id:" field — Hono SSE may include it as __sse_id or similar
-          const raw = e as Record<string, unknown>;
-          const eventId = String(raw._sseId ?? "");
-          if (eventId === lastEventId) {
-            resumed = true;
-          }
-          continue;
-        }
         yield e as unknown as Record<string, unknown>;
       }
     }

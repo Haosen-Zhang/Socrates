@@ -187,7 +187,7 @@ app.route(
   "/sessions",
   sessionRoutes(sessions, events, usage, workspaces, () => config.get().collaborationDefaults),
 );
-app.route("/agent", agentRunRoutes(runSupervisor, agentRuns, approvals));
+app.route("/agent", agentRunRoutes(runSupervisor, agentRuns, approvals, executionEvents));
 app.route("/content", contentRoutes(db, workspaces, attachments));
 app.route("/mcp", mcpRoutes(mcpStore, mcp));
 app.route("/multi", multiAgentRoutes(multiTasks, multiCoordinator, executionRunner, approvals));

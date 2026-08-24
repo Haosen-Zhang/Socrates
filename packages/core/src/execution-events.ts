@@ -1,4 +1,5 @@
 import type { RuntimeEvent } from "./runtime";
+import type { ToolRisk } from "./tools";
 
 export const EXECUTION_EVENT_SCHEMA_VERSION = 1 as const;
 
@@ -77,7 +78,15 @@ export interface ExecutionEventPayloadMap {
     droppedThroughSequence: number | null;
     overflow: boolean;
   };
-  "approval.requested": { requestId: string; subjectId: string };
+  "approval.requested": {
+    requestId: string;
+    subjectId: string;
+    callId?: string;
+    risk?: ToolRisk;
+    kind?: string;
+    policyVersion?: number;
+    freshHumanRequired?: boolean;
+  };
   "approval.decided": { requestId: string; decision: string };
 }
 
@@ -245,4 +254,72 @@ export function executionEventProjectsTo(
   surface: ExecutionProjectionSurface,
 ): boolean {
   return surface !== "model_history";
+}
+
+export function isTerminalExecutionEvent(event: ExecutionEvent): boolean {
+  return event.type === "run.completed"
+    || event.type === "run.failed"
+    || event.type === "run.cancelled"
+    || event.type === "run.interrupted";
+}
+
+/** Project durable execution facts into the existing ephemeral UI contract. */
+export function executionEventToRuntimeEvent(event: ExecutionEvent): RuntimeEvent | null {
+  if (event.type === "runtime.event") {
+    const runtimeEvent = (event as ExecutionEvent<"runtime.event">).payload.event;
+    // Canonical Run and Approval events own identities and lifecycle state.
+    if (runtimeEvent.type === "approval_required") return null;
+    if (runtimeEvent.type === "status" && (
+      runtimeEvent.status === "running"
+      || runtimeEvent.status === "completed"
+      || runtimeEvent.status === "failed"
+      || runtimeEvent.status === "interrupted"
+      || runtimeEvent.status === "closed"
+    )) return null;
+    return runtimeEvent;
+  }
+  if (event.type === "run.created") {
+    const created = event as ExecutionEvent<"run.created">;
+    return {
+      type: "extension",
+      name: "run_started",
+      payload: {
+        runId: event.runId,
+        turnId: event.coordinates.turnId,
+        threadId: created.payload.threadId,
+        replayed: false,
+      },
+    };
+  }
+  if (event.type === "run.started") return { type: "status", status: "running" };
+  if (event.type === "run.completed") return { type: "status", status: "completed" };
+  if (event.type === "run.failed") {
+    const failed = event as ExecutionEvent<"run.failed">;
+    return { type: "status", status: "failed", message: failed.payload.error };
+  }
+  if (event.type === "run.cancelled" || event.type === "run.interrupted") {
+    const stopped = event as ExecutionEvent<"run.cancelled" | "run.interrupted">;
+    return { type: "status", status: "interrupted", message: stopped.payload.reason };
+  }
+  if (event.type === "context.truncated") {
+    return {
+      type: "extension",
+      name: event.type,
+      payload: (event as ExecutionEvent<"context.truncated">).payload,
+    };
+  }
+  if (event.type === "approval.requested") {
+    const requested = (event as ExecutionEvent<"approval.requested">).payload;
+    if (!requested.callId) return null;
+    return {
+      type: "approval_required",
+      requestId: requested.requestId,
+      callId: requested.callId,
+      risk: requested.risk,
+      kind: requested.kind,
+      policyVersion: requested.policyVersion,
+      freshHumanRequired: requested.freshHumanRequired,
+    };
+  }
+  return null;
 }

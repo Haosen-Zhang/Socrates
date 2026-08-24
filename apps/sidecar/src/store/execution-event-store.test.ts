@@ -118,4 +118,31 @@ describe("ExecutionEventStore", () => {
       payload: {},
     })).toThrow("execution_step_requires_turn");
   });
+
+  it("wakes a durable cursor waiter without losing an append between read and wait", async () => {
+    const { db, store } = setup();
+    insertRun(db, "run-1");
+    store.append({
+      eventId: "run-1-created",
+      sessionId: "session-1",
+      runId: "run-1",
+      agentId: "agent-1",
+      type: "run.created",
+      coordinates: { turnId: "turn-1" },
+      payload: { threadId: "thread-1", attemptNo: 1 },
+    });
+    const waiting = store.waitForAppend("run-1", 1);
+    store.append({
+      eventId: "run-1-completed",
+      sessionId: "session-1",
+      runId: "run-1",
+      agentId: "agent-1",
+      type: "run.completed",
+      coordinates: { turnId: "turn-1" },
+      payload: {},
+    });
+    await waiting;
+    await store.waitForAppend("run-1", 1);
+    expect(store.listAfter("run-1", 1).map((event) => event.seq)).toEqual([2]);
+  });
 });
