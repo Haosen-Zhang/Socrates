@@ -8,6 +8,8 @@ import type {
   RuntimeEvent,
   WorkspaceRecord,
   ContextWindowResolution,
+  ExecutionEvent,
+  ToolRisk,
 } from "@socrates/core";
 import type {
   ApprovalManager,
@@ -233,8 +235,14 @@ export class SingleAgentRunner {
       session_id: string;
       turn_id: string | null;
       agent_id: string | null;
+      kind: string;
+      policy_version: number;
+      risk: ToolRisk;
+      fresh_human_required: number;
     }, []>(`
-      SELECT approval_requests.id, approval_requests.subject_id,
+      SELECT approval_requests.id, approval_requests.subject_id, approval_requests.kind,
+             approval_requests.policy_version, approval_requests.risk,
+             approval_requests.fresh_human_required,
              approval_requests.created_at, agent_runs.id AS run_id,
              agent_runs.session_id, agent_runs.turn_id,
              COALESCE(
@@ -260,6 +268,17 @@ export class SingleAgentRunner {
     `).all();
     for (const request of requests) {
       if (!request.agent_id) continue;
+      const runtimeRequestId = request.subject_id.startsWith(`${request.run_id}:`)
+        ? request.subject_id.slice(request.run_id.length + 1)
+        : null;
+      const runtimeApproval = this.events.listAfter(request.run_id, 0).find((event) => {
+        if (event.type !== "runtime.event") return false;
+        const value = (event as ExecutionEvent<"runtime.event">).payload.event;
+        return value.type === "approval_required"
+          && value.requestId === runtimeRequestId;
+      }) as ExecutionEvent<"runtime.event"> | undefined;
+      const runtimeEvent = runtimeApproval?.payload.event;
+      const callId = runtimeEvent?.type === "approval_required" ? runtimeEvent.callId : undefined;
       this.events.append({
         eventId: `approval:${request.id}`,
         sessionId: request.session_id,
@@ -267,7 +286,15 @@ export class SingleAgentRunner {
         agentId: request.agent_id,
         type: "approval.requested",
         coordinates: request.turn_id ? { turnId: request.turn_id } : {},
-        payload: { requestId: request.id, subjectId: request.subject_id },
+        payload: {
+          requestId: request.id,
+          subjectId: request.subject_id,
+          ...(callId ? { callId } : {}),
+          kind: request.kind,
+          policyVersion: request.policy_version,
+          risk: request.risk,
+          freshHumanRequired: request.fresh_human_required === 1,
+        },
         occurredAt: request.created_at,
       });
     }
@@ -880,7 +907,15 @@ export class SingleAgentRunner {
                 agentId: agent.agent_id,
                 type: "approval.requested",
                 coordinates: { turnId: prepared.turnId },
-                payload: { requestId: approval.id, subjectId: approval.subjectId },
+                payload: {
+                  requestId: approval.id,
+                  subjectId: approval.subjectId,
+                  callId: event.callId,
+                  kind: approval.kind,
+                  policyVersion: approval.policyVersion,
+                  risk: approval.risk,
+                  freshHumanRequired: approval.freshHumanRequired,
+                },
               });
             } catch (error) {
               approvalJournalFailed = true;

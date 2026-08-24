@@ -26,6 +26,11 @@ type ExecutionEventRow = {
   occurred_at: string;
 };
 
+type CursorWaiter = {
+  after: number;
+  resolve(): void;
+};
+
 function coordinatesOf(row: ExecutionEventRow): ExecutionCoordinates {
   return {
     ...(row.turn_id ? { turnId: row.turn_id } : {}),
@@ -86,6 +91,8 @@ function sameEvent<T extends ExecutionEventType>(
 }
 
 export class ExecutionEventStore {
+  private readonly waiters = new Map<string, Set<CursorWaiter>>();
+
   constructor(private readonly db: Database) {}
 
   append<T extends ExecutionEventType>(
@@ -162,6 +169,7 @@ export class ExecutionEventStore {
         .run(event.seq, event.runId);
       project?.(event);
       this.db.exec("COMMIT");
+      this.notifyWaiters(event.runId, event.seq);
       return event;
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -169,6 +177,7 @@ export class ExecutionEventStore {
       if (committed) {
         const event = toEvent(committed);
         if (!sameEvent(event, input)) throw new Error("execution_event_id_conflict");
+        this.notifyWaiters(event.runId, event.seq);
         return event as ExecutionEvent<T>;
       }
       throw error;
@@ -184,6 +193,54 @@ export class ExecutionEventStore {
       WHERE run_id = ? AND schema_version = 1 AND seq > ?
       ORDER BY seq LIMIT ?
     `).all(runId, after, boundedLimit).map(toEvent);
+  }
+
+  latestSeq(runId: string): number {
+    const row = this.db.query<{ seq: number | null }, [string]>(`
+      SELECT MAX(seq) AS seq FROM runtime_events
+      WHERE run_id = ? AND schema_version = 1
+    `).get(runId);
+    return row?.seq ?? 0;
+  }
+
+  hasLegacyEvents(runId: string): boolean {
+    return Boolean(this.db.query<{ found: number }, [string]>(`
+      SELECT 1 AS found FROM runtime_events
+      WHERE run_id = ? AND schema_version = 0 LIMIT 1
+    `).get(runId));
+  }
+
+  waitForAppend(runId: string, after: number, signal?: AbortSignal): Promise<void> {
+    if (!Number.isSafeInteger(after) || after < 0) {
+      return Promise.reject(new Error("invalid_execution_event_cursor"));
+    }
+    if (signal?.aborted || this.latestSeq(runId) > after) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const waiters = this.waiters.get(runId) ?? new Set<CursorWaiter>();
+      this.waiters.set(runId, waiters);
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        waiters.delete(waiter);
+        if (waiters.size === 0) this.waiters.delete(runId);
+        signal?.removeEventListener("abort", finish);
+        resolve();
+      };
+      const waiter: CursorWaiter = { after, resolve: finish };
+      waiters.add(waiter);
+      signal?.addEventListener("abort", finish, { once: true });
+      // Close the read -> waiter registration race without polling.
+      if (this.latestSeq(runId) > after) finish();
+    });
+  }
+
+  private notifyWaiters(runId: string, seq: number): void {
+    const waiters = this.waiters.get(runId);
+    if (!waiters) return;
+    for (const waiter of [...waiters]) {
+      if (seq > waiter.after) waiter.resolve();
+    }
   }
 
   private rowById(eventId: string): ExecutionEventRow | null {

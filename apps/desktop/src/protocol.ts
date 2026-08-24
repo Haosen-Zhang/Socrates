@@ -6,7 +6,13 @@
  *
  * Phase 1 最小实现：type 字段检查 + 已知事件类型白名单。
  */
-import type { RuntimeEvent } from "@socrates/core";
+import {
+  EXECUTION_EVENT_SCHEMA_VERSION,
+  isExecutionEventType,
+  validateExecutionCoordinates,
+  type ExecutionEvent,
+  type RuntimeEvent,
+} from "@socrates/core";
 
 const KNOWN_EVENT_TYPES = new Set([
   "text_delta",
@@ -37,6 +43,26 @@ export type DecodedRuntimeEvent = RuntimeEvent & {
   /** 原始 payload（保留未识别字段） */
   _raw?: Record<string, unknown>;
 };
+
+export function decodeExecutionEvent(raw: Record<string, unknown>): ExecutionEvent | null {
+  if (raw.schemaVersion !== EXECUTION_EVENT_SCHEMA_VERSION) return null;
+  if (typeof raw.eventId !== "string" || !raw.eventId
+    || typeof raw.sessionId !== "string" || !raw.sessionId
+    || typeof raw.runId !== "string" || !raw.runId
+    || typeof raw.agentId !== "string" || !raw.agentId
+    || typeof raw.occurredAt !== "string" || !raw.occurredAt
+    || typeof raw.type !== "string" || !isExecutionEventType(raw.type)
+    || !Number.isSafeInteger(raw.seq) || (raw.seq as number) < 1
+    || String(raw._sseId ?? "") !== String(raw.seq)
+    || !raw.coordinates || typeof raw.coordinates !== "object"
+    || Array.isArray(raw.coordinates)
+    || !("payload" in raw)) return null;
+  if (validateExecutionCoordinates(
+    raw.type,
+    raw.coordinates as ExecutionEvent["coordinates"],
+  )[0]) return null;
+  return raw as unknown as ExecutionEvent;
+}
 
 /**
  * 验证并解码一个来自 SSE 的事件对象。

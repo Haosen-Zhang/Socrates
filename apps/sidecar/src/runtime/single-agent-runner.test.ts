@@ -5,7 +5,7 @@ import type {
   RuntimeConversationMessage,
   RuntimeEvent,
 } from "@socrates/core";
-import { UNKNOWN_MODEL_CAPABILITIES } from "@socrates/core";
+import { executionEventToRuntimeEvent, UNKNOWN_MODEL_CAPABILITIES } from "@socrates/core";
 import { createHash } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { openDb } from "../db";
@@ -110,8 +110,11 @@ class ThrowingInterruptRuntime implements AgentRuntime {
   readonly kind = "throwing-interrupt";
   readonly capabilities = { ...UNKNOWN_MODEL_CAPABILITIES, textInput: true as const };
   interruptCalls = 0;
+  private markStarted!: () => void;
+  readonly started = new Promise<void>((resolve) => { this.markStarted = resolve; });
   async open() {}
   async *start(input: { signal?: AbortSignal } = {}): AsyncIterable<RuntimeEvent> {
+    this.markStarted();
     yield { type: "status", status: "running" };
     await new Promise<void>((_resolve, reject) => {
       input.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
@@ -747,6 +750,19 @@ describe("SingleAgentRunner", () => {
     await approvalReady;
     const pending = approvals.recoverPending().pending[0]!;
     expect(pending.inputHash).toHaveLength(64);
+    const replay = new ExecutionEventStore(db).listAfter(pending.taskId, 0);
+    const replayedApprovals = replay
+      .map(executionEventToRuntimeEvent)
+      .filter((event) => event?.type === "approval_required");
+    expect(replayedApprovals).toEqual([{
+      type: "approval_required",
+      requestId: pending.id,
+      callId: "call",
+      kind: "command_execution",
+      policyVersion: 1,
+      risk: "medium",
+      freshHumanRequired: false,
+    }]);
     await runner.decide(pending.id, { clientDecisionKey: "decision", decision: "allow_once" });
     const result = await runPromise;
     expect(result.status).toBe("completed");
@@ -1005,16 +1021,15 @@ describe("SingleAgentRunner", () => {
       runtimeKind: "throwing-interrupt",
       prompt: "wait",
     });
-    let running!: () => void;
-    const runtimeRunning = new Promise<void>((resolve) => { running = resolve; });
-    const observation = supervisor.observe(started.runId, (event) => {
-      if (event.type === "status" && event.status === "running") running();
-    });
-    await runtimeRunning;
+    await runtime.started;
 
     await supervisor.cancel(started.runId);
 
-    expect((await observation.completion).status).toBe("cancelled");
+    let cursor = 0;
+    while (!events.listAfter(started.runId, cursor).some((event) => event.type === "run.cancelled")) {
+      cursor = events.latestSeq(started.runId);
+      await events.waitForAppend(started.runId, cursor);
+    }
     expect(runtime.interruptCalls).toBe(1);
     const eventTypes = events.listAfter(started.runId, 0).map((event) => event.type);
     expect(eventTypes.indexOf("run.cancel_requested")).toBeGreaterThan(

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   executionEventProjectsTo,
+  executionEventToRuntimeEvent,
   initialExecutionProjection,
   reduceExecutionProjection,
   validateExecutionCoordinates,
@@ -131,5 +132,50 @@ describe("execution event contracts", () => {
     expect(executionEventProjectsTo(runtimeEvent, "ui")).toBe(true);
     expect(executionEventProjectsTo(runtimeEvent, "audit")).toBe(true);
     expect(executionEventProjectsTo(runtimeEvent, "model_history")).toBe(false);
+  });
+
+  it("projects durable execution facts into the existing Runtime UI contract", () => {
+    expect(executionEventToRuntimeEvent({
+      ...event(1, "runtime.event"),
+      payload: {
+        runtimeSessionId: "runtime-1",
+        event: { type: "text_delta", text: "hello" },
+      },
+    })).toEqual({ type: "text_delta", text: "hello" });
+    expect(executionEventToRuntimeEvent({
+      ...event(2, "runtime.event"),
+      payload: {
+        runtimeSessionId: "runtime-1",
+        event: { type: "status", status: "completed" },
+      },
+    })).toBeNull();
+    expect(executionEventToRuntimeEvent({
+      ...event(3, "runtime.event"),
+      payload: {
+        runtimeSessionId: "runtime-1",
+        event: { type: "approval_required", requestId: "runtime-request", callId: "call-1" },
+      },
+    })).toBeNull();
+    expect(executionEventToRuntimeEvent({
+      ...event(4, "approval.requested"),
+      payload: {
+        requestId: "durable-request",
+        subjectId: "subject-1",
+        callId: "call-1",
+        risk: "high",
+      },
+    })).toEqual({
+      type: "approval_required",
+      requestId: "durable-request",
+      callId: "call-1",
+      risk: "high",
+      kind: undefined,
+      policyVersion: undefined,
+      freshHumanRequired: undefined,
+    });
+    expect(executionEventToRuntimeEvent({
+      ...event(5, "run.failed"),
+      payload: { error: "provider_failed" },
+    })).toEqual({ type: "status", status: "failed", message: "provider_failed" });
   });
 });

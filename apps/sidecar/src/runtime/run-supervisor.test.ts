@@ -10,8 +10,9 @@ function deferred<T>() {
 }
 
 describe("RunSupervisor", () => {
-  it("keeps execution alive after its observer disconnects", async () => {
+  it("keeps execution alive after the start request returns", async () => {
     const finish = deferred<void>();
+    const completed = deferred<void>();
     let ownedSignal: AbortSignal | undefined;
     const runner = {
       recoverInterrupted: () => ({ runs: 0, approvals: 0 }),
@@ -23,6 +24,7 @@ describe("RunSupervisor", () => {
         } });
         await finish.promise;
         await emit({ type: "text_delta", text: "done" });
+        completed.resolve();
         return {
           id: "run-1", sessionId: input.sessionId, runtimeSessionId: "runtime-1",
           turnId: "turn-1", threadId: "thread-1", status: "completed",
@@ -34,12 +36,9 @@ describe("RunSupervisor", () => {
     const started = await supervisor.start({
       sessionId: "session-1", runtimeKind: "native_ai_sdk", prompt: "work",
     });
-    const received: RuntimeEvent[] = [];
-    const observation = supervisor.observe(started.runId, (event) => { received.push(event); });
-    observation.detach();
-
     finish.resolve();
-    expect((await observation.completion).status).toBe("completed");
+    await completed.promise;
+    await Promise.resolve();
     expect(ownedSignal?.aborted).toBe(false);
     expect(supervisor.get(started.runId)?.status).toBe("completed");
   });
@@ -77,69 +76,4 @@ describe("RunSupervisor", () => {
     expect(cancelCalls).toEqual([started.runId]);
   });
 
-  it("bounds the handoff buffer when a caller never attaches", async () => {
-    const completed = deferred<void>();
-    const runner = {
-      recoverInterrupted: () => ({ runs: 0, approvals: 0 }),
-      cancel: async () => {},
-      run: async (input: AgentRunInput, emit: (event: RuntimeEvent) => void | Promise<void>) => {
-        await emit({ type: "extension", name: "run_started", payload: {
-          runId: "run-buffer", turnId: "turn-buffer", threadId: "thread-buffer", replayed: false,
-        } });
-        for (let index = 0; index < 2_000; index += 1) {
-          await emit({ type: "text_delta", text: String(index) });
-        }
-        completed.resolve();
-        return {
-          id: "run-buffer", sessionId: input.sessionId, runtimeSessionId: "runtime-buffer",
-          turnId: "turn-buffer", threadId: "thread-buffer", status: "completed",
-        } satisfies AgentRunResult;
-      },
-    };
-    const supervisor = new RunSupervisor(runner);
-    const started = await supervisor.start({
-      sessionId: "session-1", runtimeKind: "native_ai_sdk", prompt: "work",
-    });
-    await completed.promise;
-    const received: RuntimeEvent[] = [];
-    const observation = supervisor.observe(started.runId, (event) => { received.push(event); });
-    await observation.completion;
-    await observation.drained();
-
-    expect(received.length).toBeLessThanOrEqual(256);
-    expect(received.some((event) => event.type === "extension" && event.name === "observer_gap"))
-      .toBe(true);
-  });
-
-  it("drops a stalled observer after a bounded queue without blocking the Run", async () => {
-    const publish = deferred<void>();
-    const never = new Promise<void>(() => {});
-    const runner = {
-      recoverInterrupted: () => ({ runs: 0, approvals: 0 }),
-      cancel: async () => {},
-      run: async (input: AgentRunInput, emit: (event: RuntimeEvent) => void | Promise<void>) => {
-        await emit({ type: "extension", name: "run_started", payload: {
-          runId: "run-slow", turnId: "turn-slow", threadId: "thread-slow", replayed: false,
-        } });
-        await publish.promise;
-        for (let index = 0; index < 2_000; index += 1) {
-          await emit({ type: "text_delta", text: String(index) });
-        }
-        return {
-          id: "run-slow", sessionId: input.sessionId, runtimeSessionId: "runtime-slow",
-          turnId: "turn-slow", threadId: "thread-slow", status: "completed",
-        } satisfies AgentRunResult;
-      },
-    };
-    const supervisor = new RunSupervisor(runner);
-    const started = await supervisor.start({
-      sessionId: "session-1", runtimeKind: "native_ai_sdk", prompt: "work",
-    });
-    const observation = supervisor.observe(started.runId, () => never);
-    publish.resolve();
-
-    expect((await observation.completion).status).toBe("completed");
-    await observation.closed;
-    expect(observation.isClosed()).toBe(true);
-  });
 });

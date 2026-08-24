@@ -378,7 +378,7 @@ sequenceDiagram
   U->>S: POST prompt + clientTurnKey
   S->>R: 后台 Run + Run-owned AbortSignal
   S-->>U: 202 runId / turnId / threadId
-  U->>S: GET runId/events（观察者）
+  U->>S: GET runId/events?afterSeq=N（持久观察者）
   R->>M: 原子创建/重试 Turn + 保存 user
   R->>M: 按稳定 threadId 重载最近历史
   M-->>R: 严格 sequence 的 typed messages
@@ -391,10 +391,10 @@ sequenceDiagram
 ```
 
 `RunSupervisor` 是单 Agent 活跃 Run 的进程内所有者：保存执行 Promise 和每个
-Run 独立的 `AbortController`。SSE/WebView 断开只移除观察者，不能取消执行；
+Run 独立的 `AbortController`。SSE/WebView 断开不能取消执行；
 `POST /agent/runs/:id/cancel` 才执行显式取消。SQLite `agent_runs` 与
-`runtime_events` 仍提供可恢复的状态和事实。当前 SSE 是实时投影，持久游标重放与
-replay/live 边界将在 Phase 1C 完成。
+`runtime_events` 提供可恢复的状态和事实。事件观察端点按持久 `seq` 先重放、再等待
+新提交，SSE `id` 与 `seq` 相同；Desktop 从最后确认游标重连并拒绝缺号或身份错配。
 
 - 每个 Room 有稳定默认 Thread；新 Thread/不同 Room 的历史严格隔离。
 - `sessions.primary_agent_id` 是明确落库的默认执行 Agent，不从成员顺序动态推导。
