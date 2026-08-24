@@ -66,6 +66,30 @@ export interface AgentRunResult {
   error?: string;
 }
 
+export interface AgentRunInput {
+  sessionId: string;
+  runtimeKind: string;
+  prompt: string;
+  threadId?: string;
+  clientTurnKey?: string;
+  attachmentIds?: string[];
+  workspaceRefIds?: string[];
+  signal?: AbortSignal;
+  runtimeOptions?: Record<string, unknown>;
+}
+
+export interface AgentRunView {
+  id: string;
+  sessionId: string;
+  threadId: string | null;
+  turnId: string | null;
+  runtimeSessionId: string | null;
+  status: string;
+  error: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
 export class SingleAgentRunner {
   private readonly active = new Map<string, ActiveRun>();
   private readonly usage: UsageCollector;
@@ -457,17 +481,7 @@ export class SingleAgentRunner {
   }
 
   async run(
-    input: {
-      sessionId: string;
-      runtimeKind: string;
-      prompt: string;
-      threadId?: string;
-      clientTurnKey?: string;
-      attachmentIds?: string[];
-      workspaceRefIds?: string[];
-      signal?: AbortSignal;
-      runtimeOptions?: Record<string, unknown>;
-    },
+    input: AgentRunInput,
     emit: (event: RuntimeEvent) => void | Promise<void> = () => {},
   ): Promise<AgentRunResult> {
     const session = this.db.query<SessionRow, [string]>(
@@ -980,6 +994,35 @@ export class SingleAgentRunner {
     }
   }
 
+  getRun(runId: string): AgentRunView | null {
+    const row = this.db.query<{
+      id: string;
+      session_id: string;
+      thread_id: string | null;
+      turn_id: string | null;
+      runtime_session_id: string | null;
+      status: string;
+      error: string | null;
+      created_at: string;
+      completed_at: string | null;
+    }, [string]>(`
+      SELECT id, session_id, thread_id, turn_id, runtime_session_id, status,
+             error, created_at, completed_at
+      FROM agent_runs WHERE id = ?
+    `).get(runId);
+    return row ? {
+      id: row.id,
+      sessionId: row.session_id,
+      threadId: row.thread_id,
+      turnId: row.turn_id,
+      runtimeSessionId: row.runtime_session_id,
+      status: row.status,
+      error: row.error,
+      createdAt: row.created_at,
+      completedAt: row.completed_at,
+    } : null;
+  }
+
   async decide(requestId: string, input: { clientDecisionKey: string; decision: ApprovalDecision; reason?: string }): Promise<DurableApprovalDecision> {
     const request = this.approvals.getRequest(requestId);
     if (!request) throw new Error("approval_request_not_found");
@@ -1058,18 +1101,37 @@ export class SingleAgentRunner {
 
   async cancel(runId: string): Promise<void> {
     const active = this.active.get(runId);
-    if (!active) throw new Error("agent_run_not_active");
-    if (active.journalBlocked) throw new Error("execution_journal_blocked");
+    if (active?.journalBlocked) throw new Error("execution_journal_blocked");
+    const prepared = active ? null : this.db.query<{
+      session_id: string;
+      turn_id: string | null;
+      agent_id: string | null;
+      status: string;
+    }, [string]>(`
+      SELECT agent_runs.session_id, agent_runs.turn_id, agent_runs.status,
+             COALESCE(conversation_turns.agent_id, sessions.primary_agent_id) AS agent_id
+      FROM agent_runs
+      JOIN sessions ON sessions.id = agent_runs.session_id
+      LEFT JOIN conversation_turns ON conversation_turns.id = agent_runs.turn_id
+      WHERE agent_runs.id = ?
+    `).get(runId);
+    if (!active && (!prepared || prepared.status !== "preparing" || !prepared.agent_id)) {
+      throw new Error("agent_run_not_active");
+    }
     this.events.append({
       eventId: `run-cancel-requested:${runId}`,
-      sessionId: active.sessionId,
+      sessionId: active?.sessionId ?? prepared!.session_id,
       runId,
-      agentId: active.agentId,
+      agentId: active?.agentId ?? prepared!.agent_id!,
       type: "run.cancel_requested",
-      coordinates: { turnId: active.turnId },
+      coordinates: { turnId: active?.turnId ?? prepared!.turn_id! },
       payload: { reason: "user_cancelled" },
     });
+    if (!active) return;
     active.cancelled = true;
-    await this.runtimes.interrupt(active.runtimeSessionId);
+    // The supervisor-owned AbortSignal is the final cancellation authority.
+    // Runtime interrupt is an eager best-effort wake-up and must not prevent
+    // that signal from being aborted after intent is durably journaled.
+    await this.runtimes.interrupt(active.runtimeSessionId).catch(() => {});
   }
 }

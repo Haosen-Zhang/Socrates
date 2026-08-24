@@ -178,7 +178,7 @@ NavigationTarget =
 | `/rooms` | 群聊房间（Chat，legacy 表） |
 | `/workspaces` | 工作区（本地目录）注册/归档 |
 | `/sessions` | 会话（cowork 房间：single/multi agent）+ 协作设置 |
-| `/agent` | 单 Agent 运行（SSE 流式） |
+| `/agent` | 单 Agent Run 启动、状态、显式取消与独立 SSE 观察 |
 | `/multi` | 多 Agent 任务：讨论/计划/审批/执行（SSE 流式） |
 | `/content` | 附件/工作区文件内容 |
 | `/mcp` | MCP 服务器管理 + 工具 |
@@ -371,10 +371,14 @@ graph TB
 ```mermaid
 sequenceDiagram
   participant U as Desktop
+  participant S as RunSupervisor
   participant R as SingleAgentRunner
   participant M as ConversationMemoryStore
   participant N as native_ai_sdk
-  U->>R: prompt + clientTurnKey
+  U->>S: POST prompt + clientTurnKey
+  S->>R: 后台 Run + Run-owned AbortSignal
+  S-->>U: 202 runId / turnId / threadId
+  U->>S: GET runId/events（观察者）
   R->>M: 原子创建/重试 Turn + 保存 user
   R->>M: 按稳定 threadId 重载最近历史
   M-->>R: 严格 sequence 的 typed messages
@@ -383,7 +387,14 @@ sequenceDiagram
   N-->>R: delta / tool_call / tool_result
   R->>M: 保存工具交换与最终 assistant
   R->>M: 保存 Turn terminal state
+  R-->>S: Run terminal（不依赖观察者连接）
 ```
+
+`RunSupervisor` 是单 Agent 活跃 Run 的进程内所有者：保存执行 Promise 和每个
+Run 独立的 `AbortController`。SSE/WebView 断开只移除观察者，不能取消执行；
+`POST /agent/runs/:id/cancel` 才执行显式取消。SQLite `agent_runs` 与
+`runtime_events` 仍提供可恢复的状态和事实。当前 SSE 是实时投影，持久游标重放与
+replay/live 边界将在 Phase 1C 完成。
 
 - 每个 Room 有稳定默认 Thread；新 Thread/不同 Room 的历史严格隔离。
 - `sessions.primary_agent_id` 是明确落库的默认执行 Agent，不从成员顺序动态推导。

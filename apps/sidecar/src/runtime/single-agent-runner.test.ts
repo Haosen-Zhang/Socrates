@@ -15,6 +15,7 @@ import { SessionStore } from "../store/session-store";
 import { ConversationMemoryStore } from "../store/conversation-memory-store";
 import { RuntimeManager } from "./runtime-manager";
 import { SingleAgentRunner } from "./single-agent-runner";
+import { RunSupervisor } from "./run-supervisor";
 import { estimateNativeContextOverhead } from "./native-agent-runtime";
 import { AttachmentResolver } from "../attachments/resolver";
 import { tmpdir } from "node:os";
@@ -101,6 +102,25 @@ class InterruptibleRuntime implements AgentRuntime {
   async interrupt() {
     this.interrupted = true;
     this.reject?.(new Error("interrupted"));
+  }
+  async close() {}
+}
+
+class ThrowingInterruptRuntime implements AgentRuntime {
+  readonly kind = "throwing-interrupt";
+  readonly capabilities = { ...UNKNOWN_MODEL_CAPABILITIES, textInput: true as const };
+  interruptCalls = 0;
+  async open() {}
+  async *start(input: { signal?: AbortSignal } = {}): AsyncIterable<RuntimeEvent> {
+    yield { type: "status", status: "running" };
+    await new Promise<void>((_resolve, reject) => {
+      input.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    });
+  }
+  async answerApproval() {}
+  async interrupt() {
+    this.interruptCalls += 1;
+    throw new Error("runtime_interrupt_failed");
   }
   async close() {}
 }
@@ -964,6 +984,45 @@ describe("SingleAgentRunner", () => {
     expect(db.query("SELECT COUNT(*) AS count FROM session_messages WHERE role = 'user'").get()).toEqual({ count: 1 });
     expect(db.query("SELECT content, status FROM session_messages WHERE role = 'assistant' AND kind = 'text'").get())
       .toEqual({ content: "confirmed partial", status: "cancelled" });
+  });
+
+  it("uses the supervisor signal after a concrete Runtime interrupt fails", async () => {
+    const { db, session, approvals } = setup();
+    const events = new ExecutionEventStore(db);
+    const runtimes = new RuntimeManager(db, events);
+    const runtime = new ThrowingInterruptRuntime();
+    runtimes.register("throwing-interrupt", () => runtime);
+    const runner = new SingleAgentRunner(
+      db,
+      runtimes,
+      approvals,
+      events,
+      new AttachmentResolver(db, `${tmpdir()}/unused-${crypto.randomUUID()}`),
+    );
+    const supervisor = new RunSupervisor(runner);
+    const started = await supervisor.start({
+      sessionId: session.id,
+      runtimeKind: "throwing-interrupt",
+      prompt: "wait",
+    });
+    let running!: () => void;
+    const runtimeRunning = new Promise<void>((resolve) => { running = resolve; });
+    const observation = supervisor.observe(started.runId, (event) => {
+      if (event.type === "status" && event.status === "running") running();
+    });
+    await runtimeRunning;
+
+    await supervisor.cancel(started.runId);
+
+    expect((await observation.completion).status).toBe("cancelled");
+    expect(runtime.interruptCalls).toBe(1);
+    const eventTypes = events.listAfter(started.runId, 0).map((event) => event.type);
+    expect(eventTypes.indexOf("run.cancel_requested")).toBeGreaterThan(
+      eventTypes.indexOf("run.started"),
+    );
+    expect(eventTypes.indexOf("run.cancelled")).toBeGreaterThan(
+      eventTypes.indexOf("run.cancel_requested"),
+    );
   });
 
   it("recovers a restart by interrupting orphaned runs and expiring their approvals", () => {

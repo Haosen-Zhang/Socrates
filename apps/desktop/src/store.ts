@@ -37,6 +37,11 @@ import { decodeRuntimeEvent } from "./protocol";
 import { commitApprovalPolicyUpdate } from "./approvalPolicyUi";
 import { deriveRoomTaskConfig } from "./taskSurface";
 import { canCommitMultiTaskLoad } from "./multiTaskSelection";
+import {
+  agentRunStateAfterObservation,
+  pollAgentRunUntilTerminal,
+  type AgentRunStatusView,
+} from "./agentRunTransport";
 
 type Handshake = { port: number; token: string };
 export type ConnStatus = "connecting" | "connected" | "disconnected";
@@ -646,8 +651,14 @@ export const useStore = create<Store>((set, get) => {
         sessionMessages: [...state.sessionMessages, optimisticMessage],
       }));
       let runError: string | null = null;
+      let startedRunId: string | null = null;
       try {
-        const response = await sidecarFetch(hs(), `/agent/sessions/${sessionId}/runs`, {
+        const started = await requireOk<{
+          runId: string;
+          turnId: string;
+          threadId: string;
+          replayed: boolean;
+        }>(await sidecarFetch(hs(), `/agent/sessions/${sessionId}/runs`, {
           method: "POST",
           body: JSON.stringify({
             prompt,
@@ -656,7 +667,10 @@ export const useStore = create<Store>((set, get) => {
             workspaceRefIds: get().draftWorkspaceRefs.map((reference) => reference.id),
             runtimeKind: "native_ai_sdk",
           }),
-        });
+        }));
+        startedRunId = started.runId;
+        set({ activeAgentRunId: started.runId });
+        const response = await sidecarFetch(hs(), `/agent/runs/${started.runId}/events`);
         if (!response.ok || !response.body) await requireOk(response);
 
         // Frame-buffered delta batching (rAF) — decoupled from transport
@@ -711,19 +725,69 @@ export const useStore = create<Store>((set, get) => {
         } finally {
           flushNow();
         }
-        if (!runError) set({ draftAttachments: [], draftWorkspaceRefs: [], workspacePathResults: [] });
       } catch (error) {
         runError = error instanceof Error ? error.message : String(error);
         set({ agentError: runError });
       } finally {
+        let observationState = {
+          agentRunning: false,
+          activeAgentRunId: null as string | null,
+          agentError: runError,
+        };
+        if (startedRunId) {
+          try {
+            const run = await requireOk<AgentRunStatusView>(
+              await sidecarFetch(hs(), `/agent/runs/${startedRunId}`),
+            );
+            observationState = agentRunStateAfterObservation(startedRunId, run, runError);
+          } catch (statusError) {
+            observationState = agentRunStateAfterObservation(
+              startedRunId,
+              null,
+              runError ?? (statusError instanceof Error ? statusError.message : String(statusError)),
+            );
+          }
+        }
+        runError = observationState.agentError;
         try {
           const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${sessionId}/messages`));
           set({ sessionMessages });
         } catch (refreshError) {
           set({ agentError: refreshError instanceof Error ? refreshError.message : String(refreshError) });
         }
-        set({ agentRunning: false, activeAgentRunId: null });
+        if (!observationState.agentRunning && !observationState.agentError) {
+          set({ draftAttachments: [], draftWorkspaceRefs: [], workspacePathResults: [] });
+        }
+        set(observationState);
         await Promise.allSettled([get().loadCurrentUsage(), get().loadSessions()]);
+        if (startedRunId && observationState.agentRunning) {
+          const terminal = await pollAgentRunUntilTerminal(
+            async () => requireOk<AgentRunStatusView>(
+              await sidecarFetch(hs(), `/agent/runs/${startedRunId}`),
+            ),
+            () => get().activeAgentRunId === startedRunId,
+            (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+          );
+          if (terminal && get().activeAgentRunId === startedRunId) {
+            const terminalState = agentRunStateAfterObservation(startedRunId, terminal, null);
+            runError = terminalState.agentError;
+            set(terminalState);
+            if (!terminalState.agentError) {
+              set({ draftAttachments: [], draftWorkspaceRefs: [], workspacePathResults: [] });
+            }
+            const refreshMessages = async () => {
+              const sessionMessages = await requireOk<SessionMessage[]>(
+                await sidecarFetch(hs(), `/sessions/${sessionId}/messages`),
+              );
+              if (get().currentSessionId === sessionId) set({ sessionMessages });
+            };
+            await Promise.allSettled([
+              refreshMessages(),
+              get().loadCurrentUsage(),
+              get().loadSessions(),
+            ]);
+          }
+        }
       }
       return runError === null;
     },
@@ -738,6 +802,12 @@ export const useStore = create<Store>((set, get) => {
       const runId = get().activeAgentRunId;
       if (!runId) return;
       await requireOk(await sidecarFetch(hs(), `/agent/runs/${runId}/cancel`, { method: "POST" }));
+      set({
+        agentRunning: false,
+        activeAgentRunId: null,
+        pendingApprovals: [],
+        agentError: tr(get().lang, "task_cancelled_notice"),
+      });
     },
     loadCurrentUsage: async () => {
       const state = get();

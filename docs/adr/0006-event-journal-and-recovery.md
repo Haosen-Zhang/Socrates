@@ -1,6 +1,6 @@
 # ADR 0006: Execution event journal and recovery
 
-- Status: Accepted; Phase 1A execution authority implemented, live SSE projection pending
+- Status: Accepted; Phase 1A authority and Phase 1B Run ownership implemented
 - Date: 2026-07-16
 - Updated: 2026-08-21
 
@@ -28,6 +28,13 @@ Conversation and execution authority remain separate:
 Execution events must never be replayed into model history. UI and audit
 projections may be rebuilt from them after Phase 1C adds cursor-based delivery.
 
+Single-Agent Run lifetime is owned by a sidecar `RunSupervisor`, not by the
+HTTP request or SSE observer. Starting a Run, observing its current live events,
+reading its durable status projection, and explicitly cancelling it are
+separate operations. Every supervised Run has its own `AbortController`.
+Observer failure only detaches that observer; explicit cancellation or
+controlled sidecar shutdown owns abortion.
+
 Streaming deltas are checkpointed in bounded chunks instead of persisting every token. Stable task/turn/tool keys prevent duplicate execution. A duplicate stable key with a different input hash is a protocol violation. Unknown non-idempotent outcomes become explicit interrupted/unknown states and are never automatically retried.
 
 Schema evolution uses forward-only, checksum-validated migrations inside `BEGIN IMMEDIATE`. Existing file databases receive a consistent `VACUUM INTO` backup before pending migrations.
@@ -47,10 +54,14 @@ truncation, and normalized Runtime events. The event vocabulary also fixes the
 future Provider and Tool attempt identity contract, but those attempt events are
 not emitted until the Provider/Tool execution loop is migrated.
 
-Phase 1A does not make a Run independent of the request that started it, detach
-live SSE from execution, recover an in-flight Tool side effect, or change SDK
-retry behavior. Those remain Phase 1B and later work. Terminal HistoryStore and
-execution-journal writes are deliberately separate authorities. On startup,
-Phase 1A deterministically repairs a missing terminal or approval-decision event
-from committed relational evidence; Phase 1B moves that reconciliation under
-the independent Run supervisor.
+Phase 1B separates create/start from live observation and moves startup
+reconciliation under the independent supervisor. Its bounded in-process buffer
+only bridges the POST-to-GET hand-off and reports overflow as an observer gap;
+it is not replay authority. Phase 1C will
+replace that limitation with durable sequence replay and an ordered
+replay-to-live transition.
+
+Terminal HistoryStore and execution-journal writes remain deliberately separate
+authorities. On startup, deterministic reconciliation repairs a missing terminal
+or approval event from committed relational evidence. Recovering an in-flight
+Tool side effect and changing SDK retry behavior remain later-phase work.

@@ -19,6 +19,7 @@ import { isAllowedLoopbackHost, isAllowedRendererOrigin } from "./security/loopb
 import { ApprovalManager } from "./approvals/manager";
 import { RuntimeManager } from "./runtime/runtime-manager";
 import { SingleAgentRunner } from "./runtime/single-agent-runner";
+import { RunSupervisor } from "./runtime/run-supervisor";
 import { agentRunRoutes } from "./routes/agent-runs";
 import { AttachmentResolver } from "./attachments/resolver";
 import { contentRoutes } from "./routes/content";
@@ -152,10 +153,11 @@ runtimes.register("native_ai_sdk", (input) => {
   });
 });
 const agentRuns = new SingleAgentRunner(db, runtimes, approvals, executionEvents, attachments, history);
+const runSupervisor = new RunSupervisor(agentRuns);
 const multiTasks = new MultiTaskStore(db, history);
 await history.bootstrapAll();
 runtimes.recoverInterrupted();
-agentRuns.recoverInterrupted();
+runSupervisor.recoverInterrupted();
 const usage = new UsageCollector(db);
 const resolveMultiAgent = (agentId: string, snapshot: Record<string, unknown>): OrchestrationAgent => {
   const providerId = String(snapshot.providerId ?? "");
@@ -185,7 +187,7 @@ app.route(
   "/sessions",
   sessionRoutes(sessions, events, usage, workspaces, () => config.get().collaborationDefaults),
 );
-app.route("/agent", agentRunRoutes(agentRuns, approvals));
+app.route("/agent", agentRunRoutes(runSupervisor, agentRuns, approvals));
 app.route("/content", contentRoutes(db, workspaces, attachments));
 app.route("/mcp", mcpRoutes(mcpStore, mcp));
 app.route("/multi", multiAgentRoutes(multiTasks, multiCoordinator, executionRunner, approvals));
@@ -200,6 +202,7 @@ const server = Bun.serve({
 if (server.port === undefined) throw new Error("TCP server has no port");
 
 stopManagedServices = async () => {
+  await runSupervisor.shutdown();
   await mcp.stopAll();
   server.stop(true);
 };
