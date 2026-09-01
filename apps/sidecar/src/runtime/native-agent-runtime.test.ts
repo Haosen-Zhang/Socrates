@@ -10,6 +10,7 @@ import { ToolRegistry } from "../tools/registry";
 import { WorkspacePathPolicy } from "../workspace/path-policy";
 import {
   NativeAgentRuntime,
+  createAiSdkNativeStream,
   shouldContinueNativeSampling,
   takeBoundToolPermission,
   toAiSdkModelMessages,
@@ -21,6 +22,108 @@ const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
 describe("NativeAgentRuntime", () => {
+  it("keeps each AI SDK invocation to one visible attempt with internal retries disabled", async () => {
+    const maxRetries: number[] = [];
+    let invocations = 0;
+    const stream = createAiSdkNativeStream({} as never, ((options) => {
+      invocations += 1;
+      maxRetries.push(options.maxRetries ?? -1);
+      const invocation = invocations;
+      return {
+        fullStream: (async function* () {
+          if (invocation === 1) {
+            yield { type: "error", error: { statusCode: 429, message: "slow", headers: { "retry-after": "0" } } };
+            return;
+          }
+          yield { type: "text-delta", id: "text-1", text: "ok" };
+        })(),
+        responseMessages: Promise.resolve([{ role: "assistant", content: "ok" }]),
+        steps: Promise.resolve([{}]),
+      } as never;
+    }) as typeof import("ai").streamText);
+    const events = [];
+    for await (const event of stream({
+      prompt: "retry",
+      messages: [],
+      tools: {},
+      maxSteps: 1,
+      requestApproval: async () => ({ approved: false }),
+    })) events.push(event);
+    expect(invocations).toBe(2);
+    expect(maxRetries).toEqual([0, 0]);
+    expect(events.map((event) => event.type)).toEqual([
+      "provider_attempt_started",
+      "provider_attempt_failed",
+      "provider_retry_scheduled",
+      "provider_attempt_started",
+      "text_delta",
+    ]);
+  });
+
+  it("exposes Provider retry lifecycle as durable runtime extensions", async () => {
+    const db = openDb(":memory:");
+    const registry = new ToolRegistry([]);
+    const stream: NativeStreamFactory = async function* () {
+      yield { type: "provider_attempt_started", attemptNo: 1 };
+      yield {
+        type: "provider_attempt_failed",
+        attemptNo: 1,
+        error: {
+          code: "provider_unavailable",
+          category: "provider",
+          phase: "provider_connect",
+          retryable: true,
+          message: "temporary outage",
+        },
+        outputStarted: false,
+        willRetry: true,
+      };
+      yield {
+        type: "provider_retry_scheduled",
+        failedAttemptNo: 1,
+        nextAttemptNo: 2,
+        delayMs: 250,
+        errorCode: "provider_unavailable",
+      };
+      yield { type: "provider_attempt_started", attemptNo: 2 };
+      yield { type: "text_delta", text: "recovered" };
+    };
+    const runtime = new NativeAgentRuntime({
+      sessionId: "session", taskId: "task", agentId: "agent", workspaceId: "workspace", workspaceIdentity: "identity",
+      registry,
+      executor: new ToolExecutor(db, registry, new ApprovalManager(db)),
+      stream,
+    });
+    await runtime.open();
+    const events = [];
+    for await (const event of runtime.start({ prompt: "retry" })) events.push(event);
+    expect(events).toEqual([
+      { type: "status", status: "running" },
+      { type: "extension", name: "provider_attempt_started", payload: { attemptNo: 1 } },
+      {
+        type: "extension",
+        name: "provider_attempt_failed",
+        payload: {
+          attemptNo: 1,
+          error: {
+            code: "provider_unavailable", category: "provider", phase: "provider_connect",
+            retryable: true, message: "temporary outage",
+          },
+          outputStarted: false,
+          willRetry: true,
+        },
+      },
+      {
+        type: "extension",
+        name: "provider_retry_scheduled",
+        payload: { failedAttemptNo: 1, nextAttemptNo: 2, delayMs: 250, errorCode: "provider_unavailable" },
+      },
+      { type: "extension", name: "provider_attempt_started", payload: { attemptNo: 2 } },
+      { type: "text_delta", text: "recovered" },
+      { type: "status", status: "completed" },
+    ]);
+  });
+
   it("rejects semantic tool input before an approval request can be emitted", async () => {
     const root = `${tmpdir()}/socrates-native-${crypto.randomUUID()}`;
     roots.push(root);

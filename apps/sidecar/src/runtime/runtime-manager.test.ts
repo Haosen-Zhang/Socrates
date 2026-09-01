@@ -14,7 +14,9 @@ class FakeRuntime implements AgentRuntime {
     yield { type: "text_delta", text: "hello" };
     yield { type: "tool_call", callId: "call", name: "read_file", input: { path: "a" } };
     yield { type: "approval_required", requestId: "approval", callId: "call" };
-    yield { type: "extension", name: "future", payload: { kept: true } };
+    yield { type: "extension", name: "provider_retry_scheduled", payload: {
+      failedAttemptNo: 1, nextAttemptNo: 2, delayMs: 250, errorCode: "provider_unavailable",
+    } };
     yield { type: "status", status: "completed" };
   }
   async answerApproval() {}
@@ -48,6 +50,13 @@ describe("RuntimeManager", () => {
       { type: "runtime.event", runtimeType: "status", turnId: "turn" },
     ]);
     expect(manager.get(handle.id)?.status).toBe("completed");
+    expect(events.listAfter("task", 0)[3]?.payload).toMatchObject({
+      event: {
+        type: "extension",
+        name: "provider_retry_scheduled",
+        payload: { failedAttemptNo: 1, nextAttemptNo: 2, delayMs: 250 },
+      },
+    });
     expect(delivered).toEqual(seen.map((event) => event.type));
   });
 

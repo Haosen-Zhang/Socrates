@@ -3,6 +3,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { resolveReasoningProfile, type ModelGateway, type ReasoningEffort } from "@socrates/core";
 import type { FetchLike } from "./net";
+import { classifyProviderError } from "./provider-errors";
 
 type StreamProviderOptions = NonNullable<Parameters<typeof streamText>[0]["providerOptions"]>;
 
@@ -60,14 +61,13 @@ export function createAiSdkModel(input: {
 
 /** 把供应商错误翻译成可读分类（鉴权/限流/网络），UI 直接展示（docs/03 §7.1） */
 export function describeGatewayError(err: unknown): string {
-  const e = err as { statusCode?: number; status?: number; name?: string; message?: string } | null;
-  const status = e?.statusCode ?? e?.status;
-  const detail = (e?.message ?? String(err)).slice(0, 200);
-  if (status === 401 || status === 403) return `鉴权失败（${status}）：${detail}`;
-  if (status === 429) return `限流（429）：${detail}`;
-  if (status !== undefined) return `供应商错误（${status}）：${detail}`;
-  if (e?.name === "AbortError") return "请求已中止";
-  return `网络错误：${detail}`;
+  const detail = classifyProviderError(err, "provider_stream");
+  const status = detail.statusCode === undefined ? "" : `（${detail.statusCode}）`;
+  if (detail.category === "authentication" || detail.category === "permission") return `鉴权失败${status}：${detail.message}`;
+  if (detail.category === "rate_limit") return `限流${status}：${detail.message}`;
+  if (detail.category === "cancelled") return "请求已中止";
+  if (detail.category === "network") return `网络错误：${detail.message}`;
+  return `供应商错误${status}：${detail.message}`;
 }
 
 /**
@@ -91,6 +91,9 @@ export function makeAiSdkGateway(fetchImpl: FetchLike): ModelGateway {
       temperature: req.temperature,
       providerOptions: reasoningProviderOptions(req.providerType, req.modelId, req.reasoningEffort),
       abortSignal: req.signal,
+      // Group chat does not yet use the Phase 2 single-Agent retry policy, but
+      // SDK-internal retries must still stay disabled and observable.
+      maxRetries: 0,
     });
     let usage: { inputTokens?: number; outputTokens?: number } | undefined;
     for await (const part of result.fullStream) {
@@ -99,12 +102,20 @@ export function makeAiSdkGateway(fetchImpl: FetchLike): ModelGateway {
       } else if (part.type === "finish") {
         usage = { inputTokens: part.totalUsage.inputTokens, outputTokens: part.totalUsage.outputTokens };
       } else if (part.type === "error") {
-        yield { type: "error", message: describeGatewayError(part.error) };
+        yield {
+          type: "error",
+          message: describeGatewayError(part.error),
+          detail: classifyProviderError(part.error, "provider_stream"),
+        };
       }
     }
     yield { type: "done", usage };
   } catch (err) {
-    yield { type: "error", message: describeGatewayError(err) };
+    yield {
+      type: "error",
+      message: describeGatewayError(err),
+      detail: classifyProviderError(err, "provider_connect"),
+    };
   }
   };
 }

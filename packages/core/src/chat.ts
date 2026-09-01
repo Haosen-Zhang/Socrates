@@ -1,5 +1,6 @@
 import type { ProviderType } from "./provider";
 import type { ModelCapabilities, ReasoningEffort } from "./model-capabilities";
+import type { ExecutionErrorDetail } from "./execution-errors";
 
 export type ChatRole = "system" | "user" | "assistant";
 export type ChatMessage = { role: ChatRole; content: string };
@@ -211,6 +212,6 @@ export type TokenUsage = {
 export type GatewayEvent =
   | { type: "delta"; text: string }
   | { type: "done"; usage?: TokenUsage }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string; detail?: ExecutionErrorDetail };
 
 export type ModelGateway = (req: GatewayRequest) => AsyncIterable<GatewayEvent>;

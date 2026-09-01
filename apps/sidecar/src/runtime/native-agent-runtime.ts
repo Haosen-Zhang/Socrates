@@ -16,6 +16,8 @@ import {
 } from "@socrates/core";
 import { hashToolInput, type ToolExecutor } from "../tools/executor";
 import type { ToolRegistry } from "../tools/registry";
+import { classifyProviderError } from "../provider-errors";
+import { executeProviderWithRetry, type ProviderRetryLifecycleEvent } from "../provider-retry";
 
 type NativeTool = {
   definition: ToolDefinition;
@@ -42,7 +44,8 @@ type NativeStreamPart =
   | { type: "approval_required"; requestId: string; callId: string; name: string; input: unknown; permission: PermissionEvaluation }
   | { type: "tool_result"; callId: string; name: string; output: unknown; isError: boolean }
   | { type: "usage"; usage: NormalizedUsage }
-  | { type: "error"; error: unknown };
+  | { type: "error"; error: unknown }
+  | ProviderRetryLifecycleEvent;
 
 export type NativeStreamFactory = (input: {
   prompt: string;
@@ -102,7 +105,10 @@ export function validateNativeToolInput(definition: ToolDefinition, input: unkno
   if (errors.length) throw new Error(`invalid_tool_input:${errors.join(",")}`);
 }
 
-export function createAiSdkNativeStream(model: LanguageModel): NativeStreamFactory {
+export function createAiSdkNativeStream(
+  model: LanguageModel,
+  invokeStreamText: typeof streamText = streamText,
+): NativeStreamFactory {
   return async function* (input) {
     let messages: ModelMessage[] = input.messages.length
       ? [...input.messages]
@@ -134,55 +140,72 @@ export function createAiSdkNativeStream(model: LanguageModel): NativeStreamFacto
         name,
         permission.effect === "ask" ? "user-approval" : "not-applicable",
       ])) as ToolApprovalConfiguration<ToolSet, unknown>;
-      const result = streamText({
-        model,
-        system: input.system,
-        messages,
-        tools,
-        toolApproval,
-        // One provider step per iteration so room policy is re-snapshotted
-        // before every subsequent model/tool step.
-        stopWhen: stepCountIs(1),
-        abortSignal: input.signal,
-        maxRetries: 2,
-      });
-      const pending: Array<{
+      let successfulResult: ReturnType<typeof streamText> | undefined;
+      let pending: Array<{
         approvalId: string;
         decision: Promise<{ approved: boolean; reason?: string }>;
       }> = [];
       let hadToolActivity = false;
-      for await (const part of result.fullStream) {
-        if (part.type === "text-delta") yield { type: "text_delta", text: part.text };
-        else if (part.type === "tool-call") {
-          hadToolActivity = true;
-          const permission = permissionByName.get(part.toolName);
-          if (!permission) throw new Error("native_tool_permission_snapshot_missing");
-          const native = input.tools[part.toolName];
-          if (!native) throw new Error("native_tool_definition_missing");
-          validateNativeToolInput(native.definition, part.input);
-          permissionByCallId.set(part.toolCallId, permission);
-          yield { type: "tool_call", callId: part.toolCallId, name: part.toolName, input: part.input };
-        }
-        else if (part.type === "tool-approval-request") {
-          const permission = permissionByName.get(part.toolCall.toolName);
-          if (!permission || permission.effect !== "ask") throw new Error("native_tool_permission_snapshot_missing");
-          const request = { requestId: part.approvalId, callId: part.toolCall.toolCallId, name: part.toolCall.toolName, input: part.toolCall.input, permission };
-          pending.push({ approvalId: part.approvalId, decision: input.requestApproval(request) });
-          yield { type: "approval_required", ...request };
-        } else if (part.type === "tool-result") {
-          hadToolActivity = true;
-          permissionByCallId.delete(part.toolCallId);
-          yield { type: "tool_result", callId: part.toolCallId, name: part.toolName, output: part.output, isError: false };
-        } else if (part.type === "tool-error") {
-          hadToolActivity = true;
-          permissionByCallId.delete(part.toolCallId);
-          yield { type: "tool_result", callId: part.toolCallId, name: part.toolName, output: String(part.error), isError: true };
-        }
-        else if (part.type === "finish") yield { type: "usage", usage: usageOf(part.totalUsage) };
-        else if (part.type === "error") yield { type: "error", error: part.error };
-        else if (part.type === "abort") throw new Error(part.reason ?? "native_agent_cancelled");
+      const retried = executeProviderWithRetry<NativeStreamPart>({
+        signal: input.signal,
+        classifyError: classifyProviderError,
+        isAuthoritativeOutput: (part) => part.type === "text_delta" && part.text.length > 0
+          || part.type === "tool_call"
+          || part.type === "approval_required"
+          || part.type === "tool_result",
+        errorFromPart: (part) => part.type === "error" ? part.error : null,
+        openAttempt: async function* () {
+          pending = [];
+          hadToolActivity = false;
+          const result = invokeStreamText({
+            model,
+            system: input.system,
+            messages,
+            tools,
+            toolApproval,
+            // The Socrates policy owns retries. One SDK invocation is exactly
+            // one visible provider attempt.
+            stopWhen: stepCountIs(1),
+            abortSignal: input.signal,
+            maxRetries: 0,
+          });
+          for await (const part of result.fullStream) {
+            if (part.type === "text-delta") yield { type: "text_delta", text: part.text };
+            else if (part.type === "tool-call") {
+              hadToolActivity = true;
+              const permission = permissionByName.get(part.toolName);
+              if (!permission) throw new Error("native_tool_permission_snapshot_missing");
+              const native = input.tools[part.toolName];
+              if (!native) throw new Error("native_tool_definition_missing");
+              validateNativeToolInput(native.definition, part.input);
+              permissionByCallId.set(part.toolCallId, permission);
+              yield { type: "tool_call", callId: part.toolCallId, name: part.toolName, input: part.input };
+            } else if (part.type === "tool-approval-request") {
+              const permission = permissionByName.get(part.toolCall.toolName);
+              if (!permission || permission.effect !== "ask") throw new Error("native_tool_permission_snapshot_missing");
+              const request = { requestId: part.approvalId, callId: part.toolCall.toolCallId, name: part.toolCall.toolName, input: part.toolCall.input, permission };
+              pending.push({ approvalId: part.approvalId, decision: input.requestApproval(request) });
+              yield { type: "approval_required", ...request };
+            } else if (part.type === "tool-result") {
+              hadToolActivity = true;
+              permissionByCallId.delete(part.toolCallId);
+              yield { type: "tool_result", callId: part.toolCallId, name: part.toolName, output: part.output, isError: false };
+            } else if (part.type === "tool-error") {
+              hadToolActivity = true;
+              permissionByCallId.delete(part.toolCallId);
+              yield { type: "tool_result", callId: part.toolCallId, name: part.toolName, output: String(part.error), isError: true };
+            } else if (part.type === "finish") yield { type: "usage", usage: usageOf(part.totalUsage) };
+            else if (part.type === "error") yield { type: "error", error: part.error };
+            else if (part.type === "abort") throw new DOMException(part.reason ?? "native_agent_cancelled", "AbortError");
+          }
+          successfulResult = result;
+        },
+      });
+      for await (const part of retried) {
+        yield part;
       }
-      const [responseMessages, steps] = await Promise.all([result.responseMessages, result.steps]);
+      if (!successfulResult) throw new Error("native_provider_result_missing");
+      const [responseMessages, steps] = await Promise.all([successfulResult.responseMessages, successfulResult.steps]);
       messages = [...messages, ...responseMessages];
       remainingSteps -= Math.max(steps.length, 1);
       if (pending.length) {
@@ -473,6 +496,11 @@ export class NativeAgentRuntime implements AgentRuntime {
         };
         else if (event.type === "usage") yield event;
         else if (event.type === "error") throw event.error;
+        else yield {
+          type: "extension",
+          name: event.type,
+          payload: Object.fromEntries(Object.entries(event).filter(([key]) => key !== "type")),
+        };
       }
       if (this.interrupted || abortController.signal.aborted) throw new Error("native_agent_cancelled");
       yield { type: "status", status: "completed" };

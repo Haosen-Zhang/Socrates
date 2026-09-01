@@ -12,6 +12,7 @@ export * from "./history";
 export * from "./usage";
 export * from "./events";
 export * from "./execution-events";
+export * from "./execution-errors";
 export * from "./tools";
 export * from "./permissions";
 export * from "./approvals";
