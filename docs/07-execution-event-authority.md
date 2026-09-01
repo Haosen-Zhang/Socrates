@@ -1,11 +1,12 @@
-# Phase 1A–1C：执行事件权威、Run 所有权与持久重放
+# Phase 1A–2：执行事件权威、持久重放与 Provider 重试
 
 ## 目标
 
 Phase 1A 为单 Agent 执行建立一个可重建、可审计的事实源；Phase 1B 将
 Run 生命周期移交给 sidecar 内的 `RunSupervisor`；Phase 1C 让观察者从持久
 序号恢复并无缝进入实时流。这些阶段都不改变公开对话历史的权威，也不提前实现
-Tool 重试。
+Tool 重试。Phase 2 在不提前创建 Step 身份的前提下，为单 Agent Provider 调用
+增加显式、有限且可审计的重试。
 
 ## 权威边界
 
@@ -85,7 +86,17 @@ Desktop 校验 schema、Run 身份、连续序号以及 SSE `id`。重复事件�
 
 ## 当前限制与后续阶段
 
-- Provider SDK 内部 retry 仍不透明，不被虚构为 Provider Attempt。
+- 单 Agent `native_ai_sdk` 禁用 AI SDK 内部重试；一次 `streamText` 调用就是一次
+  Provider attempt。Socrates 最多执行 5 次有限尝试，只重试网络、超时、408、429、
+  5xx 和安全的空响应，并遵守有上限的 `Retry-After`。
+- 鉴权、授权、无效请求、永久额度、取消和未知错误失败关闭。文本、ToolCall、审批请求
+  或 ToolResult 等权威输出一旦开始，后续失败不会盲目重放整个采样。
+- Phase 2 生命周期通过持久 `runtime.event` extension 记录
+  `provider_attempt_started`、`provider_attempt_failed` 和
+  `provider_retry_scheduled`。Phase 3 建立 Step/ProviderAttempt 身份后再发出规范
+  `provider.*` 执行事件；Phase 2 不虚构坐标。
+- Multi-Agent `ModelGateway` 同样禁用 SDK 内部重试，但本阶段的显式策略只接入单
+  Agent 执行链路。
 - HistoryStore 终态与执行日志属于不同事实域；Phase 1A 启动对账依据已提交的
   Run 终态和审批决定补齐缺失事件，Phase 1B 再由独立 supervisor 持续负责。
 - Migration 017 预留版本化 projection checkpoint 表，目前不改变任何 UI

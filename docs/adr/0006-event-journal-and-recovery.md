@@ -1,8 +1,8 @@
 # ADR 0006: Execution event journal and recovery
 
-- Status: Accepted; Phase 1A authority, Phase 1B Run ownership, and Phase 1C durable replay implemented
+- Status: Accepted; Phase 1A–1C and Phase 2 Provider retry implemented
 - Date: 2026-07-16
-- Updated: 2026-08-24
+- Updated: 2026-09-01
 
 ## Decision
 
@@ -65,4 +65,13 @@ identity mismatches, and rebuilds a fresh WebView projection from sequence zero.
 Terminal HistoryStore and execution-journal writes remain deliberately separate
 authorities. On startup, deterministic reconciliation repairs a missing terminal
 or approval event from committed relational evidence. Recovering an in-flight
-Tool side effect and changing SDK retry behavior remain later-phase work.
+Tool side effect remains later-phase work.
+
+Phase 2 disables opaque AI SDK retries (`maxRetries: 0`) and places the finite
+single-Agent Provider retry policy above the adapter. It permits at most five
+attempts for classified transient failures, honors a capped `Retry-After`, and
+stops automatic replay once authoritative text or Tool activity begins. Stable
+structured errors carry code, category, phase, retryability, optional retry
+delay, and a bounded cause. Retry lifecycle is durably retained as normalized
+Runtime extension events until Phase 3 can attach canonical Step and
+ProviderAttempt coordinates.

@@ -399,6 +399,9 @@ Run 独立的 `AbortController`。SSE/WebView 断开不能取消执行；
 - 每个 Room 有稳定默认 Thread；新 Thread/不同 Room 的历史严格隔离。
 - `sessions.primary_agent_id` 是明确落库的默认执行 Agent，不从成员顺序动态推导。
 - `clientTurnKey`、输入哈希和消息 idempotency key 防止命令重放、重试和事件回放重复写入。
+- 单 Agent Provider 调用禁用 AI SDK 内部重试，由 Runtime 外层执行最多 5 次的显式策略；
+  只在权威文本或 Tool 活动开始前重试已分类的瞬时故障，并把 attempt/退避生命周期写入
+  持久 Runtime extension 事件。Multi-Agent Gateway 也禁用 SDK 内部重试，但暂不套用该策略。
 - 上下文窗口已知时读取 Agent 的 `modelCapabilities.contextWindowTokens`；未知时使用保守 4K
   fallback。超限会记录 `memory.context_truncated`；当前工作单元本身超限时在调用 Provider
   前明确失败，不发送越界 payload。
