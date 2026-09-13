@@ -23,6 +23,7 @@ export const DEFAULT_PROVIDER_RETRY_POLICY: Readonly<ProviderRetryPolicy> = Obje
 
 export type ProviderRetryLifecycleEvent =
   | { type: "provider_attempt_started"; attemptNo: number }
+  | { type: "provider_attempt_completed"; attemptNo: number }
   | {
       type: "provider_attempt_failed";
       attemptNo: number;
@@ -124,6 +125,7 @@ export async function* executeProviderWithRetry<T extends { type: string }>(inpu
         }
       }
       if (!outputStarted) throw new ProviderEmptyResponseError();
+      yield { type: "provider_attempt_completed", attemptNo };
       return;
     } catch (error) {
       const classified = error instanceof StructuredExecutionError

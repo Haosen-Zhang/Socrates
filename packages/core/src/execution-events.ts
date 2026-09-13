@@ -1,5 +1,6 @@
 import type { RuntimeEvent } from "./runtime";
 import type { ToolRisk } from "./tools";
+import type { ExecutionErrorDetail } from "./execution-errors";
 
 export const EXECUTION_EVENT_SCHEMA_VERSION = 1 as const;
 
@@ -61,9 +62,19 @@ export interface ExecutionEventPayloadMap {
   "step.completed": Record<string, never>;
   "step.failed": { error: string };
   "provider.attempt.started": { attemptNo: number };
-  "provider.attempt.failed": { error: string; retryable: boolean };
-  "provider.retry_scheduled": { nextAttemptNo: number; delayMs: number };
-  "provider.attempt.completed": Record<string, never>;
+  "provider.attempt.failed": {
+    attemptNo: number;
+    error: ExecutionErrorDetail;
+    outputStarted: boolean;
+    willRetry: boolean;
+  };
+  "provider.retry_scheduled": {
+    failedAttemptNo: number;
+    nextAttemptNo: number;
+    delayMs: number;
+    errorCode: string;
+  };
+  "provider.attempt.completed": { attemptNo: number };
   "tool.operation.requested": { name?: string; inputHash?: string };
   "tool.attempt.checkpointed": Record<string, never>;
   "tool.attempt.started": Record<string, never>;
@@ -319,6 +330,34 @@ export function executionEventToRuntimeEvent(event: ExecutionEvent): RuntimeEven
       kind: requested.kind,
       policyVersion: requested.policyVersion,
       freshHumanRequired: requested.freshHumanRequired,
+    };
+  }
+  if (event.type === "provider.attempt.started") {
+    return {
+      type: "extension",
+      name: "provider_attempt_started",
+      payload: (event as ExecutionEvent<"provider.attempt.started">).payload,
+    };
+  }
+  if (event.type === "provider.attempt.failed") {
+    return {
+      type: "extension",
+      name: "provider_attempt_failed",
+      payload: (event as ExecutionEvent<"provider.attempt.failed">).payload,
+    };
+  }
+  if (event.type === "provider.retry_scheduled") {
+    return {
+      type: "extension",
+      name: "provider_retry_scheduled",
+      payload: (event as ExecutionEvent<"provider.retry_scheduled">).payload,
+    };
+  }
+  if (event.type === "provider.attempt.completed") {
+    return {
+      type: "extension",
+      name: "provider_attempt_completed",
+      payload: (event as ExecutionEvent<"provider.attempt.completed">).payload,
     };
   }
   return null;

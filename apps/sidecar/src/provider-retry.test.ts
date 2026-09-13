@@ -34,6 +34,7 @@ describe("explicit Provider retry policy", () => {
       "provider_retry_scheduled",
       "provider_attempt_started",
       "text",
+      "provider_attempt_completed",
     ]);
   });
 
@@ -56,7 +57,8 @@ describe("explicit Provider retry policy", () => {
     expect(attempts).toBe(5);
     expect(sleeps).toEqual([250, 500, 1_000, 2_000]);
     expect(events.filter((event) => event.type === "provider_attempt_failed")).toHaveLength(4);
-    expect(events.at(-1)).toEqual({ type: "text", text: "fifth" });
+    expect(events.at(-2)).toEqual({ type: "text", text: "fifth" });
+    expect(events.at(-1)).toEqual({ type: "provider_attempt_completed", attemptNo: 5 });
   });
 
   it("fails with a stable exhaustion error after five transient failures", async () => {

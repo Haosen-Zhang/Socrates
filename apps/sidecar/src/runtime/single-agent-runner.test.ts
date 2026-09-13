@@ -297,8 +297,10 @@ describe("SingleAgentRunner", () => {
       "SELECT type FROM runtime_events WHERE run_id = ? ORDER BY seq",
     ).all(result.id).map(({ type }) => type)).toEqual([
       "run.created",
+      "turn.started",
       "run.started",
       "runtime.event",
+      "turn.completed",
       "run.completed",
     ]);
     expect(db.query("SELECT COUNT(*) AS count FROM task_events WHERE task_id = ?").get(result.id))
@@ -607,6 +609,49 @@ describe("SingleAgentRunner", () => {
       attempt_no: 2,
       status: "completed",
     });
+  });
+
+  it("reconciles each retried Turn terminal from its immutable Run", async () => {
+    const { db, session } = setupRecording();
+    const attempts = { count: 0 };
+    const approvals = new ApprovalManager(db);
+    const events = new ExecutionEventStore(db);
+    const append = events.append.bind(events);
+    let failFirstTurnTerminal = true;
+    events.append = ((input, project) => {
+      if (failFirstTurnTerminal && input.type === "turn.failed") {
+        failFirstTurnTerminal = false;
+        throw new Error("turn_terminal_journal_failed");
+      }
+      return append(input, project);
+    }) as typeof events.append;
+    const runtimes = new RuntimeManager(db, events);
+    runtimes.register("flaky-reconcile", () => new FlakyRuntime(attempts));
+    const runner = new SingleAgentRunner(
+      db,
+      runtimes,
+      approvals,
+      events,
+      new AttachmentResolver(db, `${tmpdir()}/unused-${crypto.randomUUID()}`),
+    );
+    const input = {
+      sessionId: session.id,
+      runtimeKind: "flaky-reconcile",
+      clientTurnKey: "retry-reconcile-key",
+      prompt: "retry me",
+    };
+
+    await expect(runner.run(input)).rejects.toThrow("turn_terminal_journal_failed");
+    expect((await runner.run(input)).status).toBe("completed");
+    runner.recoverInterrupted();
+
+    const runs = db.query<{ id: string; status: string }, []>(
+      "SELECT id, status FROM agent_runs ORDER BY attempt_no",
+    ).all();
+    expect(runs.map(({ status }) => status)).toEqual(["failed", "completed"]);
+    expect(runs.map(({ id }) => events.listAfter(id, 0).find((event) =>
+      event.type === "turn.failed" || event.type === "turn.completed")?.type))
+      .toEqual(["turn.failed", "turn.completed"]);
   });
 
   it("uses the persisted primary Agent rather than member order", async () => {
@@ -1103,6 +1148,8 @@ describe("SingleAgentRunner", () => {
       "SELECT type, agent_id FROM runtime_events WHERE run_id = ? ORDER BY seq",
     ).all(result.id)).toEqual([
       { type: "run.created", agent_id: "a" },
+      { type: "turn.started", agent_id: "a" },
+      { type: "turn.completed", agent_id: "a" },
       { type: "run.completed", agent_id: "a" },
     ]);
   });

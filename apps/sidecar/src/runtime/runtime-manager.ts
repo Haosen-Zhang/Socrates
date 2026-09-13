@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type {
   AgentRuntime,
+  ExecutionErrorDetail,
   MessagePart,
   RuntimeConversationMessage,
   RuntimeEvent,
@@ -27,6 +28,41 @@ const toHandle = (row: RuntimeRow): RuntimeSessionHandle => ({
 });
 
 type RuntimeFactory = (input: RuntimeOpenInput) => AgentRuntime;
+
+type ProviderLifecycle =
+  | { name: "provider_attempt_started"; payload: { attemptNo: number } }
+  | { name: "provider_attempt_failed"; payload: {
+      attemptNo: number;
+      error: ExecutionErrorDetail;
+      outputStarted: boolean;
+      willRetry: boolean;
+    } }
+  | { name: "provider_retry_scheduled"; payload: {
+      failedAttemptNo: number;
+      nextAttemptNo: number;
+      delayMs: number;
+      errorCode: string;
+    } }
+  | { name: "provider_attempt_completed"; payload: { attemptNo: number } }
+  | { name: "provider_step_completed"; payload: Record<string, never> };
+
+const PROVIDER_LIFECYCLE_NAMES = new Set<ProviderLifecycle["name"]>([
+  "provider_attempt_started",
+  "provider_attempt_failed",
+  "provider_retry_scheduled",
+  "provider_attempt_completed",
+  "provider_step_completed",
+]);
+
+function providerLifecycleOf(event: RuntimeEvent): ProviderLifecycle | null {
+  if (event.type !== "extension" || !PROVIDER_LIFECYCLE_NAMES.has(event.name as ProviderLifecycle["name"])) {
+    return null;
+  }
+  if (!event.payload || typeof event.payload !== "object") {
+    throw new Error("provider_lifecycle_payload_invalid");
+  }
+  return { name: event.name, payload: event.payload } as ProviderLifecycle;
+}
 
 export interface RuntimeOpenInput {
   runtimeKind: string;
@@ -91,6 +127,12 @@ export class RuntimeManager {
     const seen: RuntimeEvent[] = [];
     let ordinal = 0;
     let eventConsumerFailed = false;
+    let stepNo = 0;
+    let stepId: string | undefined;
+    let providerAttemptId: string | undefined;
+    let providerAttemptNo = 0;
+    let lastProviderAttemptId: string | undefined;
+    let providerState: "active" | "failed_retryable" | "failed_terminal" | "retry_scheduled" | "completed" | undefined;
     try {
       for await (const event of active.runtime.start({
         prompt: input.prompt,
@@ -99,17 +141,143 @@ export class RuntimeManager {
         signal: input.signal,
       })) {
         ordinal += 1;
-        if (input.turnId && !active.journalBlocked) {
+        const providerLifecycle = providerLifecycleOf(event);
+        if (providerLifecycle) {
+          if (!input.turnId) throw new Error("provider_lifecycle_turn_identity_missing");
+          if (active.journalBlocked) throw new Error("execution_journal_blocked");
+          if (providerLifecycle.name === "provider_attempt_started") {
+            const { attemptNo } = providerLifecycle.payload;
+            if (!Number.isSafeInteger(attemptNo) || attemptNo < 1 || providerAttemptId) {
+              throw new Error("provider_attempt_transition_invalid");
+            }
+            if (!stepId) {
+              if (attemptNo !== 1) throw new Error("provider_step_first_attempt_invalid");
+              const nextStepNo = stepNo + 1;
+              const nextStepId = `${input.taskId}:turn:${input.turnId}:step:${nextStepNo}`;
+              this.events.append({
+                eventId: `step-started:${nextStepId}`,
+                sessionId: active.sessionId,
+                runId: input.taskId,
+                agentId: active.agentId,
+                type: "step.started",
+                coordinates: { turnId: input.turnId, stepId: nextStepId },
+                payload: {},
+              });
+              stepNo = nextStepNo;
+              stepId = nextStepId;
+              providerAttemptNo = 0;
+              lastProviderAttemptId = undefined;
+              providerState = undefined;
+            } else if (providerState !== "retry_scheduled") {
+              throw new Error("provider_attempt_transition_invalid");
+            }
+            if (attemptNo !== providerAttemptNo + 1) throw new Error("provider_attempt_sequence_invalid");
+            const nextProviderAttemptId = `${stepId}:provider:${attemptNo}`;
+            this.events.append({
+              eventId: `provider-attempt-started:${nextProviderAttemptId}`,
+              sessionId: active.sessionId,
+              runId: input.taskId,
+              agentId: active.agentId,
+              type: "provider.attempt.started",
+              coordinates: {
+                turnId: input.turnId,
+                stepId,
+                providerAttemptId: nextProviderAttemptId,
+              },
+              payload: { attemptNo },
+            });
+            providerAttemptNo = attemptNo;
+            providerAttemptId = nextProviderAttemptId;
+            providerState = "active";
+          } else if (providerLifecycle.name === "provider_attempt_failed") {
+            if (!stepId || !providerAttemptId || providerState !== "active"
+              || providerLifecycle.payload.attemptNo !== providerAttemptNo) {
+              throw new Error("provider_attempt_failure_transition_invalid");
+            }
+            this.events.append({
+              eventId: `provider-attempt-failed:${providerAttemptId}`,
+              sessionId: active.sessionId,
+              runId: input.taskId,
+              agentId: active.agentId,
+              type: "provider.attempt.failed",
+              coordinates: { turnId: input.turnId, stepId, providerAttemptId },
+              payload: providerLifecycle.payload,
+            });
+            lastProviderAttemptId = providerAttemptId;
+            providerAttemptId = undefined;
+            providerState = providerLifecycle.payload.willRetry && !providerLifecycle.payload.outputStarted
+              ? "failed_retryable"
+              : "failed_terminal";
+          } else if (providerLifecycle.name === "provider_retry_scheduled") {
+            if (!stepId || providerAttemptId || !lastProviderAttemptId || providerState !== "failed_retryable"
+              || providerLifecycle.payload.failedAttemptNo !== providerAttemptNo
+              || providerLifecycle.payload.nextAttemptNo !== providerAttemptNo + 1) {
+              throw new Error("provider_retry_transition_invalid");
+            }
+            this.events.append({
+              eventId: `provider-retry:${lastProviderAttemptId}:${providerLifecycle.payload.nextAttemptNo}`,
+              sessionId: active.sessionId,
+              runId: input.taskId,
+              agentId: active.agentId,
+              type: "provider.retry_scheduled",
+              coordinates: {
+                turnId: input.turnId,
+                stepId,
+                providerAttemptId: lastProviderAttemptId,
+              },
+              payload: providerLifecycle.payload,
+            });
+            providerState = "retry_scheduled";
+          } else if (providerLifecycle.name === "provider_attempt_completed") {
+            if (!stepId || !providerAttemptId || providerState !== "active"
+              || providerLifecycle.payload.attemptNo !== providerAttemptNo) {
+              throw new Error("provider_attempt_completion_transition_invalid");
+            }
+            this.events.append({
+              eventId: `provider-attempt-completed:${providerAttemptId}`,
+              sessionId: active.sessionId,
+              runId: input.taskId,
+              agentId: active.agentId,
+              type: "provider.attempt.completed",
+              coordinates: { turnId: input.turnId, stepId, providerAttemptId },
+              payload: providerLifecycle.payload,
+            });
+            lastProviderAttemptId = providerAttemptId;
+            providerAttemptId = undefined;
+            providerState = "completed";
+          } else {
+            if (!stepId || providerAttemptId || !lastProviderAttemptId || providerState !== "completed") {
+              throw new Error("provider_step_completion_transition_invalid");
+            }
+            this.events.append({
+              eventId: `step-completed:${stepId}`,
+              sessionId: active.sessionId,
+              runId: input.taskId,
+              agentId: active.agentId,
+              type: "step.completed",
+              coordinates: { turnId: input.turnId, stepId },
+              payload: {},
+            });
+            stepId = undefined;
+            lastProviderAttemptId = undefined;
+            providerState = undefined;
+          }
+        } else if (input.turnId && !active.journalBlocked) {
           this.events.append({
             eventId: `${runtimeSessionId}:${input.taskId}:${ordinal}`,
             sessionId: active.sessionId,
             runId: input.taskId,
             agentId: active.agentId,
             type: "runtime.event",
-            coordinates: { turnId: input.turnId },
+            coordinates: {
+              turnId: input.turnId,
+              ...(stepId ? { stepId } : {}),
+              ...(providerAttemptId ? { providerAttemptId } : {}),
+            },
             payload: { runtimeSessionId, event },
           });
         }
+        if (providerLifecycle?.name === "provider_step_completed") continue;
         seen.push(event);
         try {
           await input.onEvent?.(event);
@@ -119,12 +287,24 @@ export class RuntimeManager {
         }
         if (event.type === "status") this.updateStatus(runtimeSessionId, event.status);
       }
+      if (stepId) throw new Error("provider_step_terminal_missing");
       const handle = this.get(runtimeSessionId);
       if (handle?.status === "running") this.updateStatus(runtimeSessionId, "completed");
       return seen;
     } catch (error) {
       this.updateStatus(runtimeSessionId, input.signal?.aborted ? "interrupted" : "failed");
       const status = input.signal?.aborted ? "interrupted" : "failed";
+      if (input.turnId && stepId && !active.journalBlocked) {
+        this.events.append({
+          eventId: `step-failed:${stepId}`,
+          sessionId: active.sessionId,
+          runId: input.taskId,
+          agentId: active.agentId,
+          type: "step.failed",
+          coordinates: { turnId: input.turnId, stepId },
+          payload: { error: error instanceof Error ? error.message : String(error) },
+        });
+      }
       if (input.turnId && !eventConsumerFailed && !active.journalBlocked) {
         this.events.append({
           eventId: `${runtimeSessionId}:${input.taskId}:terminal:${status}`,

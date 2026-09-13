@@ -57,6 +57,8 @@ describe("NativeAgentRuntime", () => {
       "provider_retry_scheduled",
       "provider_attempt_started",
       "text_delta",
+      "provider_attempt_completed",
+      "provider_step_completed",
     ]);
   });
 

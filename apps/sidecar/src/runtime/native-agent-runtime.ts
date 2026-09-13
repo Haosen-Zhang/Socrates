@@ -45,6 +45,7 @@ type NativeStreamPart =
   | { type: "tool_result"; callId: string; name: string; output: unknown; isError: boolean }
   | { type: "usage"; usage: NormalizedUsage }
   | { type: "error"; error: unknown }
+  | { type: "provider_step_completed" }
   | ProviderRetryLifecycleEvent;
 
 export type NativeStreamFactory = (input: {
@@ -219,6 +220,7 @@ export function createAiSdkNativeStream(
         }));
         messages.push({ role: "tool", content: responses });
       }
+      yield { type: "provider_step_completed" };
       if (!shouldContinueNativeSampling({ pendingApprovals: pending.length, hadToolActivity, remainingSteps })) break;
     }
   };

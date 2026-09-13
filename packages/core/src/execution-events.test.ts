@@ -136,6 +136,16 @@ describe("execution event contracts", () => {
 
   it("projects durable execution facts into the existing Runtime UI contract", () => {
     expect(executionEventToRuntimeEvent({
+      ...event(1, "provider.attempt.started", {
+        turnId: "turn-1", stepId: "step-1", providerAttemptId: "attempt-1",
+      }),
+      payload: { attemptNo: 1 },
+    })).toEqual({
+      type: "extension",
+      name: "provider_attempt_started",
+      payload: { attemptNo: 1 },
+    });
+    expect(executionEventToRuntimeEvent({
       ...event(1, "runtime.event"),
       payload: {
         runtimeSessionId: "runtime-1",
