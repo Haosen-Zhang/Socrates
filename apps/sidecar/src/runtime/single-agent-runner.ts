@@ -111,30 +111,6 @@ export class SingleAgentRunner {
 
   recoverInterrupted(): { runs: number; approvals: number } {
     this.reconcileDurableExecutionFacts();
-    const interrupted = this.db.query<{
-      id: string;
-      session_id: string;
-      turn_id: string | null;
-      agent_id: string | null;
-    }, []>(`
-      SELECT agent_runs.id, agent_runs.session_id, agent_runs.turn_id,
-             COALESCE(
-               conversation_turns.agent_id,
-               sessions.primary_agent_id,
-               (SELECT session_agents.agent_id FROM session_agents
-                WHERE session_agents.session_id = agent_runs.session_id
-                ORDER BY session_agents.position LIMIT 1)
-             ) AS agent_id
-      FROM agent_runs
-      JOIN sessions ON sessions.id = agent_runs.session_id
-      LEFT JOIN conversation_turns ON conversation_turns.id = agent_runs.turn_id
-      WHERE agent_runs.status IN ('preparing', 'running', 'awaiting_approval')
-        AND NOT EXISTS (
-          SELECT 1 FROM runtime_events
-          WHERE runtime_events.run_id = agent_runs.id
-            AND runtime_events.schema_version = 0
-        )
-    `).all();
     let runs = 0;
     let approvals = 0;
     this.db.transaction(() => {
@@ -163,18 +139,6 @@ export class SingleAgentRunner {
         WHERE status IN ('preparing', 'running', 'awaiting_approval')
       `).run(new Date().toISOString(), new Date().toISOString());
     })();
-    for (const run of interrupted) {
-      if (!run.agent_id) continue;
-      this.events.append({
-        eventId: `run-interrupted:${run.id}`,
-        sessionId: run.session_id,
-        runId: run.id,
-        agentId: run.agent_id,
-        type: "run.interrupted",
-        coordinates: run.turn_id ? { turnId: run.turn_id } : {},
-        payload: { reason: "sidecar_restarted" },
-      });
-    }
     this.reconcileDurableExecutionFacts();
     return { runs, approvals };
   }
@@ -224,6 +188,61 @@ export class SingleAgentRunner {
         coordinates: run.turn_id ? { turnId: run.turn_id } : {},
         payload: { threadId: run.thread_id, attemptNo: run.attempt_no },
         occurredAt: run.created_at,
+      });
+    }
+
+    const turns = this.db.query<{
+      run_id: string;
+      session_id: string;
+      turn_id: string;
+      agent_id: string;
+      status: string;
+      error: string | null;
+      created_at: string;
+      completed_at: string | null;
+    }, []>(`
+      SELECT agent_runs.id AS run_id, agent_runs.session_id,
+             conversation_turns.id AS turn_id, conversation_turns.agent_id,
+             agent_runs.status, agent_runs.error,
+             agent_runs.created_at, agent_runs.completed_at
+      FROM agent_runs
+      JOIN conversation_turns ON conversation_turns.id = agent_runs.turn_id
+      WHERE NOT EXISTS (
+        SELECT 1 FROM runtime_events
+        WHERE runtime_events.run_id = agent_runs.id
+          AND runtime_events.schema_version = 0
+      )
+    `).all();
+    for (const turn of turns) {
+      this.events.append({
+        eventId: `turn-started:${turn.run_id}:${turn.turn_id}`,
+        sessionId: turn.session_id,
+        runId: turn.run_id,
+        agentId: turn.agent_id,
+        type: "turn.started",
+        coordinates: { turnId: turn.turn_id },
+        payload: {},
+        occurredAt: turn.created_at,
+      });
+      if (!["completed", "failed", "cancelled", "interrupted"].includes(turn.status)) continue;
+      const type = turn.status === "completed"
+        ? "turn.completed" as const
+        : turn.status === "cancelled"
+          ? "turn.cancelled" as const
+          : "turn.failed" as const;
+      const terminalName = type.slice("turn.".length);
+      const reason = turn.error ?? (turn.status === "interrupted" ? "sidecar_restarted" : turn.status);
+      this.events.append({
+        eventId: `turn-${terminalName}:${turn.run_id}:${turn.turn_id}`,
+        sessionId: turn.session_id,
+        runId: turn.run_id,
+        agentId: turn.agent_id,
+        type,
+        coordinates: { turnId: turn.turn_id },
+        payload: type === "turn.completed"
+          ? {}
+          : type === "turn.cancelled" ? { reason } : { error: reason },
+        occurredAt: turn.completed_at ?? undefined,
       });
     }
 
@@ -638,6 +657,15 @@ export class SingleAgentRunner {
         attemptNo: prepared.attemptNo,
       },
     });
+    this.events.append({
+      eventId: `turn-started:${prepared.runId}:${prepared.turnId}`,
+      sessionId: session.id,
+      runId: prepared.runId,
+      agentId: agent.agent_id,
+      type: "turn.started",
+      coordinates: { turnId: prepared.turnId },
+      payload: {},
+    });
     const failBeforeRuntime = async (error: string): Promise<AgentRunResult> => {
       const completedAt = new Date().toISOString();
       await this.memory.terminateTurn({
@@ -647,6 +675,15 @@ export class SingleAgentRunner {
         status: "failed",
         error,
         completedAt,
+      });
+      this.events.append({
+        eventId: `turn-failed:${prepared.runId}:${prepared.turnId}`,
+        sessionId: session.id,
+        runId: prepared.runId,
+        agentId: agent.agent_id,
+        type: "turn.failed",
+        coordinates: { turnId: prepared.turnId },
+        payload: { error },
       });
       this.events.append({
         eventId: `run-failed:${prepared.runId}`,
@@ -957,6 +994,15 @@ export class SingleAgentRunner {
       });
       turnCompleted = true;
       this.events.append({
+        eventId: `turn-completed:${prepared.runId}:${prepared.turnId}`,
+        sessionId: session.id,
+        runId: prepared.runId,
+        agentId: agent.agent_id,
+        type: "turn.completed",
+        coordinates: { turnId: prepared.turnId },
+        payload: {},
+      });
+      this.events.append({
         eventId: `run-completed:${prepared.runId}`,
         sessionId: session.id,
         runId: prepared.runId,
@@ -1000,6 +1046,15 @@ export class SingleAgentRunner {
         this.reconcileDurableExecutionFacts();
         throw error;
       }
+      this.events.append({
+        eventId: `turn-${status}:${prepared.runId}:${prepared.turnId}`,
+        sessionId: session.id,
+        runId: prepared.runId,
+        agentId: agent.agent_id,
+        type: status === "cancelled" ? "turn.cancelled" : "turn.failed",
+        coordinates: { turnId: prepared.turnId },
+        payload: status === "cancelled" ? { reason: message } : { error: message },
+      });
       this.events.append({
         eventId: `run-${status}:${prepared.runId}`,
         sessionId: session.id,

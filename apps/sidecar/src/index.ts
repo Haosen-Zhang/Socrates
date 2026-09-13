@@ -174,8 +174,9 @@ const resolveMultiAgent = (agentId: string, snapshot: Record<string, unknown>): 
   };
 };
 const multiCoordinator = new MultiAgentCoordinator(db, multiTasks, events, gateway, resolveMultiAgent, history);
-const executionRunner = new ExecutionRunner(db, multiTasks, runtimes, new WorkspaceLeaseManager(db, crypto.randomUUID()), approvals, events, history);
+const executionRunner = new ExecutionRunner(db, multiTasks, runtimes, new WorkspaceLeaseManager(db, crypto.randomUUID()), approvals, events, executionEvents, history);
 multiTasks.recoverInterrupted();
+executionRunner.reconcileDurableTurnEvents();
 
 app.get("/health", (c) => c.json({ ok: true }));
 app.route("/config", configRoutes(config));

@@ -1,4 +1,4 @@
-# Phase 1A–2：执行事件权威、持久重放与 Provider 重试
+# Phase 1A–3：执行事件权威、语义身份与持久检查点
 
 ## 目标
 
@@ -6,7 +6,8 @@ Phase 1A 为单 Agent 执行建立一个可重建、可审计的事实源；Phas
 Run 生命周期移交给 sidecar 内的 `RunSupervisor`；Phase 1C 让观察者从持久
 序号恢复并无缝进入实时流。这些阶段都不改变公开对话历史的权威，也不提前实现
 Tool 重试。Phase 2 在不提前创建 Step 身份的前提下，为单 Agent Provider 调用
-增加显式、有限且可审计的重试。
+增加显式、有限且可审计的重试。Phase 3 将 Turn、Step 和 ProviderAttempt
+提升为规范执行身份，并让 Provider 调用服从持久化检查点。
 
 ## 权威边界
 
@@ -14,7 +15,8 @@ Tool 重试。Phase 2 在不提前创建 Step 身份的前提下，为单 Agent 
 | --- | --- | --- |
 | 用户与 Assistant 可见消息、ToolCall/ToolResult 内容 | HistoryStore `room.jsonl` | SQLite 消息、UI、模型上下文 |
 | 单 Agent Run 生命周期和规范化 Runtime 事件 | SQLite `runtime_events` | `agent_runs.event_seq`、未来 UI/审计视图 |
-| 现有 Session 与 Multi-Agent 领域事件 | SQLite `task_events` | 现有协调器/UI 视图 |
+| Session 与 Multi-Agent 编排领域事件 | SQLite `task_events` | 现有协调器/UI 视图 |
+| Multi-Agent 执行 Agent 的 Turn/Step/ProviderAttempt | SQLite `runtime_events` | 执行审计视图 |
 
 执行日志不能进入模型上下文。模型只读取由 HistoryStore 派生的合法公开
 消息；这避免 Runtime 状态、内部错误或未来 Tool 尝试记录污染下一轮采样。
@@ -47,17 +49,40 @@ Operation 属于 Step，Tool Attempt 属于 Tool Operation。缺失父身份的�
 含 legacy 前缀的旧 Run 不再追加 v1 事件，避免产生错误序号基线或混合 schema
 回放；新 Run 从 v1 序号 1 开始。
 
-## Phase 1A 已发出的事件
+## 已发出的规范事件
 
 - Run：created、started、cancel_requested、completed、failed、cancelled、
   interrupted；
 - 审批：requested、decided；
 - 上下文：context.truncated；
 - Runtime：规范化 `runtime.event`。
+- Turn：started、completed、failed、cancelled；
+- Step：started、completed、failed；
+- Provider Attempt：started、failed、retry_scheduled、completed。
 
-Turn、Step、Provider Attempt、Tool Operation/Attempt 和
-`tool.outcome_unknown` 已有类型与身份契约，但只有在相应执行层迁移到显式状态机
-后才允许发出。特别是非幂等 Tool 的未知结果不得自动重试。
+Tool Operation/Attempt 和 `tool.outcome_unknown` 仍只有类型与身份契约，Phase 4
+迁移到显式工具状态机后才允许发出。特别是非幂等 Tool 的未知结果不得自动重试。
+
+## Phase 3：Turn、Step 与 ProviderAttempt
+
+一个 Turn 是一次用户级 Agent 响应周期；一个 Step 是一次模型请求，以及促成下一次
+模型请求的 ToolCall、审批和 ToolResult；一个 ProviderAttempt 恰好对应一次外部
+Provider 调用。重试产生新的 ProviderAttempt，但仍属于同一 Step。身份由 Run 内稳定
+序号派生，并满足 `Turn > Step > ProviderAttempt` 层级。
+
+`provider_attempt_started` 是 Provider 前检查点信号。`RuntimeManager` 必须先提交
+`step.started` 和 `provider.attempt.started`，生成器才会继续进入真实 Provider 调用；
+任一写入失败都会关闭生成器并阻止请求发出。Provider 流结束只完成 Attempt，不提前
+完成 Step。Runtime 完成响应消息、审批和 ToolResult 处理后发出内部 Step 边界，
+`RuntimeManager` 提交 `step.completed` 后才允许下一次模型请求。
+
+模型/UI Runtime 事件在活跃 Step 中携带 `stepId` 和 `providerAttemptId`。规范
+`provider.*` 事件可重新投影为与实时流相同的扩展事件；它们依旧不会进入模型历史。
+启动对账会从持久 Turn/Run 关系补齐缺失的 Turn started/terminal 事件。
+Multi-Agent 计划执行使用持久 `multi_task_attempts.id` 作为 Turn 身份；暂停后恢复会
+创建新的 Turn，因而新的 Step/ProviderAttempt 身份不会与上一执行尝试冲突。启动
+对账会从已完成、失败、取消或暂停的持久 attempt 补齐缺失的 Turn 终态；重启或人工
+暂停留下的已启动 Turn 均以失败关闭，等待显式恢复创建新 Turn。
 
 ## Phase 1B–1C：独立 Run 所有权与持久观察
 
@@ -91,13 +116,13 @@ Desktop 校验 schema、Run 身份、连续序号以及 SSE `id`。重复事件�
   5xx 和安全的空响应，并遵守有上限的 `Retry-After`。
 - 鉴权、授权、无效请求、永久额度、取消和未知错误失败关闭。文本、ToolCall、审批请求
   或 ToolResult 等权威输出一旦开始，后续失败不会盲目重放整个采样。
-- Phase 2 生命周期通过持久 `runtime.event` extension 记录
-  `provider_attempt_started`、`provider_attempt_failed` 和
-  `provider_retry_scheduled`。Phase 3 建立 Step/ProviderAttempt 身份后再发出规范
-  `provider.*` 执行事件；Phase 2 不虚构坐标。
-- Multi-Agent `ModelGateway` 同样禁用 SDK 内部重试，但本阶段的显式策略只接入单
-  Agent 执行链路。
+- Provider 生命周期现在写为规范 `provider.*` 事件，并由 Step/ProviderAttempt 身份
+  定位；Phase 2 的扩展信号只保留为 Runtime 与执行管理器之间的内部协议。
+- Multi-Agent 讨论用 `ModelGateway` 同样禁用 SDK 内部重试；获批计划的执行 Agent
+  通过 Native Runtime 接入本阶段的显式 ProviderAttempt 与 Step 检查点。
 - HistoryStore 终态与执行日志属于不同事实域；Phase 1A 启动对账依据已提交的
   Run 终态和审批决定补齐缺失事件，Phase 1B 再由独立 supervisor 持续负责。
 - Migration 017 预留版本化 projection checkpoint 表，目前不改变任何 UI
   读取路径。
+- Side-effecting Tool 的执行前检查点、ToolOperation/ToolAttempt 以及未知结果恢复属于
+  Phase 4，本阶段不把 Provider 检查点误称为 Tool 副作用保障。
