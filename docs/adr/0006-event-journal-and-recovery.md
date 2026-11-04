@@ -1,8 +1,8 @@
 # ADR 0006: Execution event journal and recovery
 
-- Status: Accepted; Phase 1A–1C, Phase 2 retry, and Phase 3 semantic checkpoints implemented
+- Status: Accepted; Phase 1A–4 implemented
 - Date: 2026-07-16
-- Updated: 2026-09-13
+- Updated: 2026-11-04
 
 ## Decision
 
@@ -64,8 +64,8 @@ identity mismatches, and rebuilds a fresh WebView projection from sequence zero.
 
 Terminal HistoryStore and execution-journal writes remain deliberately separate
 authorities. On startup, deterministic reconciliation repairs a missing terminal
-or approval event from committed relational evidence. Recovering an in-flight
-Tool side effect remains later-phase work.
+or approval event from committed relational evidence. Phase 4 adds conservative
+reconciliation for tools whose effects may have completed without a result.
 
 Phase 2 disables opaque AI SDK retries (`maxRetries: 0`) and places the finite
 single-Agent Provider retry policy above the adapter. It permits at most five
@@ -89,4 +89,19 @@ start. Failed projection or missing terminal boundaries fail the Step closed.
 Canonical `provider.*` events replace the Phase 2 durable Runtime extensions;
 replay projects them back to the same UI extension contract. Turn lifecycle is
 also canonical and reconciled from the durable conversation/Run relationship.
-ToolOperation/ToolAttempt checkpoints and ambiguous Tool recovery remain Phase 4.
+
+Phase 4 uses existing `tool_calls` as ToolOperations and migration 018's
+`tool_attempts` for individual executions. Intent/checkpoint/start events precede
+the body; result events, output, and terminal projections commit atomically.
+Read/idempotent transient failures allow at most three attempts. Mutations and
+semantic errors do not retry automatically. Result serialization/storage failure
+stops further sampling and leaves the started operation unresolved.
+
+Startup and stopped-Run recovery preserve committed results, expire old tool
+approvals, and classify missing results as `TOOL_OUTCOME_UNKNOWN`. Recovery never
+executes a body. Public call/result pairs are repaired through HistoryStore before
+the next model request; undispatched approval waits close as `TOOL_NOT_STARTED`.
+Unknown non-idempotent operations require a new exact approval even under room
+allow policy. File reconciliation and clearing that conservative guard remain
+future work. Recovery guidance is adapted from DeepSeek Harness under MIT; see
+`docs/07-execution-event-authority.md` for the pinned source and license.
