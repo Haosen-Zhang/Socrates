@@ -75,6 +75,9 @@ button, input, select, textarea { font: inherit; }
   --pixel-ink: #28233f;
   --pixel-paper: #fffdf4;
   --pixel-accent: #6546d7;
+  --pixel-accent-hover: color-mix(in srgb, var(--pixel-accent) 88%, black);
+  --pixel-on-accent: #fff;
+  --pixel-danger: #b4233b;
   --pixel-bg: #f1eddf;
   --pixel-grid: rgba(40, 35, 63, 0.035);
   --pixel-shadow: #c7bea5;
@@ -101,6 +104,9 @@ button, input, select, textarea { font: inherit; }
   --pixel-ink: #e8e4f5;
   --pixel-paper: #201c30;
   --pixel-accent: #8a6ff0;
+  --pixel-accent-hover: color-mix(in srgb, var(--pixel-accent) 88%, white);
+  --pixel-on-accent: #14121f;
+  --pixel-danger: #ff8f9d;
   --pixel-bg: #14121f;
   --pixel-grid: rgba(180, 170, 220, 0.05);
   --pixel-shadow: #000000;
@@ -115,6 +121,21 @@ button, input, select, textarea { font: inherit; }
 :root[data-theme="dark"] .pixel-app .border-neutral-300 { border-color: #322c46 !important; }
 /* 深色下暗底按钮反相为浅底深字（用户消息气泡例外，保持深底白字对话感） */
 :root[data-theme="dark"] .pixel-app .bg-neutral-900:not(.rounded-lg) { background: var(--pixel-accent) !important; }
+:root[data-theme="dark"] .pixel-app button.bg-neutral-900:not(.rounded-lg) { color: var(--pixel-on-accent); }
+/* Utility hover colors also need a dark surface/foreground pair. */
+:root[data-theme="dark"] .pixel-app :is(.hover\:bg-neutral-50, .hover\:bg-neutral-100):hover:not(:disabled) {
+  background: color-mix(in srgb, var(--pixel-ink) 8%, var(--pixel-paper)) !important;
+  color: var(--pixel-ink);
+}
+:root[data-theme="dark"] .pixel-app .hover\:text-neutral-700:hover { color: var(--pixel-ink); }
+:root[data-theme="dark"] .pixel-app .hover\:bg-amber-100:hover:not(:disabled) {
+  background: #51401b;
+  color: #f0d9a0;
+}
+:root[data-theme="dark"] .pixel-app .hover\:bg-red-50:hover:not(:disabled) {
+  background: #462326;
+  color: var(--pixel-danger);
+}
 /* 金色总结/警告块：深色下换成暗琥珀底 + 亮字，保留高亮但可读 */
 :root[data-theme="dark"] .pixel-app .bg-amber-50 { background: #3a2e14 !important; }
 :root[data-theme="dark"] .pixel-app .border-amber-300 { border-color: #8a6d2a !important; }
@@ -165,13 +186,14 @@ button, input, select, textarea { font: inherit; }
   transition: transform 150ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 150ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 120ms ease;
 }
 
-.pixel-button:hover,
-.pixel-member-button:hover { background: color-mix(in srgb, var(--pixel-accent) 12%, var(--pixel-paper)); }
-.pixel-button:active,
-.pixel-member-button:active { transform: translate(2px, 2px); box-shadow: none; }
-.pixel-button--primary { background: var(--pixel-accent); color: white; }
-.pixel-button--primary:hover { background: #7659e6; }
-.pixel-button--danger { color: #b4233b; border-color: #b4233b; box-shadow: 2px 2px 0 #e8a9b3; }
+.pixel-button:hover:not(:disabled),
+.pixel-member-button:hover:not(:disabled) { background: color-mix(in srgb, var(--pixel-accent) 12%, var(--pixel-paper)); }
+.pixel-button:active:not(:disabled),
+.pixel-member-button:active:not(:disabled) { transform: translate(2px, 2px); box-shadow: none; }
+.pixel-button--primary { background: var(--pixel-accent); color: var(--pixel-on-accent); }
+.pixel-button--primary:hover:not(:disabled),
+.pixel-button--primary:focus-visible:not(:disabled) { background: var(--pixel-accent-hover); color: var(--pixel-on-accent); }
+.pixel-button--danger { color: var(--pixel-danger); border-color: var(--pixel-danger); box-shadow: 2px 2px 0 #e8a9b3; }
 .pixel-button:disabled { cursor: not-allowed; opacity: 0.45; box-shadow: none; }
 
 .pixel-theme-choice {
@@ -387,7 +409,7 @@ body.is-resizing-panel { cursor: col-resize; user-select: none; }
   color: var(--pixel-ink);
 }
 .pixel-segmented__option[aria-selected="true"] {
-  color: white;
+  color: var(--pixel-on-accent);
 }
 .pixel-segmented--collapsed .pixel-segmented__option {
   padding: 0.35rem 0;
@@ -458,15 +480,17 @@ body.is-resizing-panel { cursor: col-resize; user-select: none; }
   transform: none;
   transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, opacity 120ms ease;
 }
-:root[data-ui-theme="opencode-flat"] .pixel-app :is(.pixel-button, .pixel-member-button, .pixel-window-toolbar__sidebar-toggle, .pixel-workspace-chip):hover:not(:disabled) {
+/* Keep the shared hover below variant rules so primary buttons retain their paired colors. */
+:root[data-ui-theme="opencode-flat"] :where(.pixel-app) :is(.pixel-button, .pixel-member-button, .pixel-window-toolbar__sidebar-toggle, .pixel-workspace-chip):hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--pixel-ink) 20%, transparent);
   background: color-mix(in srgb, var(--pixel-ink) 5%, var(--pixel-paper));
 }
 :root[data-ui-theme="opencode-flat"] .pixel-button--primary:hover:not(:disabled),
+:root[data-ui-theme="opencode-flat"] .pixel-button--primary:focus-visible:not(:disabled),
 :root[data-ui-theme="opencode-flat"] .pixel-button[aria-pressed="true"]:hover:not(:disabled) {
   border-color: transparent;
-  background: color-mix(in srgb, var(--pixel-accent) 86%, black);
-  color: #fff;
+  background: var(--pixel-accent-hover);
+  color: var(--pixel-on-accent);
 }
 :root[data-ui-theme="opencode-flat"] .pixel-app :is(.pixel-button, .pixel-member-button, .pixel-window-toolbar__sidebar-toggle):active:not(:disabled) {
   box-shadow: 0 1px 1px color-mix(in srgb, var(--pixel-shadow) 60%, transparent);
@@ -477,7 +501,7 @@ body.is-resizing-panel { cursor: col-resize; user-select: none; }
 :root[data-ui-theme="opencode-flat"] .pixel-send {
   border-color: transparent;
   background: var(--pixel-accent);
-  color: #fff;
+  color: var(--pixel-on-accent);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--pixel-accent) 38%, transparent);
 }
 :root[data-ui-theme="opencode-flat"] .pixel-new-room-button {
@@ -486,8 +510,8 @@ body.is-resizing-panel { cursor: col-resize; user-select: none; }
   box-shadow: none;
   transition: background-color 120ms ease, opacity 120ms ease;
 }
-:root[data-ui-theme="opencode-flat"] .pixel-new-room-button:hover { background: color-mix(in srgb, var(--pixel-accent) 90%, black); transform: none; box-shadow: none; }
-:root[data-ui-theme="opencode-flat"] .pixel-new-room-button:active { transform: none; box-shadow: none; opacity: 0.86; }
+:root[data-ui-theme="opencode-flat"] .pixel-new-room-button:hover:not(:disabled) { background: var(--pixel-accent-hover); color: var(--pixel-on-accent); transform: none; box-shadow: none; }
+:root[data-ui-theme="opencode-flat"] .pixel-new-room-button:active:not(:disabled) { transform: none; box-shadow: none; opacity: 0.86; }
 :root[data-ui-theme="opencode-flat"] .pixel-room-sidebar {
   border-right: 1px solid color-mix(in srgb, var(--pixel-ink) 11%, transparent);
   background: color-mix(in srgb, var(--pixel-paper) 72%, var(--pixel-bg));
@@ -633,14 +657,14 @@ body.is-resizing-panel { cursor: col-resize; user-select: none; }
 .pixel-new-room-button {
   border: 3px solid var(--pixel-ink);
   border-radius: 2px;
-  color: white;
+  color: var(--pixel-on-accent);
   background: var(--pixel-accent);
   box-shadow: 3px 3px 0 var(--pixel-shadow);
   will-change: transform;
   transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 160ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 120ms ease;
 }
-.pixel-new-room-button:hover { background: #7659e6; transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--pixel-shadow); }
-.pixel-new-room-button:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--pixel-shadow); }
+.pixel-new-room-button:hover:not(:disabled) { background: var(--pixel-accent-hover); color: var(--pixel-on-accent); transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--pixel-shadow); }
+.pixel-new-room-button:active:not(:disabled) { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--pixel-shadow); }
 .pixel-room-list { min-height: 0; scrollbar-width: thin; overscroll-behavior: contain; }
 .pixel-room-row {
   min-height: 42px;
@@ -652,7 +676,7 @@ body.is-resizing-panel { cursor: col-resize; user-select: none; }
 .pixel-room-row:hover { border-color: color-mix(in srgb, var(--pixel-accent) 48%, transparent); background: color-mix(in srgb, var(--pixel-accent) 10%, var(--pixel-paper)); }
 .pixel-room-row.is-active {
   border-color: var(--pixel-ink);
-  color: white;
+  color: var(--pixel-on-accent);
   background: var(--pixel-accent);
   box-shadow: 2px 2px 0 var(--pixel-shadow);
 }
@@ -949,7 +973,7 @@ details[open] > summary .tool-activity-disclosure { transform: rotate(90deg); }
 .approval-risk--high, .approval-risk--destructive { color: #b33c3c; }
 .approval-shelf-actions { display: flex; flex: none; flex-wrap: wrap; gap: 6px; }
 .approval-shelf-actions .pixel-button { padding: 5px 8px; font-size: 10px; }
-.approval-deny { color: #b33c3c; }
+.approval-deny { color: var(--pixel-danger); }
 .approval-shelf-technical { margin-top: 8px; font-size: 10px; }
 .approval-shelf-technical > summary { cursor: pointer; color: var(--pixel-muted); }
 
@@ -1096,13 +1120,14 @@ details[open] > summary .tool-activity-disclosure { transform: rotate(90deg); }
 }
 
 .pixel-send {
-  color: white;
+  color: var(--pixel-on-accent);
   background: var(--pixel-accent);
 }
 .pixel-send:hover:not(:disabled),
-.pixel-send:focus-visible {
+.pixel-send:focus-visible:not(:disabled) {
   outline: none;
-  background: color-mix(in srgb, var(--pixel-accent) 88%, white);
+  background: var(--pixel-accent-hover);
+  color: var(--pixel-on-accent);
   transform: translate(-1px, -1px);
   box-shadow: 4px 4px 0 var(--pixel-shadow);
 }
