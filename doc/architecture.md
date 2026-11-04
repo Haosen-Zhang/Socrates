@@ -404,6 +404,11 @@ Run 独立的 `AbortController`。SSE/WebView 断开不能取消执行；
   每次外部调用建立独立 ProviderAttempt；`step.started` / `provider.attempt.started`
   必须在调用前提交，ToolResult/审批处理完成并提交 `step.completed` 后才允许下一次采样。
   Multi-Agent Gateway 也禁用 SDK 内部重试，但暂不套用该策略。
+- 单 Agent 工具在主体执行前提交 intent/checkpoint/started，输出与结果事件原子提交。
+  `tool_calls` 表示逻辑操作，`tool_attempts` 表示最多 3 次安全的瞬时错误尝试；
+  非幂等工具不自动重试。重启或已停止 Run 的下一轮对话会补齐公开工具历史，已开始
+  却没有结果的操作明确标为 `TOOL_OUTCOME_UNKNOWN`，再次修改需新审批。
+  详见 [执行事件与工具恢复](../docs/07-execution-event-authority.md)。
 - 上下文窗口已知时读取 Agent 的 `modelCapabilities.contextWindowTokens`；未知时使用保守 4K
   fallback。超限会记录 `memory.context_truncated`；当前工作单元本身超限时在调用 Provider
   前明确失败，不发送越界 payload。

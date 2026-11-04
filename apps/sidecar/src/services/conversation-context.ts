@@ -130,6 +130,33 @@ function toRuntimeMessage(message: ConversationStoredMessage): RuntimeConversati
   };
 }
 
+/** Recovery appends to immutable history; only the model projection moves the
+ * matching results beside their originating call batch for provider validity. */
+function orderToolResults(messages: ConversationStoredMessage[]): ConversationStoredMessage[] {
+  const results = new Map<string, ConversationStoredMessage[]>();
+  for (const message of messages) {
+    const key = toolResultKey(message);
+    if (key) results.set(key, [...(results.get(key) ?? []), message]);
+  }
+  const ordered: ConversationStoredMessage[] = [];
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index]!;
+    if (toolResultKey(message)) continue;
+    if (!toolCallKey(message)) { ordered.push(message); continue; }
+    const batchResults: ConversationStoredMessage[] = [];
+    do {
+      const call = messages[index]!;
+      ordered.push(call);
+      const result = results.get(toolCallKey(call)!)?.shift();
+      if (result) batchResults.push(result);
+      index++;
+    } while (index < messages.length && toolCallKey(messages[index]!));
+    index--;
+    ordered.push(...batchResults);
+  }
+  return ordered;
+}
+
 /**
  * First-stage context policy: keep all product instructions and the newest
  * complete conversation units within a model-aware token budget. It does not
@@ -145,7 +172,7 @@ export function buildConversationContext(
     const conversational = completeToolExchanges(ordered.filter((message) => message.role !== "system"));
     const messages = [...pinned, ...conversational].sort((left, right) => left.sequence - right.sequence);
     return {
-      messages: messages.map(toRuntimeMessage),
+      messages: orderToolResults(messages).map(toRuntimeMessage),
       truncated: Boolean(options.omittedBeforeSequence),
       overflow: false,
       estimatedTokens: messages.reduce((total, message) => total + messageTokens(message), 0),
@@ -189,7 +216,7 @@ export function buildConversationContext(
     ...(dropped.length ? [Math.max(...dropped.map((message) => message.sequence))] : []),
   ].filter((value): value is number => value !== null);
   return {
-    messages: retained.map(toRuntimeMessage),
+    messages: orderToolResults(retained).map(toRuntimeMessage),
     truncated: dropped.length > 0 || omittedBeforeSequence !== null,
     overflow: used > budgetTokens,
     estimatedTokens: used,

@@ -1,4 +1,4 @@
-# Phase 1A–3：执行事件权威、语义身份与持久检查点
+# Phase 1A–4：执行事件权威、持久检查点与工具恢复
 
 ## 目标
 
@@ -8,6 +8,7 @@ Run 生命周期移交给 sidecar 内的 `RunSupervisor`；Phase 1C 让观察者
 Tool 重试。Phase 2 在不提前创建 Step 身份的前提下，为单 Agent Provider 调用
 增加显式、有限且可审计的重试。Phase 3 将 Turn、Step 和 ProviderAttempt
 提升为规范执行身份，并让 Provider 调用服从持久化检查点。
+Phase 4 为工具建立独立的逻辑操作与尝试记录，并在结果丢失后明确保留不确定性。
 
 ## 权威边界
 
@@ -59,9 +60,8 @@ Operation 属于 Step，Tool Attempt 属于 Tool Operation。缺失父身份的�
 - Turn：started、completed、failed、cancelled；
 - Step：started、completed、failed；
 - Provider Attempt：started、failed、retry_scheduled、completed。
-
-Tool Operation/Attempt 和 `tool.outcome_unknown` 仍只有类型与身份契约，Phase 4
-迁移到显式工具状态机后才允许发出。特别是非幂等 Tool 的未知结果不得自动重试。
+- Tool Operation：requested；Tool Attempt：checkpointed、started、result；
+- Tool 恢复：`tool.outcome_unknown`。
 
 ## Phase 3：Turn、Step 与 ProviderAttempt
 
@@ -83,6 +83,49 @@ Multi-Agent 计划执行使用持久 `multi_task_attempts.id` 作为 Turn 身份
 创建新的 Turn，因而新的 Step/ProviderAttempt 身份不会与上一执行尝试冲突。启动
 对账会从已完成、失败、取消或暂停的持久 attempt 补齐缺失的 Turn 终态；重启或人工
 暂停留下的已启动 Turn 均以失败关闭，等待显式恢复创建新 Turn。
+
+## Phase 4：工具尝试与未知结果恢复
+
+`tool_calls` 继续表示逻辑 ToolOperation；Migration 018 增加 `tool_attempts`，每次尝试
+有独立 ID 和序号。Native Runtime 从 RuntimeManager 接收真实 Run/Turn 身份，并在
+当前 Step 下执行工具。工具实现收到稳定的 `idempotencyKey`（逻辑 operation ID）
+以及独立 `toolAttemptId`。旧适配器没有 Step 时仅更新原有 SQLite 记录，不伪造 v1 层级。
+
+工具入口先提交 operation intent，再提交 attempt checkpoint 和 started，才允许进入
+工具主体；任一检查点失败均不执行副作用。结果事件、输出和终态在同一个 SQLite 事务
+中提交。结果序列化或落盘失败会中止 Native 采样，保留 started 状态，不能伪装成工具
+执行失败。相同稳定 key 的并发调用复用同一个操作；跨输入、定义或执行 scope 的复用
+失败关闭。
+
+自动重试只适用于 read/idempotent 工具的已分类瞬时网络、限流或可重试超时错误，最多
+3 次，采用短暂有界退避。文件不存在、参数/权限错误和未知错误不重试；非幂等工具
+不自动重试。重试共用逻辑操作和幂等 key，各自留下 attempt 记录。
+
+启动恢复，以及同进程内已停止 Run 的下一次对话，遵守以下规则：
+
+| 持久证据 | 恢复结果 | 后续动作 |
+| --- | --- | --- |
+| 已提交输出 | 保留已知结果 | 不重复工具主体 |
+| 尚未开始 | `TOOL_NOT_STARTED` | 旧审批过期，可重新请求 |
+| 已开始、结果缺失，read/idempotent | `TOOL_OUTCOME_UNKNOWN` / `safe_to_retry` | 模型可明确重新请求 |
+| 已开始、结果缺失，工作区修改 | `TOOL_OUTCOME_UNKNOWN` / `verify_then_continue` | 先检查文件状态；再次修改需新审批 |
+| 已开始、结果缺失，其他非幂等工具 | `TOOL_OUTCOME_UNKNOWN` / `requires_user_confirmation` | 重新人工确认 |
+
+恢复本身不执行工具。下一轮采样前，通过 HistoryStore-backed writer 补齐公开
+ToolCall/ToolResult；等待审批、尚未进入 executor 的调用补为 `TOOL_NOT_STARTED`。
+模型只看到可见工具结果及恢复提示，不接收执行日志。未知非幂等操作会使相同工作区、
+同名工具重新要求人工审批，即使 Room policy 为 allow。当前采用保守保护，未实现
+“已核验并清除未知状态”的 UI；每次新的操作均需自己的精确审批。
+
+升级前 Native 写入的 agent-session 身份通过持久 runtime-session/Run 关系解析，
+不会漏掉旧操作的未知或已知结果。SDK 的明确审批拒绝写为 `TOOL_APPROVAL_DENIED`，
+历史修复也保留已有拒绝证据。补写仍是 append-only；模型投影将结果放到原始调用批次
+之后、后续消息之前，避免并行调用或迟到恢复结果破坏 Provider 的消息配对协议。
+
+恢复区分和模型提示改编自 DeepSeek Harness 的
+[`session/repair.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/8bd073392eef6f54e921a093b95076248eb08cbb/packages/core/session/src/repair.ts)，
+固定版本 `8bd0733`，MIT 许可保留于 `third-party/DeepSeek-Harness-LICENSE`。
+直接复用其恢复语义和提示，适配已有 SQLite/HistoryStore，未引入新的运行时框架。
 
 ## Phase 1B–1C：独立 Run 所有权与持久观察
 
@@ -124,5 +167,14 @@ Desktop 校验 schema、Run 身份、连续序号以及 SSE `id`。重复事件�
   Run 终态和审批决定补齐缺失事件，Phase 1B 再由独立 supervisor 持续负责。
 - Migration 017 预留版本化 projection checkpoint 表，目前不改变任何 UI
   读取路径。
-- Side-effecting Tool 的执行前检查点、ToolOperation/ToolAttempt 以及未知结果恢复属于
-  Phase 4，本阶段不把 Provider 检查点误称为 Tool 副作用保障。
+- 工具检查点不能把外部副作用和 SQLite 提交变成同一个事务；Phase 4 明确表达这个
+  不确定窗口。原子覆盖、乐观并发和文件崩溃对账留给 Phase 5。
+
+本轮只交付 Phase 4。剩余 4 个阶段按可独立合并的小范围推进：
+
+```text
+Phase 5  文件修改：原子覆盖、并发校验、崩溃对账
+Phase 6  Tool Contract v2：递归 schema、结构化输出、文档
+Phase 7  执行策略：超时、重复调用防护、输出落盘、命令验证
+Phase 8  故障注入与恢复验收、文档收尾
+```

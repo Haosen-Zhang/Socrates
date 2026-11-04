@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { ToolExecutionJournal } from "../tools/execution-journal";
+import { repairToolHistory } from "../tools/repair-history";
 import { createHash } from "node:crypto";
 import type {
   ApprovalDecision,
@@ -110,6 +112,7 @@ export class SingleAgentRunner {
   }
 
   recoverInterrupted(): { runs: number; approvals: number } {
+    new ToolExecutionJournal(this.db, this.events).recoverInterrupted();
     this.reconcileDurableExecutionFacts();
     let runs = 0;
     let approvals = 0;
@@ -120,12 +123,6 @@ export class SingleAgentRunner {
           SELECT id FROM agent_runs WHERE status IN ('preparing', 'running', 'awaiting_approval')
         )
       `).run().changes;
-      this.db.query(`
-        UPDATE tool_calls SET status = 'cancelled', error = 'sidecar_restarted', updated_at = ?
-        WHERE status IN ('queued', 'awaiting_approval', 'running') AND session_id IN (
-          SELECT session_id FROM agent_runs WHERE status IN ('preparing', 'running', 'awaiting_approval')
-        )
-      `).run(new Date().toISOString());
       this.db.query(`
         UPDATE sessions SET status = 'interrupted', updated_at = ?
         WHERE id IN (SELECT session_id FROM agent_runs WHERE status IN ('preparing', 'running', 'awaiting_approval'))
@@ -598,6 +595,11 @@ export class SingleAgentRunner {
       ? this.memory.getThread(input.threadId)
       : this.memory.ensureDefaultThread(session.id);
     if (!thread || thread.roomId !== session.id) throw new Error("conversation_thread_not_found");
+    const stoppedRuns = this.db.query<{ id: string }, [string]>(`SELECT id FROM agent_runs
+      WHERE thread_id = ? AND status IN ('completed', 'failed', 'cancelled', 'interrupted')`).all(thread.id);
+    const toolJournal = new ToolExecutionJournal(this.db, this.events);
+    for (const run of stoppedRuns) toolJournal.recoverInterrupted(run.id);
+    await repairToolHistory(this.db, this.memory, thread.id);
     const runId = crypto.randomUUID();
     const clientTurnKey = input.clientTurnKey ?? crypto.randomUUID();
     const prepared = await this.memory.beginTurn({

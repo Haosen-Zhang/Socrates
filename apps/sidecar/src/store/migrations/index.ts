@@ -15,5 +15,6 @@ import { collaborationSettingsMigration } from "./014_collaboration_settings";
 import { modelCatalogProvenanceMigration } from "./015_model_catalog_provenance";
 import { historyProjectionMigration } from "./016_history_projection";
 import { executionEventAuthorityMigration } from "./017_execution_event_authority";
+import { toolAttemptsMigration } from "./018_tool_attempts";
 
-export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration, usageAndRecoveryMigration, projectConversationOrganizationMigration, roomKindMigration, phase1RuntimeMigration, conversationMemoryMigration, roomApprovalPolicyMigration, managedWorkspacesMigration, collaborationSettingsMigration, modelCatalogProvenanceMigration, historyProjectionMigration, executionEventAuthorityMigration] as const;
+export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration, usageAndRecoveryMigration, projectConversationOrganizationMigration, roomKindMigration, phase1RuntimeMigration, conversationMemoryMigration, roomApprovalPolicyMigration, managedWorkspacesMigration, collaborationSettingsMigration, modelCatalogProvenanceMigration, historyProjectionMigration, executionEventAuthorityMigration, toolAttemptsMigration] as const;

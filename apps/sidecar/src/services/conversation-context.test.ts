@@ -27,6 +27,22 @@ function message(
 }
 
 describe("buildConversationContext", () => {
+  it("places late recovered results next to their call batch without changing stored history", () => {
+    const history = [
+      message(1, "assistant", "", { parts: [{ type: "tool_call", callId: "a", name: "write", input: {} }] }),
+      message(2, "assistant", "", { parts: [{ type: "tool_call", callId: "b", name: "read", input: {} }] }),
+      message(3, "tool", "", { parts: [{ type: "tool_result", callId: "b", output: { preview: "ok", byteSize: 2, truncated: false }, isError: false }] }),
+      message(4, "assistant", "done"),
+      message(5, "tool", "", { parts: [{ type: "tool_result", callId: "a", output: { preview: "unknown", byteSize: 7, truncated: false }, isError: true }] }),
+      message(6, "user", "continue"),
+    ];
+    for (const contextWindowTokens of [null, 8192]) {
+      const context = buildConversationContext(history, { contextWindowTokens });
+      expect(context.messages.map((item) => item.sequence)).toEqual([1, 2, 5, 3, 4, 6]);
+    }
+    expect(history.map((item) => item.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
   it("truncates by estimated tokens while retaining instructions and the latest complete exchange", () => {
     const history = [
       message(1, "system", "Always be precise."),

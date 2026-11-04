@@ -136,6 +136,7 @@ export class RuntimeManager {
     try {
       for await (const event of active.runtime.start({
         prompt: input.prompt,
+        execution: input.turnId ? { runId: input.taskId, turnId: input.turnId } : undefined,
         parts: input.parts,
         messages: input.messages,
         signal: input.signal,
