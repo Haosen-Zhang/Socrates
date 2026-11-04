@@ -12,6 +12,7 @@ import {
   type ToolDefinition,
   type ToolOutputRef,
   truncateToolOutput,
+  isStructuredExecutionError,
   validateJsonSchemaInput,
 } from "@socrates/core";
 import { hashToolInput, type ToolExecutor } from "../tools/executor";
@@ -374,6 +375,7 @@ export class NativeAgentRuntime implements AgentRuntime {
 
   async *start(input: {
     prompt: string;
+    execution?: { runId: string; turnId: string };
     parts?: MessagePart[];
     messages?: RuntimeConversationMessage[];
     signal?: AbortSignal;
@@ -397,11 +399,24 @@ export class NativeAgentRuntime implements AgentRuntime {
       }
     }
     const definitions = this.availableDefinitions();
+    const runId = input.execution?.runId ?? this.input.taskId;
+    const turnId = input.execution?.turnId ?? this.input.taskId;
+    let stepNo = 0;
+    let fatalToolError: unknown;
     const tools = Object.fromEntries(definitions.map((definition) => [definition.name, {
       definition,
-      permission: () => this.input.permissionForTool?.(definition) ?? this.defaultPermission(definition),
+      permission: () => {
+        const permission = this.input.permissionForTool?.(definition) ?? this.defaultPermission(definition);
+        if (permission.effect !== "deny" && this.input.executor.requiresRecoveryConfirmation(definition.name, this.input.workspaceIdentity)) {
+          return { ...permission, effect: "ask" as const, freshHumanRequired: true, reasonCode: "tool_outcome_unknown" };
+        }
+        return permission;
+      },
       execute: async (toolInput: unknown, callId: string, permission: PermissionEvaluation, signal?: AbortSignal) => {
-        if (permission.effect === "ask") {
+        if (fatalToolError) throw fatalToolError;
+        if (permission.effect === "deny") throw new Error("native_tool_permission_denied");
+        const recoveryConfirmation = this.input.executor.requiresRecoveryConfirmation(definition.name, this.input.workspaceIdentity);
+        if (permission.effect === "ask" || recoveryConfirmation) {
           const grant = this.approvedCalls.get(callId);
           this.approvedCalls.delete(callId);
           if (!grant) throw new Error("native_tool_approval_missing");
@@ -412,32 +427,43 @@ export class NativeAgentRuntime implements AgentRuntime {
         const context: ToolContext = {
           callId,
           sessionId: this.input.sessionId,
-          taskId: this.input.taskId,
-          turnId: this.input.taskId,
+          taskId: runId,
+          turnId,
+          ...(input.execution ? { stepId: `${runId}:turn:${turnId}:step:${stepNo}` } : {}),
           agentId: this.input.agentId,
           workspaceId: this.input.workspaceId,
           mode: "single_agent",
           phase: "executing",
           signal: signal ?? input.signal ?? new AbortController().signal,
         };
-        const record = await this.input.executor.invoke({
-          stableKey: `${this.input.taskId}:${callId}`,
-          name: definition.name,
-          generation: definition.generation,
-          input: toolInput,
-          workspaceIdentity: this.input.workspaceIdentity,
-          policyVersion: permission.policyVersion,
-          attemptId: this.input.taskId,
-        }, context, {
-          ...permission,
-          effect: "allow",
-          matchedRuleIds: permission.effect === "ask"
-            ? [...permission.matchedRuleIds, "human-approved"]
-            : permission.matchedRuleIds,
-          reasonCode: permission.effect === "ask"
-            ? `human_approved:${permission.reasonCode}`
-            : permission.reasonCode,
-        });
+        let record;
+        try {
+          if (input.execution && stepNo === 0) throw new Error("tool_provider_checkpoint_missing");
+          record = await this.input.executor.invoke({
+            stableKey: `${runId}:${callId}`,
+            name: definition.name,
+            generation: definition.generation,
+            input: toolInput,
+            workspaceIdentity: this.input.workspaceIdentity,
+            policyVersion: permission.policyVersion,
+            attemptId: runId,
+          }, context, {
+            ...permission,
+            effect: "allow",
+            matchedRuleIds: permission.effect === "ask"
+              ? [...permission.matchedRuleIds, "human-approved"]
+              : permission.matchedRuleIds,
+            reasonCode: permission.effect === "ask"
+              ? `human_approved:${permission.reasonCode}`
+              : permission.reasonCode,
+          });
+        } catch (error) {
+          if (isStructuredExecutionError(error) && error.detail.category === "persistence") {
+            fatalToolError = error;
+            abortController.abort(error);
+          }
+          throw error;
+        }
         if (record.status !== "succeeded" || !record.output) throw new Error(record.error ?? "native_tool_failed");
         return record.output;
       },
@@ -480,6 +506,8 @@ export class NativeAgentRuntime implements AgentRuntime {
           }));
         },
       })) {
+        if (fatalToolError) throw fatalToolError;
+        if (event.type === "provider_attempt_started" && event.attemptNo === 1) stepNo++;
         if (this.interrupted || abortController.signal.aborted) throw new Error("native_agent_cancelled");
         if (event.type === "text_delta") yield event;
         else if (event.type === "tool_call") yield event;
@@ -504,6 +532,7 @@ export class NativeAgentRuntime implements AgentRuntime {
           payload: Object.fromEntries(Object.entries(event).filter(([key]) => key !== "type")),
         };
       }
+      if (fatalToolError) throw fatalToolError;
       if (this.interrupted || abortController.signal.aborted) throw new Error("native_agent_cancelled");
       yield { type: "status", status: "completed" };
     } finally {

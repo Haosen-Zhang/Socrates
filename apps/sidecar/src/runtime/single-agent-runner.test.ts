@@ -284,6 +284,44 @@ function setContextWindow(db: ReturnType<typeof openDb>, sessionId: string, toke
 }
 
 describe("SingleAgentRunner", () => {
+  it("repairs missing tool history with an unknown result before the next model request", async () => {
+    const { db, session, runner, seen } = setupRecording();
+    const first = await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "first" });
+    db.query(`INSERT INTO tool_calls (id, stable_key, session_id, task_id, attempt_id, turn_id, agent_id, name,
+      generation, input_json, input_hash, workspace_identity, policy_version, risk, idempotency, status, capability, created_at, updated_at)
+      VALUES ('crashed-call', 'crashed-call', ?, ?, ?, ?, 'a', 'run_shell', 1, '{}', 'hash', 'w', 1, 'high', 'non_idempotent', 'running', 'shell', 'now', 'now')`)
+      .run(session.id, first.id, first.id, first.turnId);
+    runner.recoverInterrupted();
+    await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "continue" });
+    const parts = seen[1]!.flatMap((message) => message.parts);
+    expect(parts.some((part) => part.type === "tool_call" && part.callId === "crashed-call")).toBe(true);
+    const result = parts.find((part) => part.type === "tool_result" && part.callId === "crashed-call");
+    expect(result?.type === "tool_result" ? result.output.preview : "").toContain("TOOL_OUTCOME_UNKNOWN");
+  });
+  it("repairs a stopped run's unresolved tool before continuing without a process restart", async () => {
+    const { db, session, runner, seen } = setupRecording();
+    const first = await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "first" });
+    db.query(`INSERT INTO tool_calls (id, stable_key, session_id, task_id, attempt_id, turn_id, agent_id, name,
+      generation, input_json, input_hash, workspace_identity, policy_version, risk, idempotency, status, capability, created_at, updated_at)
+      VALUES ('lost-result', 'lost-result', ?, ?, ?, ?, 'a', 'run_shell', 1, '{}', 'hash', 'w', 1, 'high', 'non_idempotent', 'running', 'shell', 'now', 'now')`)
+      .run(session.id, first.id, first.id, first.turnId);
+    db.query("UPDATE agent_runs SET status = 'failed' WHERE id = ?").run(first.id);
+    await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "continue" });
+    const result = seen[1]!.flatMap((message) => message.parts).find((part) => part.type === "tool_result" && part.callId === "lost-result");
+    expect(result?.type === "tool_result" ? result.output.preview : "").toContain("TOOL_OUTCOME_UNKNOWN");
+  });
+  it("closes a tool call interrupted before dispatch as not started", async () => {
+    const { db, session, runner, seen } = setupRecording();
+    const first = await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "first" });
+    await new ConversationMemoryStore(db).appendMessage({ roomId: session.id, threadId: first.threadId!,
+      runId: first.id, turnId: first.turnId!, agentId: "a", role: "assistant", kind: "tool_call", content: "",
+      parts: [{ type: "tool_call", callId: "never-dispatched", name: "run_shell", input: {} }],
+      status: "completed", idempotencyKey: `tool-call:${first.id}:never-dispatched` });
+    db.query("UPDATE agent_runs SET status = 'interrupted' WHERE id = ?").run(first.id);
+    await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "continue" });
+    const result = seen[1]!.flatMap((message) => message.parts).find((part) => part.type === "tool_result" && part.callId === "never-dispatched");
+    expect(result?.type === "tool_result" ? result.output.preview : "").toContain("TOOL_NOT_STARTED");
+  });
   it("records one reconstructable Run lifecycle only in the execution journal", async () => {
     const { db, session, runner } = setupRecording({ response: "done" });
     const result = await runner.run({

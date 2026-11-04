@@ -106,7 +106,7 @@ runtimes.register("native_ai_sdk", (input) => {
   const mcpDefinitions = mcp.definitionsFor(workspace.id, { effects: ["allow", "ask"] });
   const workspaceWriteTools = createWorkspaceWriteBuiltins(policy);
   const registry = new ToolRegistry([...createReadOnlyBuiltins(policy), ...workspaceWriteTools, ...mcpDefinitions]);
-  const executor = new ToolExecutor(db, registry, approvals);
+  const executor = new ToolExecutor(db, registry, approvals, undefined, executionEvents);
   const model = createAiSdkModel({
     providerType: provider.type,
     baseUrl: provider.base_url,
