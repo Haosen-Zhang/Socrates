@@ -1,8 +1,8 @@
 # ADR 0006: Execution event journal and recovery
 
-- Status: Accepted; Phase 1A–1C and Phase 2 Provider retry implemented
+- Status: Accepted; Phase 1A–4 implemented
 - Date: 2026-07-16
-- Updated: 2026-09-01
+- Updated: 2026-11-04
 
 ## Decision
 
@@ -64,14 +64,44 @@ identity mismatches, and rebuilds a fresh WebView projection from sequence zero.
 
 Terminal HistoryStore and execution-journal writes remain deliberately separate
 authorities. On startup, deterministic reconciliation repairs a missing terminal
-or approval event from committed relational evidence. Recovering an in-flight
-Tool side effect remains later-phase work.
+or approval event from committed relational evidence. Phase 4 adds conservative
+reconciliation for tools whose effects may have completed without a result.
 
 Phase 2 disables opaque AI SDK retries (`maxRetries: 0`) and places the finite
 single-Agent Provider retry policy above the adapter. It permits at most five
 attempts for classified transient failures, honors a capped `Retry-After`, and
 stops automatic replay once authoritative text or Tool activity begins. Stable
 structured errors carry code, category, phase, retryability, optional retry
-delay, and a bounded cause. Retry lifecycle is durably retained as normalized
-Runtime extension events until Phase 3 can attach canonical Step and
-ProviderAttempt coordinates.
+delay, and a bounded cause. Phase 2 initially retained the retry lifecycle as
+normalized Runtime extension events; Phase 3 promotes it to canonical events
+with Step and ProviderAttempt coordinates.
+
+Phase 3 attaches canonical Turn, Step, and ProviderAttempt identities. The
+Runtime emits a pre-request boundary before each adapter invocation;
+`RuntimeManager` synchronously commits `step.started` and
+`provider.attempt.started` before asking the generator to continue, so journal
+failure prevents the Provider call. A retry receives a new ProviderAttempt ID
+inside the same Step. Provider completion does not complete the Step: response
+messages, approvals, and durable Tool results must finish first, after which a
+separate internal boundary commits `step.completed` before another sample can
+start. Failed projection or missing terminal boundaries fail the Step closed.
+
+Canonical `provider.*` events replace the Phase 2 durable Runtime extensions;
+replay projects them back to the same UI extension contract. Turn lifecycle is
+also canonical and reconciled from the durable conversation/Run relationship.
+
+Phase 4 uses existing `tool_calls` as ToolOperations and migration 018's
+`tool_attempts` for individual executions. Intent/checkpoint/start events precede
+the body; result events, output, and terminal projections commit atomically.
+Read/idempotent transient failures allow at most three attempts. Mutations and
+semantic errors do not retry automatically. Result serialization/storage failure
+stops further sampling and leaves the started operation unresolved.
+
+Startup and stopped-Run recovery preserve committed results, expire old tool
+approvals, and classify missing results as `TOOL_OUTCOME_UNKNOWN`. Recovery never
+executes a body. Public call/result pairs are repaired through HistoryStore before
+the next model request; undispatched approval waits close as `TOOL_NOT_STARTED`.
+Unknown non-idempotent operations require a new exact approval even under room
+allow policy. File reconciliation and clearing that conservative guard remain
+future work. Recovery guidance is adapted from DeepSeek Harness under MIT; see
+`docs/07-execution-event-authority.md` for the pinned source and license.

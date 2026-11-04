@@ -56,6 +56,7 @@ export interface AgentRuntime {
   open(input: { sessionId: string; workspaceId?: string }): Promise<void>;
   start(input: {
     prompt: string;
+    execution?: { runId: string; turnId: string };
     parts?: MessagePart[];
     messages?: RuntimeConversationMessage[];
     signal?: AbortSignal;

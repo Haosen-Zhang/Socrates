@@ -25,8 +25,8 @@ import { AttachmentResolver } from "./attachments/resolver";
 import { contentRoutes } from "./routes/content";
 import { WorkspacePathPolicy } from "./workspace/path-policy";
 import { NativeAgentRuntime, createAiSdkNativeStream } from "./runtime/native-agent-runtime";
-import { createReadOnlyBuiltins } from "./tools/read-only-builtins";
-import { createWorkspaceWriteBuiltins } from "./tools/workspace-write-builtins";
+import { createNativeBuiltinTools } from "./tools/native-builtins";
+import { ToolOutputStore } from "./tools/output-store";
 import { ToolRegistry } from "./tools/registry";
 import { ToolExecutor } from "./tools/executor";
 import type { PermissionAction, ProviderType, ToolCapability, ToolDefinition } from "@socrates/core";
@@ -85,6 +85,7 @@ const sessions = new SessionStore(db, history);
 const events = new EventStore(db);
 const executionEvents = new ExecutionEventStore(db);
 const approvals = new ApprovalManager(db);
+const toolOutputs = new ToolOutputStore(db);
 const attachments = new AttachmentResolver(db, defaultDataDir());
 const mcpStore = new McpStore(db, secrets);
 const mcp = new McpManager(db, mcpStore, new OfficialMcpClientAdapter(proxiedFetch));
@@ -104,9 +105,11 @@ runtimes.register("native_ai_sdk", (input) => {
   if (!apiKey) throw new Error("native_provider_key_missing");
   const policy = new WorkspacePathPolicy(workspace.canonicalPath);
   const mcpDefinitions = mcp.definitionsFor(workspace.id, { effects: ["allow", "ask"] });
-  const workspaceWriteTools = createWorkspaceWriteBuiltins(policy);
-  const registry = new ToolRegistry([...createReadOnlyBuiltins(policy), ...workspaceWriteTools, ...mcpDefinitions]);
-  const executor = new ToolExecutor(db, registry, approvals);
+  const builtinTools = createNativeBuiltinTools(policy, toolOutputs, {
+    sessionId: input.sessionId, workspaceIdentity: workspace.identityHash,
+  });
+  const registry = new ToolRegistry([...builtinTools, ...mcpDefinitions]);
+  const executor = new ToolExecutor(db, registry, approvals, undefined, executionEvents);
   const model = createAiSdkModel({
     providerType: provider.type,
     baseUrl: provider.base_url,
@@ -174,8 +177,9 @@ const resolveMultiAgent = (agentId: string, snapshot: Record<string, unknown>): 
   };
 };
 const multiCoordinator = new MultiAgentCoordinator(db, multiTasks, events, gateway, resolveMultiAgent, history);
-const executionRunner = new ExecutionRunner(db, multiTasks, runtimes, new WorkspaceLeaseManager(db, crypto.randomUUID()), approvals, events, history);
+const executionRunner = new ExecutionRunner(db, multiTasks, runtimes, new WorkspaceLeaseManager(db, crypto.randomUUID()), approvals, events, executionEvents, history);
 multiTasks.recoverInterrupted();
+executionRunner.reconcileDurableTurnEvents();
 
 app.get("/health", (c) => c.json({ ok: true }));
 app.route("/config", configRoutes(config));

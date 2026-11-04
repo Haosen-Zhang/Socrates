@@ -16,7 +16,7 @@ import { ConversationMemoryStore } from "../store/conversation-memory-store";
 import { RuntimeManager } from "./runtime-manager";
 import { SingleAgentRunner } from "./single-agent-runner";
 import { RunSupervisor } from "./run-supervisor";
-import { estimateNativeContextOverhead } from "./native-agent-runtime";
+import { estimateNativeContextOverhead, toAiSdkModelMessages } from "./native-agent-runtime";
 import { AttachmentResolver } from "../attachments/resolver";
 import { tmpdir } from "node:os";
 import { WorkspacePathPolicy } from "../workspace/path-policy";
@@ -284,6 +284,96 @@ function setContextWindow(db: ReturnType<typeof openDb>, sessionId: string, toke
 }
 
 describe("SingleAgentRunner", () => {
+  it("repairs pre-Phase-4 Native tools using their legacy agent-session identity", async () => {
+    const { db, session, runner, seen } = setupRecording();
+    const first = await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "first" });
+    const legacyId = `${session.id}:a:${first.turnId}:1`;
+    expect(db.query("SELECT agent_session_id FROM runtime_sessions WHERE id = ?").get(first.runtimeSessionId))
+      .toEqual({ agent_session_id: legacyId });
+    db.query(`INSERT INTO tool_calls (id, stable_key, session_id, task_id, attempt_id, turn_id, agent_id, name,
+      generation, input_json, input_hash, workspace_identity, policy_version, risk, idempotency, status, created_at, updated_at)
+      VALUES ('legacy-call', 'legacy-call', ?, ?, ?, ?, 'a', 'write_file', 1, '{}', 'hash', 'w', 1, 'high', 'non_idempotent', 'running', 'now', 'now')`)
+      .run(session.id, legacyId, legacyId, legacyId);
+    await new ConversationMemoryStore(db).appendMessage({ roomId: session.id, threadId: first.threadId!, runId: first.id,
+      turnId: first.turnId!, agentId: "a", role: "assistant", kind: "tool_call", content: "",
+      parts: [{ type: "tool_call", callId: "legacy-call", name: "write_file", input: {} }], status: "completed",
+      idempotencyKey: `tool-call:${first.id}:legacy-call` });
+    runner.recoverInterrupted();
+    await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "continue" });
+    const result = seen[1]!.flatMap((message) => message.parts).find((part) => part.type === "tool_result" && part.callId === "legacy-call");
+    expect(result?.type === "tool_result" ? result.output.preview : "").toContain("TOOL_OUTCOME_UNKNOWN");
+  });
+
+  it("preserves denial evidence and groups repaired parallel results before later assistant text", async () => {
+    const { db, session, runner, seen } = setupRecording();
+    const first = await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "first" });
+    const memory = new ConversationMemoryStore(db);
+    const common = { roomId: session.id, threadId: first.threadId!, runId: first.id, turnId: first.turnId!, agentId: "a", status: "completed" as const };
+    for (const id of ["denied", "read"]) await memory.appendMessage({ ...common, role: "assistant", kind: "tool_call", content: "",
+      parts: [{ type: "tool_call", callId: id, name: `${id}_file`, input: {} }], idempotencyKey: `tool-call:${first.id}:${id}` });
+    await memory.appendMessage({ ...common, role: "tool", kind: "tool_result", content: "read result",
+      parts: [{ type: "tool_result", callId: "read", output: { preview: "read result", byteSize: 11, truncated: false }, isError: false }],
+      idempotencyKey: `tool-result:${first.id}:read` });
+    await memory.appendMessage({ ...common, role: "assistant", kind: "text", content: "Done without writing.",
+      parts: [], idempotencyKey: `final:${first.id}` });
+    const approvals = new ApprovalManager(db);
+    const approval = approvals.request({ taskId: first.id, kind: "tool", subjectId: `${first.id}:sdk-approval`, inputHash: "hash",
+      workspaceIdentity: "w", attemptId: first.id, policyVersion: 1, risk: "high", freshHumanRequired: true });
+    new ExecutionEventStore(db).append({ eventId: `approval:${approval.id}`, sessionId: session.id, runId: first.id, agentId: "a",
+      type: "approval.requested", coordinates: { turnId: first.turnId! },
+      payload: { requestId: approval.id, subjectId: approval.subjectId, callId: "denied", kind: "tool", policyVersion: 1, risk: "high", freshHumanRequired: true } });
+    approvals.decide(approval.id, { clientDecisionKey: "deny-mixed", decision: "deny" });
+    await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "continue" });
+    const result = seen[1]!.flatMap((message) => message.parts).find((part) => part.type === "tool_result" && part.callId === "denied");
+    expect(result?.type === "tool_result" ? result.output.preview : "").toContain("TOOL_APPROVAL_DENIED");
+    const model = toAiSdkModelMessages(seen[1]!);
+    const callIndex = model.findIndex((message) => message.role === "assistant" && Array.isArray(message.content)
+      && message.content.some((part) => part.type === "tool-call" && part.toolCallId === "denied"));
+    const resultMessage = model[callIndex + 1];
+    expect(resultMessage?.role).toBe("tool");
+    expect(resultMessage?.role === "tool" ? resultMessage.content.map((part) => part.type === "tool-result" ? part.toolCallId : "") : [])
+      .toEqual(["denied", "read"]);
+    expect(model[callIndex + 2]).toEqual({ role: "assistant", content: "Done without writing." });
+  });
+
+  it("repairs missing tool history with an unknown result before the next model request", async () => {
+    const { db, session, runner, seen } = setupRecording();
+    const first = await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "first" });
+    db.query(`INSERT INTO tool_calls (id, stable_key, session_id, task_id, attempt_id, turn_id, agent_id, name,
+      generation, input_json, input_hash, workspace_identity, policy_version, risk, idempotency, status, capability, created_at, updated_at)
+      VALUES ('crashed-call', 'crashed-call', ?, ?, ?, ?, 'a', 'run_shell', 1, '{}', 'hash', 'w', 1, 'high', 'non_idempotent', 'running', 'shell', 'now', 'now')`)
+      .run(session.id, first.id, first.id, first.turnId);
+    runner.recoverInterrupted();
+    await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "continue" });
+    const parts = seen[1]!.flatMap((message) => message.parts);
+    expect(parts.some((part) => part.type === "tool_call" && part.callId === "crashed-call")).toBe(true);
+    const result = parts.find((part) => part.type === "tool_result" && part.callId === "crashed-call");
+    expect(result?.type === "tool_result" ? result.output.preview : "").toContain("TOOL_OUTCOME_UNKNOWN");
+  });
+  it("repairs a stopped run's unresolved tool before continuing without a process restart", async () => {
+    const { db, session, runner, seen } = setupRecording();
+    const first = await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "first" });
+    db.query(`INSERT INTO tool_calls (id, stable_key, session_id, task_id, attempt_id, turn_id, agent_id, name,
+      generation, input_json, input_hash, workspace_identity, policy_version, risk, idempotency, status, capability, created_at, updated_at)
+      VALUES ('lost-result', 'lost-result', ?, ?, ?, ?, 'a', 'run_shell', 1, '{}', 'hash', 'w', 1, 'high', 'non_idempotent', 'running', 'shell', 'now', 'now')`)
+      .run(session.id, first.id, first.id, first.turnId);
+    db.query("UPDATE agent_runs SET status = 'failed' WHERE id = ?").run(first.id);
+    await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "continue" });
+    const result = seen[1]!.flatMap((message) => message.parts).find((part) => part.type === "tool_result" && part.callId === "lost-result");
+    expect(result?.type === "tool_result" ? result.output.preview : "").toContain("TOOL_OUTCOME_UNKNOWN");
+  });
+  it("closes a tool call interrupted before dispatch as not started", async () => {
+    const { db, session, runner, seen } = setupRecording();
+    const first = await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "first" });
+    await new ConversationMemoryStore(db).appendMessage({ roomId: session.id, threadId: first.threadId!,
+      runId: first.id, turnId: first.turnId!, agentId: "a", role: "assistant", kind: "tool_call", content: "",
+      parts: [{ type: "tool_call", callId: "never-dispatched", name: "run_shell", input: {} }],
+      status: "completed", idempotencyKey: `tool-call:${first.id}:never-dispatched` });
+    db.query("UPDATE agent_runs SET status = 'interrupted' WHERE id = ?").run(first.id);
+    await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "continue" });
+    const result = seen[1]!.flatMap((message) => message.parts).find((part) => part.type === "tool_result" && part.callId === "never-dispatched");
+    expect(result?.type === "tool_result" ? result.output.preview : "").toContain("TOOL_NOT_STARTED");
+  });
   it("records one reconstructable Run lifecycle only in the execution journal", async () => {
     const { db, session, runner } = setupRecording({ response: "done" });
     const result = await runner.run({
@@ -297,8 +387,10 @@ describe("SingleAgentRunner", () => {
       "SELECT type FROM runtime_events WHERE run_id = ? ORDER BY seq",
     ).all(result.id).map(({ type }) => type)).toEqual([
       "run.created",
+      "turn.started",
       "run.started",
       "runtime.event",
+      "turn.completed",
       "run.completed",
     ]);
     expect(db.query("SELECT COUNT(*) AS count FROM task_events WHERE task_id = ?").get(result.id))
@@ -607,6 +699,49 @@ describe("SingleAgentRunner", () => {
       attempt_no: 2,
       status: "completed",
     });
+  });
+
+  it("reconciles each retried Turn terminal from its immutable Run", async () => {
+    const { db, session } = setupRecording();
+    const attempts = { count: 0 };
+    const approvals = new ApprovalManager(db);
+    const events = new ExecutionEventStore(db);
+    const append = events.append.bind(events);
+    let failFirstTurnTerminal = true;
+    events.append = ((input, project) => {
+      if (failFirstTurnTerminal && input.type === "turn.failed") {
+        failFirstTurnTerminal = false;
+        throw new Error("turn_terminal_journal_failed");
+      }
+      return append(input, project);
+    }) as typeof events.append;
+    const runtimes = new RuntimeManager(db, events);
+    runtimes.register("flaky-reconcile", () => new FlakyRuntime(attempts));
+    const runner = new SingleAgentRunner(
+      db,
+      runtimes,
+      approvals,
+      events,
+      new AttachmentResolver(db, `${tmpdir()}/unused-${crypto.randomUUID()}`),
+    );
+    const input = {
+      sessionId: session.id,
+      runtimeKind: "flaky-reconcile",
+      clientTurnKey: "retry-reconcile-key",
+      prompt: "retry me",
+    };
+
+    await expect(runner.run(input)).rejects.toThrow("turn_terminal_journal_failed");
+    expect((await runner.run(input)).status).toBe("completed");
+    runner.recoverInterrupted();
+
+    const runs = db.query<{ id: string; status: string }, []>(
+      "SELECT id, status FROM agent_runs ORDER BY attempt_no",
+    ).all();
+    expect(runs.map(({ status }) => status)).toEqual(["failed", "completed"]);
+    expect(runs.map(({ id }) => events.listAfter(id, 0).find((event) =>
+      event.type === "turn.failed" || event.type === "turn.completed")?.type))
+      .toEqual(["turn.failed", "turn.completed"]);
   });
 
   it("uses the persisted primary Agent rather than member order", async () => {
@@ -1103,6 +1238,8 @@ describe("SingleAgentRunner", () => {
       "SELECT type, agent_id FROM runtime_events WHERE run_id = ? ORDER BY seq",
     ).all(result.id)).toEqual([
       { type: "run.created", agent_id: "a" },
+      { type: "turn.started", agent_id: "a" },
+      { type: "turn.completed", agent_id: "a" },
       { type: "run.completed", agent_id: "a" },
     ]);
   });

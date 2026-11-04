@@ -1,10 +1,12 @@
-import { dlopen, FFIType, ptr } from "bun:ffi";
-import { closeSync, constants, fchmodSync, fstatSync, openSync } from "node:fs";
+import { dlopen, FFIType, ptr, read } from "bun:ffi";
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, openSync } from "node:fs";
 
 const AT_REMOVEDIR = 0x80;
 const RENAME_EXCL = 0x4;
+const RENAME_SWAP = 0x2;
 const O_CLOEXEC = (constants as unknown as Record<string, number>).O_CLOEXEC ?? 0;
 const nativeSchema = {
+  __error: { args: [], returns: FFIType.ptr },
   openat: {
     args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.i32],
     returns: FFIType.i32,
@@ -45,7 +47,13 @@ function nativePath(value: string): Buffer {
 function openAt(directoryFd: number, name: string, flags: number, mode = 0): number {
   const encoded = nativePath(name);
   const fd = symbols().openat(directoryFd, ptr(encoded), flags, mode);
-  if (fd < 0) throw new Error("workspace_path_changed");
+  if (fd < 0) {
+    const errorPointer = symbols().__error();
+    const errno = errorPointer === null ? 0 : read.i32(errorPointer);
+    const error = new Error(errno === 62 ? "workspace_symlink_denied" : "workspace_path_changed") as Error & { code?: string };
+    if (errno === 2) error.code = "ENOENT";
+    throw error;
+  }
   return fd;
 }
 
@@ -55,8 +63,8 @@ function mkdirAt(directoryFd: number, name: string): void {
   if (result !== 0) throw new Error("workspace_path_changed");
 }
 
-function withWorkspaceParent<T>(
-  canonicalRoot: string,
+function withDirectoryParent<T>(
+  directoryFd: number,
   relativePath: string,
   createMissing: boolean,
   action: (parentFd: number, basename: string) => T,
@@ -64,36 +72,44 @@ function withWorkspaceParent<T>(
   const segments = relativePath.split("/").filter(Boolean);
   const basename = segments.pop();
   if (!basename) throw new Error("workspace_root_mutation_denied");
-  const descriptors = [
-    openSync(
-      canonicalRoot,
-      constants.O_RDONLY
-        | (constants.O_DIRECTORY ?? 0)
-        | (constants.O_NOFOLLOW ?? 0)
-        | O_CLOEXEC,
-    ),
-  ];
+  const descriptors: number[] = [];
   try {
+    let parentFd = directoryFd;
     for (const segment of segments) {
-      const parentFd = descriptors[descriptors.length - 1]!;
-      const flags = constants.O_RDONLY
-        | (constants.O_DIRECTORY ?? 0)
-        | (constants.O_NOFOLLOW ?? 0)
-        | O_CLOEXEC;
+      const flags = constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0) | O_CLOEXEC;
       let childFd: number;
-      try {
-        childFd = openAt(parentFd, segment, flags);
-      } catch (error) {
-        if (!createMissing) throw error;
+      try { childFd = openAt(parentFd, segment, flags); }
+      catch (error) {
+        if (!createMissing || (error as { code?: string }).code !== "ENOENT") throw error;
         mkdirAt(parentFd, segment);
+        fsyncSync(parentFd);
         childFd = openAt(parentFd, segment, flags);
       }
       descriptors.push(childFd);
+      parentFd = childFd;
     }
-    return action(descriptors[descriptors.length - 1]!, basename);
-  } finally {
-    for (const fd of descriptors.reverse()) closeSync(fd);
-  }
+    return action(parentFd, basename);
+  } finally { for (const fd of descriptors.reverse()) closeSync(fd); }
+}
+
+function withWorkspaceParent<T>(
+  canonicalRoot: string,
+  relativePath: string,
+  createMissing: boolean,
+  action: (parentFd: number, basename: string) => T,
+): T {
+  const rootFd = openSync(canonicalRoot, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0) | O_CLOEXEC);
+  try { return withDirectoryParent(rootFd, relativePath, createMissing, action); }
+  finally { closeSync(rootFd); }
+}
+
+/** Resolve a tree child from its already pinned staging directory. */
+export function withCreatedPinnedDirectoryParent<T>(
+  directoryFd: number,
+  relativePath: string,
+  action: (parentFd: number, basename: string) => T,
+): T {
+  return withDirectoryParent(directoryFd, relativePath, true, action);
 }
 
 export function withPinnedWorkspaceParent<T>(
@@ -244,4 +260,13 @@ export function renamePinnedWorkspaceEntryExclusiveBetween(
     RENAME_EXCL,
   );
   if (result !== 0) throw new Error("workspace_path_changed");
+}
+
+/** Atomic exchange retains the displaced entry for descriptor verification. */
+export function swapPinnedWorkspaceEntries(parentFd: number, from: string, to: string): void {
+  const encodedFrom = nativePath(from);
+  const encodedTo = nativePath(to);
+  if (symbols().renameatx_np(parentFd, ptr(encodedFrom), parentFd, ptr(encodedTo), RENAME_SWAP) !== 0) {
+    throw new Error("workspace_path_changed");
+  }
 }

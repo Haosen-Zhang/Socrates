@@ -55,8 +55,10 @@ describe("workspace-write builtins", () => {
 
     const result = (await writeTool.execute!({ path: "overwrite.txt", content: "new line 1\nnew line 2\nnew line 3\n" }, {} as any)) as any;
     expect(result.action).toBe("overwritten");
-    expect(result.newLines).toBeGreaterThanOrEqual(3);
-    expect(typeof result.previousLines).toBe("number");
+    expect(result.oldSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.newSha256).not.toBe(result.oldSha256);
+    expect(result.diff).toContain("-old line 1");
+    expect(result.diff).toContain("+new line 3");
     expect(readFileSync(join(tmp, "overwrite.txt"), "utf-8")).toContain("new line 1");
   });
 
@@ -246,7 +248,7 @@ describe("workspace-write builtins", () => {
   it("run_shell executes an allowlisted executable with argv preserved", async () => {
     const shellTool = tools.find((t) => t.name === "run_shell")!;
     expect(shellTool).toBeDefined();
-    expect(shellTool).toMatchObject({ risk: "destructive", capability: "shell", generation: 2 });
+    expect(shellTool).toMatchObject({ risk: "high", capability: "shell", generation: 3 });
 
     expect(shellTool.validateInput?.({ executable: "echo", argv: ["hello test"] })).toEqual([]);
     const result = (await shellTool.execute!({ executable: "echo", argv: ["hello test"] }, context)) as any;
@@ -261,14 +263,14 @@ describe("workspace-write builtins", () => {
     });
   });
 
-  it("run_shell rejects disallowed executables and shell metacharacter smuggling before approval", () => {
+  it("run_shell rejects unsafe executable/path scope and preserves literal argv without shell expansion", () => {
     const shellTool = tools.find((t) => t.name === "run_shell")!;
     expect(shellTool.validateInput?.({ executable: "/bin/bash", argv: ["-c", "echo"] }))
       .toContain("shell_executable_not_allowed");
     expect(shellTool.validateInput?.({ executable: "git", argv: ["status; rm", "-rf"] }))
-      .toContain("shell_metacharacter_denied");
+      .toContain("shell_argument_not_allowed");
     expect(shellTool.validateInput?.({ executable: "echo", argv: ["hello|cat"] }))
-      .toContain("shell_metacharacter_denied");
+      .toEqual([]);
     expect(shellTool.validateInput?.({ executable: "echo", argv: ["sk-abcdefgh"] }))
       .toContain("shell_credential_argument_denied");
     expect(shellTool.validateInput?.({ executable: "echo", argv: ["--api-key=value"] }))

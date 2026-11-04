@@ -1,4 +1,4 @@
-# Phase 1A–2：执行事件权威、持久重放与 Provider 重试
+# Phase 1A–4：执行事件权威、持久检查点与工具恢复
 
 ## 目标
 
@@ -6,7 +6,9 @@ Phase 1A 为单 Agent 执行建立一个可重建、可审计的事实源；Phas
 Run 生命周期移交给 sidecar 内的 `RunSupervisor`；Phase 1C 让观察者从持久
 序号恢复并无缝进入实时流。这些阶段都不改变公开对话历史的权威，也不提前实现
 Tool 重试。Phase 2 在不提前创建 Step 身份的前提下，为单 Agent Provider 调用
-增加显式、有限且可审计的重试。
+增加显式、有限且可审计的重试。Phase 3 将 Turn、Step 和 ProviderAttempt
+提升为规范执行身份，并让 Provider 调用服从持久化检查点。
+Phase 4 为工具建立独立的逻辑操作与尝试记录，并在结果丢失后明确保留不确定性。
 
 ## 权威边界
 
@@ -14,7 +16,8 @@ Tool 重试。Phase 2 在不提前创建 Step 身份的前提下，为单 Agent 
 | --- | --- | --- |
 | 用户与 Assistant 可见消息、ToolCall/ToolResult 内容 | HistoryStore `room.jsonl` | SQLite 消息、UI、模型上下文 |
 | 单 Agent Run 生命周期和规范化 Runtime 事件 | SQLite `runtime_events` | `agent_runs.event_seq`、未来 UI/审计视图 |
-| 现有 Session 与 Multi-Agent 领域事件 | SQLite `task_events` | 现有协调器/UI 视图 |
+| Session 与 Multi-Agent 编排领域事件 | SQLite `task_events` | 现有协调器/UI 视图 |
+| Multi-Agent 执行 Agent 的 Turn/Step/ProviderAttempt | SQLite `runtime_events` | 执行审计视图 |
 
 执行日志不能进入模型上下文。模型只读取由 HistoryStore 派生的合法公开
 消息；这避免 Runtime 状态、内部错误或未来 Tool 尝试记录污染下一轮采样。
@@ -47,17 +50,115 @@ Operation 属于 Step，Tool Attempt 属于 Tool Operation。缺失父身份的�
 含 legacy 前缀的旧 Run 不再追加 v1 事件，避免产生错误序号基线或混合 schema
 回放；新 Run 从 v1 序号 1 开始。
 
-## Phase 1A 已发出的事件
+## 已发出的规范事件
 
 - Run：created、started、cancel_requested、completed、failed、cancelled、
   interrupted；
 - 审批：requested、decided；
 - 上下文：context.truncated；
 - Runtime：规范化 `runtime.event`。
+- Turn：started、completed、failed、cancelled；
+- Step：started、completed、failed；
+- Provider Attempt：started、failed、retry_scheduled、completed。
+- Tool Operation：requested；Tool Attempt：checkpointed、started、result；
+- Tool 恢复：`tool.outcome_unknown`。
 
-Turn、Step、Provider Attempt、Tool Operation/Attempt 和
-`tool.outcome_unknown` 已有类型与身份契约，但只有在相应执行层迁移到显式状态机
-后才允许发出。特别是非幂等 Tool 的未知结果不得自动重试。
+## Phase 3：Turn、Step 与 ProviderAttempt
+
+一个 Turn 是一次用户级 Agent 响应周期；一个 Step 是一次模型请求，以及促成下一次
+模型请求的 ToolCall、审批和 ToolResult；一个 ProviderAttempt 恰好对应一次外部
+Provider 调用。重试产生新的 ProviderAttempt，但仍属于同一 Step。身份由 Run 内稳定
+序号派生，并满足 `Turn > Step > ProviderAttempt` 层级。
+
+`provider_attempt_started` 是 Provider 前检查点信号。`RuntimeManager` 必须先提交
+`step.started` 和 `provider.attempt.started`，生成器才会继续进入真实 Provider 调用；
+任一写入失败都会关闭生成器并阻止请求发出。Provider 流结束只完成 Attempt，不提前
+完成 Step。Runtime 完成响应消息、审批和 ToolResult 处理后发出内部 Step 边界，
+`RuntimeManager` 提交 `step.completed` 后才允许下一次模型请求。
+
+模型/UI Runtime 事件在活跃 Step 中携带 `stepId` 和 `providerAttemptId`。规范
+`provider.*` 事件可重新投影为与实时流相同的扩展事件；它们依旧不会进入模型历史。
+启动对账会从持久 Turn/Run 关系补齐缺失的 Turn started/terminal 事件。
+Multi-Agent 计划执行使用持久 `multi_task_attempts.id` 作为 Turn 身份；暂停后恢复会
+创建新的 Turn，因而新的 Step/ProviderAttempt 身份不会与上一执行尝试冲突。启动
+对账会从已完成、失败、取消或暂停的持久 attempt 补齐缺失的 Turn 终态；重启或人工
+暂停留下的已启动 Turn 均以失败关闭，等待显式恢复创建新 Turn。
+
+## Phase 4：工具尝试与未知结果恢复
+
+`tool_calls` 继续表示逻辑 ToolOperation；Migration 018 增加 `tool_attempts`，每次尝试
+有独立 ID 和序号。Native Runtime 从 RuntimeManager 接收真实 Run/Turn 身份，并在
+当前 Step 下执行工具。工具实现收到稳定的 `idempotencyKey`（逻辑 operation ID）
+以及独立 `toolAttemptId`。旧适配器没有 Step 时仅更新原有 SQLite 记录，不伪造 v1 层级。
+
+工具入口先提交 operation intent，再提交 attempt checkpoint 和 started，才允许进入
+工具主体；任一检查点失败均不执行副作用。结果事件、输出和终态在同一个 SQLite 事务
+中提交。结果序列化或落盘失败会中止 Native 采样，保留 started 状态，不能伪装成工具
+执行失败。相同稳定 key 的并发调用复用同一个操作；跨输入、定义或执行 scope 的复用
+失败关闭。
+
+自动重试只适用于 read/idempotent 工具的已分类瞬时网络、限流或可重试超时错误，最多
+3 次，采用短暂有界退避。文件不存在、参数/权限错误和未知错误不重试；非幂等工具
+不自动重试。重试共用逻辑操作和幂等 key，各自留下 attempt 记录。
+
+启动恢复，以及同进程内已停止 Run 的下一次对话，遵守以下规则：
+
+| 持久证据 | 恢复结果 | 后续动作 |
+| --- | --- | --- |
+| 已提交输出 | 保留已知结果 | 不重复工具主体 |
+| 尚未开始 | `TOOL_NOT_STARTED` | 旧审批过期，可重新请求 |
+| 已开始、结果缺失，read/idempotent | `TOOL_OUTCOME_UNKNOWN` / `safe_to_retry` | 模型可明确重新请求 |
+| 已开始、结果缺失，已登记Native工作区修改 | descriptor绑定的FS证据核验：`TOOL_RECOVERED_APPLIED` / `TOOL_MUTATION_NOT_APPLIED` / `TOOL_OUTCOME_UNKNOWN` | 已应用则保留成功；未应用或不确定均不重放主体，后续修改需新操作/审批 |
+| 已开始、结果缺失，其他非幂等工具 | `TOOL_OUTCOME_UNKNOWN` / `requires_user_confirmation` | 重新人工确认 |
+
+恢复本身不执行工具。下一轮采样前，通过 HistoryStore-backed writer 补齐公开
+ToolCall/ToolResult；等待审批、尚未进入 executor 的调用补为 `TOOL_NOT_STARTED`。
+模型只看到可见工具结果及恢复提示，不接收执行日志。未知非幂等操作会使相同工作区、
+同名工具重新要求人工审批，即使 Room policy 为 allow。Phase 5–8 journal恢复会在
+已登记workspace identity内核验8种Native修改的operation证据；write还绑定持久请求content的SHA。
+核验applied记为成功，not_applied记为cancelled；证据缺失、外部变化或不支持的legacy/custom
+修改保留保守unknown分类，不执行工具主体。该恢复事件与projection、输出及旧审批过期同事务提交。
+未提供人工清除unknown状态的UI；新的修改仍需自己的精确审批。
+
+成功的结果/恢复事务提交之后，宿主才按 exact request 与证据 inode 清理已确认的
+操作记录及隔离残留，避免它们阻塞后续 copy/archive/delete-directory。清理不触碰
+当前目标，不递归删除；失败保留已提交成功并在启动时重试。结果事务失败仍保留证据。
+
+Native审批前的参数/语义失败会形成配对 ToolCall/失败 ToolResult，规范错误进入下一次
+模型采样；相应SDK审批请求被移除，不请求用户批准非法输入、不盲重试、不直接终止Run。
+允许自动执行的调用在executor内检查前置条件，避免SDK提前执行成功后再次检查已改变的文件状态。
+
+升级前 Native 写入的 agent-session 身份通过持久 runtime-session/Run 关系解析，
+不会漏掉旧操作的未知或已知结果。SDK 的明确审批拒绝写为 `TOOL_APPROVAL_DENIED`，
+历史修复也保留已有拒绝证据。补写仍是 append-only；模型投影将结果放到原始调用批次
+之后、后续消息之前，避免并行调用或迟到恢复结果破坏 Provider 的消息配对协议。
+
+恢复区分和模型提示改编自 DeepSeek Harness 的
+[`session/repair.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/8bd073392eef6f54e921a093b95076248eb08cbb/packages/core/session/src/repair.ts)，
+固定版本 `8bd0733`，MIT 许可保留于 `third-party/DeepSeek-Harness-LICENSE`。
+直接复用其恢复语义和提示，适配已有 SQLite/HistoryStore，未引入新的运行时框架。
+
+### Phase 5–8 的 DeepSeek Harness 复用出处
+
+全部引用固定到 commit `8bd073392eef6f54e921a093b95076248eb08cbb`，不引用浮动 main。
+上游为 MIT，Copyright (c) 2026 DeepSeek；完整许可保留于
+[`third-party/DeepSeek-Harness-LICENSE`](../third-party/DeepSeek-Harness-LICENSE)。
+代码中的 adapted-from 标记和此表共同记录来源；设计参考与直接复用文字分别列明。
+
+| 上游固定源码 | Socrates 落点 | 复用性质与保留的边界 |
+| --- | --- | --- |
+| [`core/session/src/repair.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/8bd073392eef6f54e921a093b95076248eb08cbb/packages/core/session/src/repair.ts) | `apps/sidecar/src/tools/recovery-outcome.ts`、execution journal / public history repair | 已开始/无结果的恢复语义与模型提示适配；SQLite/HistoryStore仍是本地权威，不引入Harness session实现。 |
+| [`fs/fs-local/src/fsio.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/8bd073392eef6f54e921a093b95076248eb08cbb/packages/fs/fs-local/src/fsio.ts) | `apps/sidecar/src/workspace/path-policy.ts`、`mutation-evidence.ts`、`native-fs.ts` | 适配同目录独占stage、完整写入/fsync、保留权限和发布前取消的原子写思路；用Socrates已固定descriptor的native发布操作替代通用路径rename，继续拒绝secret/symlink/hardlink/escape。mutation evidence、SHA CAS及恢复分类在现有policy内实现。 |
+| [`core/tools/src/json-schema.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/8bd073392eef6f54e921a093b95076248eb08cbb/packages/core/tools/src/json-schema.ts) | `packages/core/src/tools.ts`、`apps/sidecar/src/tools/native-tool-contracts.ts` | 递归object/array/scalar、own-property与有限JSON数字校验的设计适配；保留Socrates诊断格式，使用anyOf表示nullable，补充字符串/数字/数组约束，不移植其完整schema compiler或registry。 |
+| [`guard/repeat-tool-reminder/src/index.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/8bd073392eef6f54e921a093b95076248eb08cbb/packages/guard/repeat-tool-reminder/src/index.ts) | `packages/core/src/tool-repeat.ts`、`apps/sidecar/src/tools/executor.ts` | 直接复用gentle reminder文字及默认3/5/8阈值，适配后续提示；按现有durable logical calls与完整canonical input hash统计，同stable-key结果重放不新增计数。提示只帮助模型调整下一步，不veto调用、不改变审批，也不判定外部等待任务“无进展”。 |
+| [`shell/bash-local/src/index.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/8bd073392eef6f54e921a093b95076248eb08cbb/packages/shell/bash-local/src/index.ts) | `apps/sidecar/src/tools/command-tools.ts`、`workspace-command-runner.ts`、`output-store.ts` | 终端环境最小化与预览/完整输出分离的设计参考；仍使用exact executable+argv、shell=false、现有macOS sandbox、SQLite私有artifact及精确审批。未复用任意shell字符串接口。 |
+
+这些改动不移植Harness整体、插件容器、agent编排、subagent、PTY会话或新的持久化架构。
+重复调用检测是advisory；长输出分页ref绑定Session/workspace；deadline是单次attempt。
+生产工具统一由`createNativeBuiltinTools`注册，规范结果/ref通过SDK采样与历史修复保留；journal已接入FS证据核验。真实macOS sandbox已通过测试；工具链配置及桌面自动化的验证边界见
+[`doc/native-tool-audit.md`](../doc/native-tool-audit.md)及
+[`doc/single-agent-phase5-8-acceptance.md`](../doc/single-agent-phase5-8-acceptance.md)。
+
 
 ## Phase 1B–1C：独立 Run 所有权与持久观察
 
@@ -91,13 +192,22 @@ Desktop 校验 schema、Run 身份、连续序号以及 SSE `id`。重复事件�
   5xx 和安全的空响应，并遵守有上限的 `Retry-After`。
 - 鉴权、授权、无效请求、永久额度、取消和未知错误失败关闭。文本、ToolCall、审批请求
   或 ToolResult 等权威输出一旦开始，后续失败不会盲目重放整个采样。
-- Phase 2 生命周期通过持久 `runtime.event` extension 记录
-  `provider_attempt_started`、`provider_attempt_failed` 和
-  `provider_retry_scheduled`。Phase 3 建立 Step/ProviderAttempt 身份后再发出规范
-  `provider.*` 执行事件；Phase 2 不虚构坐标。
-- Multi-Agent `ModelGateway` 同样禁用 SDK 内部重试，但本阶段的显式策略只接入单
-  Agent 执行链路。
+- Provider 生命周期现在写为规范 `provider.*` 事件，并由 Step/ProviderAttempt 身份
+  定位；Phase 2 的扩展信号只保留为 Runtime 与执行管理器之间的内部协议。
+- Multi-Agent 讨论用 `ModelGateway` 同样禁用 SDK 内部重试；获批计划的执行 Agent
+  通过 Native Runtime 接入本阶段的显式 ProviderAttempt 与 Step 检查点。
 - HistoryStore 终态与执行日志属于不同事实域；Phase 1A 启动对账依据已提交的
   Run 终态和审批决定补齐缺失事件，Phase 1B 再由独立 supervisor 持续负责。
 - Migration 017 预留版本化 projection checkpoint 表，目前不改变任何 UI
   读取路径。
+- 工具检查点不能把外部副作用和 SQLite 提交变成同一个事务；Phase 4 明确表达这个
+  不确定窗口。原子覆盖、乐观并发和文件崩溃对账留给 Phase 5。
+
+本轮只交付 Phase 4。剩余 4 个阶段按可独立合并的小范围推进：
+
+```text
+Phase 5  文件修改：原子覆盖、并发校验、崩溃对账
+Phase 6  Tool Contract v2：递归 schema、结构化输出、文档
+Phase 7  执行策略：超时、重复调用防护、输出落盘、命令验证
+Phase 8  故障注入与恢复验收、文档收尾
+```

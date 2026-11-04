@@ -8,6 +8,7 @@ import type { RuntimeManager } from "./runtime-manager";
 import type { MultiTaskStore } from "../multi-agent/task-store";
 import { UsageCollector } from "../services/usage-collector";
 import type { HistoryStore } from "../store/history-store";
+import type { ExecutionEventStore } from "../store/execution-event-store";
 
 type ActiveExecution = { runtimeSessionId: string; leaseId: string; calls: Map<string, { name: string; input: unknown }>; cancelled: boolean; paused: boolean };
 
@@ -22,6 +23,7 @@ export class ExecutionRunner {
     private readonly leases: WorkspaceLeaseManager,
     private readonly approvals: ApprovalManager,
     private readonly events: EventStore,
+    private readonly executionEvents: ExecutionEventStore,
     private readonly history?: HistoryStore,
   ) { this.usage = new UsageCollector(db); }
 
@@ -32,16 +34,30 @@ export class ExecutionRunner {
     if (!task || task.state !== "executing" || !plan || plan.status !== "approved" || plan.contentHash !== task.approvedPlanHash) throw new Error("approved_plan_required");
     const session = this.db.query<{ workspace_id: string | null }, [string]>("SELECT workspace_id FROM sessions WHERE id = ?").get(task.sessionId);
     if (!session?.workspace_id) throw new Error("execution_workspace_required");
-    this.assertEvidenceCurrent(session.workspace_id, plan.content.evidence);
-    const lease = this.leases.acquire(session.workspace_id, taskId, "write", new Date(Date.now() + 30 * 60_000).toISOString());
-    const renewal = setInterval(() => {
-      try { this.leases.renew(lease.id, new Date(Date.now() + 30 * 60_000).toISOString()); }
-      catch { void this.cancelForLostLease(taskId); }
-    }, 5 * 60_000);
+    let lease: ReturnType<WorkspaceLeaseManager["acquire"]> | undefined;
+    let renewal: ReturnType<typeof setInterval> | undefined;
     let runtimeSessionId = "";
     let assistantText = "";
     let usageIndex = 0;
+    let turnStarted = false;
+    const turnId = this.tasks.currentAttemptId(taskId);
     try {
+      this.executionEvents.append({
+        eventId: `multi-turn-started:${taskId}:${turnId}`,
+        sessionId: task.sessionId,
+        runId: taskId,
+        agentId: task.executionAgentId!,
+        type: "turn.started",
+        coordinates: { turnId },
+        payload: {},
+      });
+      turnStarted = true;
+      this.assertEvidenceCurrent(session.workspace_id, plan.content.evidence);
+      lease = this.leases.acquire(session.workspace_id, taskId, "write", new Date(Date.now() + 30 * 60_000).toISOString());
+      renewal = setInterval(() => {
+        try { this.leases.renew(lease!.id, new Date(Date.now() + 30 * 60_000).toISOString()); }
+        catch { void this.cancelForLostLease(taskId); }
+      }, 5 * 60_000);
       const snapshot = this.db.query<{ snapshot_json: string; execution_eligible: number }, [string, string]>("SELECT snapshot_json, execution_eligible FROM session_agents WHERE session_id = ? AND agent_id = ?").get(task.sessionId, task.executionAgentId!);
       if (!snapshot || snapshot.execution_eligible !== 1) throw new Error("execution_agent_not_eligible");
       const profile = JSON.parse(snapshot.snapshot_json) as Record<string, unknown>;
@@ -55,6 +71,7 @@ export class ExecutionRunner {
       this.active.set(taskId, active);
       await this.runtimes.run(runtimeSessionId, {
         taskId,
+        turnId,
         prompt: `Execute only this user-approved plan. Plan approval is not blanket tool approval; request approval for every concrete side effect.\n\n${JSON.stringify(plan.content)}`,
         onEvent: async (event) => {
           if (event.type === "text_delta") assistantText += event.text;
@@ -85,17 +102,105 @@ export class ExecutionRunner {
       if (!active.cancelled && !active.paused) {
         if (assistantText.trim()) await this.persistAssistantMessage(task.sessionId, task.executionAgentId!, assistantText);
         this.tasks.transition(taskId, { type: "complete" });
+        this.executionEvents.append({
+          eventId: `multi-turn-completed:${taskId}:${turnId}`,
+          sessionId: task.sessionId,
+          runId: taskId,
+          agentId: task.executionAgentId!,
+          type: "turn.completed",
+          coordinates: { turnId },
+          payload: {},
+        });
       }
     } catch (error) {
       const current = this.tasks.get(taskId);
       if (current && !["failed", "cancelled", "completed", "paused"].includes(current.state)) this.tasks.transition(taskId, { type: "fail", reason: error instanceof Error ? error.message : String(error) });
+      const terminal = this.tasks.get(taskId);
+      if (!turnStarted || terminal?.state === "completed") throw error;
+      const cancelled = terminal?.state === "cancelled";
+      this.executionEvents.append({
+        eventId: `multi-turn-${cancelled ? "cancelled" : "failed"}:${taskId}:${turnId}`,
+        sessionId: task.sessionId,
+        runId: taskId,
+        agentId: task.executionAgentId!,
+        type: cancelled ? "turn.cancelled" : "turn.failed",
+        coordinates: { turnId },
+        payload: cancelled
+          ? { reason: terminal?.terminalReason ?? "user_cancelled" }
+          : { error: terminal?.terminalReason ?? (error instanceof Error ? error.message : String(error)) },
+      });
       throw error;
     } finally {
-      clearInterval(renewal);
+      if (renewal) clearInterval(renewal);
       if (runtimeSessionId) await this.runtimes.close(runtimeSessionId);
-      this.leases.release(lease.id);
+      if (lease) this.leases.release(lease.id);
       this.active.delete(taskId);
     }
+  }
+
+  reconcileDurableTurnEvents(): number {
+    const attempts = this.db.query<{
+      turn_id: string;
+      task_id: string;
+      session_id: string;
+      agent_id: string;
+      status: "active" | "paused" | "completed" | "failed" | "cancelled";
+      ended_at: string | null;
+      terminal_reason: string | null;
+    }, []>(`
+      SELECT multi_task_attempts.id AS turn_id, multi_tasks.id AS task_id,
+             multi_tasks.session_id, multi_tasks.execution_agent_id AS agent_id,
+             multi_task_attempts.status,
+             COALESCE(multi_task_attempts.ended_at, multi_tasks.updated_at) AS ended_at,
+             multi_tasks.terminal_reason
+      FROM multi_task_attempts
+      JOIN multi_tasks ON multi_tasks.id = multi_task_attempts.task_id
+      WHERE multi_tasks.execution_agent_id IS NOT NULL
+        AND (
+          multi_task_attempts.status IN ('paused', 'completed', 'failed', 'cancelled')
+          OR (multi_task_attempts.status = 'active' AND multi_tasks.state = 'paused')
+        )
+        AND EXISTS (
+          SELECT 1 FROM runtime_events
+          WHERE id = 'multi-turn-started:' || multi_tasks.id || ':' || multi_task_attempts.id
+            AND schema_version = 1
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM runtime_events
+          WHERE runtime_events.run_id = multi_tasks.id
+            AND runtime_events.turn_id = multi_task_attempts.id
+            AND runtime_events.schema_version = 1
+            AND runtime_events.type IN ('turn.completed', 'turn.failed', 'turn.cancelled')
+        )
+    `).all();
+    let repaired = 0;
+    for (const attempt of attempts) {
+      const terminalStatus = attempt.status === "active" || attempt.status === "paused"
+        ? "failed"
+        : attempt.status;
+      const type = terminalStatus === "completed"
+        ? "turn.completed" as const
+        : terminalStatus === "cancelled"
+          ? "turn.cancelled" as const
+          : "turn.failed" as const;
+      const before = this.executionEvents.latestSeq(attempt.task_id);
+      this.executionEvents.append({
+        eventId: `multi-turn-${terminalStatus}:${attempt.task_id}:${attempt.turn_id}`,
+        sessionId: attempt.session_id,
+        runId: attempt.task_id,
+        agentId: attempt.agent_id,
+        type,
+        coordinates: { turnId: attempt.turn_id },
+        payload: type === "turn.completed"
+          ? {}
+          : type === "turn.cancelled"
+            ? { reason: attempt.terminal_reason ?? "cancelled" }
+            : { error: attempt.terminal_reason ?? "failed" },
+        occurredAt: attempt.ended_at ?? undefined,
+      });
+      if (this.executionEvents.latestSeq(attempt.task_id) > before) repaired += 1;
+    }
+    return repaired;
   }
 
   async decide(requestId: string, input: { clientDecisionKey: string; decision: ApprovalDecision; reason?: string }): Promise<DurableApprovalDecision> {
