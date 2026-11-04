@@ -1,12 +1,17 @@
 import { expect, it } from "bun:test";
 import { StructuredExecutionError, type PermissionEvaluation, type RuntimeEvent, type ToolDefinition } from "@socrates/core";
 import type { streamText } from "ai";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { openDb } from "../db";
 import { ApprovalManager } from "../approvals/manager";
 import { ConversationMemoryStore } from "../store/conversation-memory-store";
 import { ToolExecutor } from "../tools/executor";
 import { ToolRegistry } from "../tools/registry";
 import { repairToolHistory } from "../tools/repair-history";
+import { createWorkspaceWriteBuiltins } from "../tools/workspace-write-builtins";
+import { WorkspacePathPolicy } from "../workspace/path-policy";
 import { createAiSdkNativeStream, NativeAgentRuntime, toAiSdkModelMessages, validateNativeToolInput, type NativeStreamFactory } from "./native-agent-runtime";
 
 const allow: PermissionEvaluation = { effect: "allow", risk: "high", matchedRuleIds: [], reasonCode: "room_allow", freshHumanRequired: false, policyVersion: 3 };
@@ -130,4 +135,85 @@ it("stops later model activity after an unresolved tool even when the SDK swallo
   expect(nextSample).toBe(false);
   expect(s.db.query("SELECT status FROM tool_calls WHERE id = 'unresolved'").get()).toEqual({ status: "running" });
   s.db.close();
+});
+
+it.each([false, true])("lets the model correct an invalid call before approval or execution (SDK error result: %s)", async (sdkError) => {
+  const root = mkdtempSync(join(tmpdir(), "native-validation-loop-"));
+  mkdirSync(join(root, "docs"));
+  const original = createWorkspaceWriteBuiltins(new WorkspacePathPolicy(root)).find((tool) => tool.name === "create_directory")!;
+  let samples = 0; let effects = 0; let correctionMessages: unknown;
+  const definition = { ...original, async execute(input: unknown, context: Parameters<NonNullable<ToolDefinition["execute"]>>[1]) {
+    effects++; return original.execute!(input, context);
+  } };
+  const stream = createAiSdkNativeStream({} as never, ((input) => {
+    const current = ++samples;
+    if (current === 2) correctionMessages = input.messages;
+    const callId = current === 1 ? "invalid" : "corrected";
+    const args = current === 1 ? (sdkError ? { path: "docs", unexpected: true } : { path: "docs" }) : { path: "docs-new" };
+    const response = current <= 2 ? [
+      { role: "assistant", content: [
+        { type: "tool-call", toolCallId: callId, toolName: "create_directory", input: args },
+        { type: "tool-approval-request", approvalId: `approval-${callId}`, toolCallId: callId },
+      ] },
+      ...(current === 1 && sdkError ? [{ role: "tool", content: [{ type: "tool-result", toolCallId: callId, toolName: "create_directory", output: { type: "error-text", value: "SDK bare validation error" } }] }] : []),
+    ] : [];
+    return { fullStream: (async function* () {
+      if (current <= 2) {
+        yield { type: "tool-call", toolCallId: callId, toolName: "create_directory", input: args };
+        yield { type: "tool-approval-request", approvalId: `approval-${callId}`, toolCall: { toolCallId: callId, toolName: "create_directory", input: args } };
+        if (current === 1 && sdkError) yield { type: "tool-error", toolCallId: callId, toolName: "create_directory", error: new Error("SDK bare validation error") };
+      } else if (current === 3) {
+        const output = await input.tools!.create_directory!.execute!({ path: "docs-new" }, { toolCallId: "corrected", messages: [], context: {} });
+        yield { type: "tool-result", toolCallId: "corrected", toolName: "create_directory", output };
+      } else yield { type: "text-delta", text: "created corrected directory" };
+    })(), responseMessages: Promise.resolve(response), steps: Promise.resolve([{}]) } as never;
+  }) as typeof streamText);
+  const s = setup(definition, stream, { ...allow, effect: "ask" });
+  try {
+    await s.runtime.open();
+    const events: RuntimeEvent[] = [];
+    for await (const event of s.runtime.start({ prompt: "create directory" })) {
+      events.push(event);
+      if (event.type === "approval_required") {
+        expect(event.requestId).toBe("approval-corrected");
+        expect(effects).toBe(0);
+        await s.runtime.answerApproval(event.requestId, "allow_once");
+      }
+    }
+    expect(effects).toBe(1);
+    expect(existsSync(join(root, "docs-new"))).toBe(true);
+    expect(samples).toBe(4);
+    expect(events.filter((event) => event.type === "tool_result" && event.callId === "invalid")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "tool_result" && event.callId === "invalid")[0])
+      .toMatchObject({ isError: true, output: { preview: expect.stringContaining("TOOL_INPUT_INVALID") } });
+    expect(JSON.stringify(correctionMessages)).toContain("TOOL_INPUT_INVALID");
+    expect(JSON.stringify(correctionMessages)).not.toContain("approval-invalid");
+    expect(events.filter((event) => event.type === "approval_required")).toHaveLength(1);
+    expect(s.db.query("SELECT id FROM tool_calls WHERE id = 'invalid'").get()).toBeNull();
+  } finally { s.db.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("does not revalidate filesystem preconditions after an eagerly executed allowed mutation", async () => {
+  const root = mkdtempSync(join(tmpdir(), "native-eager-create-"));
+  const definition = createWorkspaceWriteBuiltins(new WorkspacePathPolicy(root)).find((tool) => tool.name === "create_directory")!;
+  let samples = 0;
+  const stream = createAiSdkNativeStream({} as never, ((input) => {
+    const current = ++samples;
+    return { fullStream: (async function* () {
+      if (current > 1) { yield { type: "text-delta", text: "created" }; return; }
+      const output = await input.tools!.create_directory!.execute!({ path: "created" }, { toolCallId: "eager", messages: [], context: {} });
+      yield { type: "tool-call", toolCallId: "eager", toolName: "create_directory", input: { path: "created" } };
+      yield { type: "tool-result", toolCallId: "eager", toolName: "create_directory", output };
+    })(), responseMessages: Promise.resolve([]), steps: Promise.resolve([{}]) } as never;
+  }) as typeof streamText);
+  const s = setup(definition, stream);
+  try {
+    await s.runtime.open();
+    const results: RuntimeEvent[] = [];
+    for await (const event of s.runtime.start({ prompt: "create" })) if (event.type === "tool_result") results.push(event);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ isError: false });
+    expect(existsSync(join(root, "created"))).toBe(true);
+    expect(samples).toBe(2);
+  } finally { s.db.close(); rmSync(root, { recursive: true, force: true }); }
 });

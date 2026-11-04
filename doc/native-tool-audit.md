@@ -42,6 +42,8 @@
 - `tools/output-store.test.ts` 覆盖ref/range/Session/workspace隔离、stdout/stderr独立artifact、真实disk SQLite关闭重开、多字节分页、18→19迁移保留legacy输出及存储失败整笔rollback。
 - `tools/journal-workspace-recovery.test.ts` 证明真实executor结果事件失败后，重开SQLite由journal核验FS证据；覆盖applied/not_applied/unknown、参数/工作区绑定、恢复事件事务失败、8种Native修改映射和已提交canonical/ref保留。
 - `runtime/native-tool-policy.test.ts` 证明精确fresh命令审批、明确denial、结构化非法输入、规范失败/ref进入下一次SDK采样及历史修复、不合作工具阻断后续模型活动。
-- `tools/workspace-command-runner.test.ts` 的4个真实macOS sandbox用例已在允许sandbox-exec的环境通过，验证bun/npm/Python/Git、网络与文件隔离。所有测试共744通过，无跳过；不推断未安装工具链的所有配置均可用。
+- `tools/workspace-command-runner.test.ts` 的4个真实macOS sandbox用例已在允许sandbox-exec的环境通过，验证bun/npm/Python/Git、网络与文件隔离。所有测试共754通过，无跳过；不推断未安装工具链的所有配置均可用。
 
 生产宿主通过 `createNativeBuiltinTools` 使用write metadata overlay、structured command定义及Session/workspace范围的read_tool_result；完整ref投影也进入SDK采样和修复历史。最终验收状态见 [验收矩阵](single-agent-phase5-8-acceptance.md)。
+
+成功修改的恢复记录由journal在durable result之后核验清理；清理失败可延后重试，未提交的证据保留。正常命令退出同样等待所属进程组清理；不因主进程关闭stdio就提前报告完成。审批前参数/语义失败返回规范错误供模型纠正，移除非法审批请求并保持调用/结果配对。

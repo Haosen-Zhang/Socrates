@@ -411,11 +411,14 @@ Run 独立的 `AbortController`。SSE/WebView 断开不能取消执行；
   却没有结果的工作区修改先按 exact operation ID、工作区身份、路径与哈希核验持久文件证据。
   确认生效可记录恢复成功，确认未发布标记取消；无法确认的操作明确标为
   `TOOL_OUTCOME_UNKNOWN`，再次修改需新审批。恢复只核验，不重放工具主体。
+  成功结果提交后核验并清理操作证据及已确认的隔离残留；清理失败不撤销成功，
+  启动时可重试。结果未提交时必须保留恢复证据。
   详见 [执行事件与工具恢复](../docs/07-execution-event-authority.md)。
 - 上下文窗口取模型目录或用户 override 的已解析值；未知保持 unavailable，不伪造 4K 上限。
   已知窗口超限会记录 `memory.context_truncated`；当前工作单元本身超限时在调用 Provider
   前明确失败，不发送越界 payload。
 - Native 输入/规范输出共用递归 schema。输出验证后持久化，再独立生成模型预览；
+  语义/参数错误形成配对的失败工具结果供模型纠正，不触发非法审批或执行。
   长结果和完整 stdout/stderr 存私有 SQLite artifact，`read_tool_result` 按 Session/workspace
   限定范围分页读取。命令每流最多64MiB，超限明确终止。历史修复保留完整输出引用。
 - 工具 deadline 限制单个 attempt，通过派生 AbortSignal 统一执行；超时/取消等待清理，

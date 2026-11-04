@@ -70,7 +70,7 @@
 
 - [x] Exercise fresh DB/upgrade, staged create/write/delete/move interruption, provider/tool checkpoints, durable result gaps, approval expiry, replay and continued model history. Add regression cases for uncovered boundaries before fixes.
 - [x] Run `bun test`, `bun run typecheck`, `bun run lint`, `bun run --cwd apps/desktop build`, and `git diff --check`; expect all pass.
-- [ ] One fresh independent whole-branch review; reproduce and fix correctness findings, then rerun required checks.
+- [x] One fresh independent whole-branch review; reproduce and fix correctness findings, then rerun required checks.
 - [ ] Commit and push; create and attach one PR targeting main. Report exact changes, verification, and remaining task count without claiming unimplemented guarantees.
 
 ## Execution notes
@@ -78,3 +78,5 @@
 - Completed all four implementation tasks and Phase8 fault/acceptance coverage. The interoperating changes are committed together so each reviewed revision builds with the full production registry.
 - Verification before independent review: 744 tests passed with no skip, including real macOS sandbox cases; typecheck, lint, desktop production build and diff checks passed.
 - Reused pinned DeepSeek atomic-write and repeat-call code where compatible; schema/command behavior adapted to existing Socrates IO and security seams.
+
+- Final fresh review found three Important issues (committed evidence cleanup, normal-exit descendant cleanup, semantic input correction). All reproduced RED then fixed GREEN; follow-up eager-SDK regression also passed. Final full suite754 pass/no skip/no fail; typecheck/lint/desktop build/diff-check pass.

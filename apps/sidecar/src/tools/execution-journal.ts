@@ -5,6 +5,8 @@ import { WorkspacePathPolicy } from "../workspace/path-policy";
 import { sha256, type MutationRecovery, type MutationRequest } from "../workspace/mutation-evidence";
 import { interruptedToolOutcome } from "./recovery-outcome";
 
+type WorkspaceMutationCall = { id: string; name: string; input_json: string; workspace_identity: string };
+
 /** The journal and its SQL projection commit together, always outside the tool body. */
 export class ToolExecutionJournal {
   constructor(private readonly db: Database, private readonly events = new ExecutionEventStore(db)) {}
@@ -53,6 +55,9 @@ export class ToolExecutionJournal {
       this.db.query("UPDATE tool_calls SET status = ?, error = ?, error_detail_json = ?, updated_at = ? WHERE id = ?")
         .run(status, error?.message ?? null, error ? JSON.stringify(error) : null, now, context.callId);
     }, attemptId);
+    // The filesystem and SQL are separate transactions. Proof must survive
+    // every failed result checkpoint; cleanup starts only after commit returns.
+    if (status === "succeeded" && !error && !willRetry) this.cleanupCommittedMutation(context.callId);
   }
 
   /** Startup, or a stopped Run only. Never invokes a tool or reuses its approval. */
@@ -82,6 +87,7 @@ export class ToolExecutionJournal {
           this.db.query("UPDATE tool_calls SET status = ? WHERE id = ?").run(known.is_error ? "failed" : "succeeded", row.id);
           this.db.query("UPDATE approval_requests SET status = 'expired' WHERE subject_id = ? AND status IN ('pending', 'allowed')").run(row.id);
         })();
+        if (!known.is_error) this.cleanupCommittedMutation(row.id);
         continue;
       }
       const started = row.status === "running";
@@ -115,41 +121,68 @@ export class ToolExecutionJournal {
             .run(status, verified ? null : started ? outcome.code : "sidecar_restarted", outcome.disposition, now, row.id);
           this.db.query("UPDATE approval_requests SET status = 'expired' WHERE subject_id = ? AND status IN ('pending', 'allowed')").run(row.id);
         }, attemptId);
+      if (verified) this.cleanupCommittedMutation(row.id);
     }
+    // Close the crash window after a durable success but before best-effort
+    // cleanup. Existing terminal results remain authoritative and unchanged.
+    try {
+      const completed = this.db.query<{ id: string }, [string | null, string | null, string | null]>(`SELECT id FROM tool_calls
+      WHERE status = 'succeeded' AND capability = 'workspace_write'
+        AND (? IS NULL OR task_id = ? OR task_id IN
+          (SELECT runtime_sessions.agent_session_id FROM runtime_sessions
+            JOIN agent_runs ON agent_runs.runtime_session_id = runtime_sessions.id WHERE agent_runs.id = ?))`)
+      .all(runId ?? null, runId ?? null, runId ?? null);
+      for (const call of completed) this.cleanupCommittedMutation(call.id);
+    } catch { /* Startup cleanup is best-effort; committed outcomes stay authoritative. */ }
     return rows.length;
   }
 
-  private inspectWorkspaceMutation(call: { id: string; name: string; input_json: string; workspace_identity: string }): MutationRecovery | null {
-    const supported = new Set(["write_file", "create_directory", "copy_path", "move_path", "delete_path", "create_archive", "create_document", "create_spreadsheet"]);
-    if (!supported.has(call.name)) return null;
-    const workspace = this.db.query<{ canonical_path: string }, [string]>("SELECT canonical_path FROM workspaces WHERE identity_hash = ?").get(call.workspace_identity);
-    // Legacy or custom workspace-write tools retain their conservative Phase 4
-    // classification. A tool name or a path alone never supplies workspace authority.
-    if (!workspace) return null;
+  private cleanupCommittedMutation(callId: string): void {
     try {
-      const input: unknown = JSON.parse(call.input_json);
-      if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("workspace_recovery_input_invalid");
-      const value = input as Record<string, unknown>;
-      const policy = new WorkspacePathPolicy(workspace.canonical_path);
-      if (sha256(policy.canonicalRoot) !== call.workspace_identity) throw new Error("workspace_recovery_identity_changed");
-      const request: MutationRequest = { operationId: call.id, kind: "create", path: "" };
-      const path = call.name === "copy_path" ? value.destination : call.name === "move_path" ? value.source : value.path;
-      if (typeof path !== "string") throw new Error("workspace_recovery_input_invalid");
-      request.path = normalizeWorkspaceRelativePath(path);
-      if (call.name === "write_file") {
-        if (typeof value.content !== "string") throw new Error("workspace_recovery_input_invalid");
-        request.kind = "write";
-        request.expectedNewSha256 = sha256(value.content);
-      } else if (call.name === "delete_path") request.kind = "delete";
-      else if (call.name === "move_path") {
-        if (typeof value.destination !== "string") throw new Error("workspace_recovery_input_invalid");
-        request.kind = "move";
-        request.destination = normalizeWorkspaceRelativePath(value.destination);
-      }
-      return policy.recoverMutation(request);
+      const call = this.db.query<WorkspaceMutationCall, [string]>(`SELECT tool_calls.* FROM tool_calls
+        JOIN tool_outputs ON tool_outputs.tool_call_id = tool_calls.id
+        WHERE tool_calls.id = ? AND tool_calls.status = 'succeeded'
+          AND tool_calls.capability = 'workspace_write' AND tool_outputs.is_error = 0`).get(callId);
+      if (!call) return;
+      const scope = this.workspaceMutationScope(call);
+      scope?.policy.finalizeCommittedMutation(scope.request);
+    } catch { /* Durable success is never downgraded by cleanup failure. */ }
+  }
+
+  private inspectWorkspaceMutation(call: WorkspaceMutationCall): MutationRecovery | null {
+    try {
+      const scope = this.workspaceMutationScope(call);
+      return scope ? scope.policy.recoverMutation(scope.request) : null;
     } catch (error) {
       return { disposition: "recovery_blocked", outcome: "unknown", reason: error instanceof Error ? error.message : "workspace_recovery_failed" };
     }
   }
 
+  private workspaceMutationScope(call: WorkspaceMutationCall): { policy: WorkspacePathPolicy; request: MutationRequest } | null {
+    const supported = new Set(["write_file", "create_directory", "copy_path", "move_path", "delete_path", "create_archive", "create_document", "create_spreadsheet"]);
+    if (!supported.has(call.name)) return null;
+    const workspace = this.db.query<{ canonical_path: string }, [string]>("SELECT canonical_path FROM workspaces WHERE identity_hash = ?").get(call.workspace_identity);
+    // A tool name or a path alone never supplies workspace authority.
+    if (!workspace) return null;
+    const input: unknown = JSON.parse(call.input_json);
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("workspace_recovery_input_invalid");
+    const value = input as Record<string, unknown>;
+    const policy = new WorkspacePathPolicy(workspace.canonical_path);
+    if (sha256(policy.canonicalRoot) !== call.workspace_identity) throw new Error("workspace_recovery_identity_changed");
+    const request: MutationRequest = { operationId: call.id, kind: "create", path: "" };
+    const path = call.name === "copy_path" ? value.destination : call.name === "move_path" ? value.source : value.path;
+    if (typeof path !== "string") throw new Error("workspace_recovery_input_invalid");
+    request.path = normalizeWorkspaceRelativePath(path);
+    if (call.name === "write_file") {
+      if (typeof value.content !== "string") throw new Error("workspace_recovery_input_invalid");
+      request.kind = "write";
+      request.expectedNewSha256 = sha256(value.content);
+    } else if (call.name === "delete_path") request.kind = "delete";
+    else if (call.name === "move_path") {
+      if (typeof value.destination !== "string") throw new Error("workspace_recovery_input_invalid");
+      request.kind = "move";
+      request.destination = normalizeWorkspaceRelativePath(value.destination);
+    }
+    return { policy, request };
+  }
 }

@@ -2,7 +2,7 @@
 
 此矩阵对应原始需求第34节的22项 Definition of Done。它记录可运行证据和边界，不能把单元/组件测试、跳过的 sandbox 测试或人工代码检查合并成“桌面端全链路已通过”。Native 工具清单与约束见 [工具审计](native-tool-audit.md)；执行事件权威性和复用出处见 [执行事件文档](../docs/07-execution-event-authority.md)。
 
-最终集成快照：`bun test` **744 pass / 0 skip / 0 fail**（135个文件）；在允许启动macOS sandbox-exec的测试环境运行，4个真实沙箱用例全部通过。`bun run typecheck`、`bun run lint`、`bun run --cwd apps/desktop build`、`git diff --check`均通过。测试不调用真实付费模型；下列文件/测试名与验证边界来自当前源码和实际运行。
+最终集成快照：`bun test` **754 pass / 0 skip / 0 fail**（136个文件）；在允许启动macOS sandbox-exec的测试环境运行，4个真实沙箱用例全部通过。`bun run typecheck`、`bun run lint`、`bun run --cwd apps/desktop build`、`git diff --check`均通过。测试不调用真实付费模型；下列文件/测试名与验证边界来自当前源码和实际运行。
 
 路径缩写：`sidecar/` = `apps/sidecar/src/`；`desktop/` = `apps/desktop/src/`；`core/` = `packages/core/src/`。表中“组件已验证”只覆盖所列断言。
 
@@ -36,3 +36,13 @@
 1. 宿主接线、16个输出schema、write_file规范输出、3/5/8重复提示、完整ref投影、SQLite迁移重开和journal证据恢复均已有实现及上述实际测试，不再作为待实现项。同一代码快照已通过全套test/typecheck/lint/desktop build门禁。
 2. 真实macOS sandbox的4个条件测试已在feature probe通过的环境运行。已验证bun/npm/Python/Git；Rust/Go入口与参数有契约测试，未验证所有编译器/缓存安装组合。平台不支持时拒绝执行。
 3. 真实WebView/SSE中断下长命令继续、刷新恢复及审批等待时断线，目前由独立所有权/游标/审批/命令组件测试共同支持，未新增完整桌面自动化场景。Provider测试使用可控generator/SDK seam，未依赖真实供应商故障或付费请求。
+
+## 最后独立审查与修复
+
+Superpowers独立审查在集成提交上发现3个Important问题，均先以失败回归复现，再修复：
+
+- 已提交成功的操作记录阻塞后续目录工具：`tools/journal-evidence-cleanup.test.ts` 验证真实executor的write→copy-directory→archive→delete-file→delete-directory，另验证清理失败、重开DB、结果事务失败及删除隔离区崩溃。只在durable success后核验清理。
+- 命令主进程正常退出遗留同组子进程：`tools/workspace-command-runner.test.ts` 验证关闭stdio的后台写入者和抵抗TERM的子进程，完成前清理整个组并保留主进程退出码/输出。
+- 非法语义参数直接结束Run：`runtime/native-tool-policy.test.ts` 的 `lets the model correct an invalid call before approval or execution` 验证错误结果配对、SDK重复错误去重、非法审批移除、下一采样纠正参数后精确审批执行；额外验证SDK提前执行的成功修改不会被事后前置条件误判。
+
+修复后完整754项测试全部通过，typecheck/lint/desktop build/diff-check通过；没有遗留本次审查的Critical/Important问题。

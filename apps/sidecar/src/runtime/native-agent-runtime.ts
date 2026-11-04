@@ -153,6 +153,15 @@ export function createAiSdkNativeStream(
       }> = [];
       let hadToolActivity = false;
       const observedResults = new Map<string, { output: unknown; isError: boolean }>();
+      const preflightFailures = new Map<string, { name: string; output: unknown }>();
+      const rejectPreflight = (callId: string, name: string, error: unknown) => {
+        if (!isStructuredExecutionError(error) || error.detail.category !== "tool_validation") throw error;
+        const output = nativeToolErrorOutput(error);
+        preflightFailures.set(callId, { name, output });
+        observedResults.set(callId, { output, isError: true });
+        permissionByCallId.delete(callId);
+        return output;
+      };
       const retried = executeProviderWithRetry<NativeStreamPart>({
         signal: input.signal,
         classifyError: classifyProviderError,
@@ -184,14 +193,30 @@ export function createAiSdkNativeStream(
               if (!permission) throw new Error("native_tool_permission_snapshot_missing");
               const native = input.tools[part.toolName];
               if (!native) throw new Error("native_tool_definition_missing");
-              validateNativeToolInput(native.definition, part.input);
-              permissionByCallId.set(part.toolCallId, permission);
+              try {
+                // Allowed calls can execute eagerly before the SDK consumer
+                // observes this event. Their domain preconditions are checked
+                // by ToolExecutor immediately before dispatch, never again
+                // against filesystem state changed by the successful body.
+                if (permission.effect === "ask") validateNativeToolInput(native.definition, part.input);
+                permissionByCallId.set(part.toolCallId, permission);
+              } catch (error) { rejectPreflight(part.toolCallId, part.toolName, error); }
               yield { type: "tool_call", callId: part.toolCallId, name: part.toolName, input: part.input };
+              const rejected = preflightFailures.get(part.toolCallId);
+              if (rejected) yield { type: "tool_result", callId: part.toolCallId, name: part.toolName, output: rejected.output, isError: true };
             } else if (part.type === "tool-approval-request") {
+              if (preflightFailures.has(part.toolCall.toolCallId)) continue;
               const permission = permissionByName.get(part.toolCall.toolName);
               if (!permission || permission.effect !== "ask") throw new Error("native_tool_permission_snapshot_missing");
               const request = { requestId: part.approvalId, callId: part.toolCall.toolCallId, name: part.toolCall.toolName, input: part.toolCall.input, permission };
-              pending.push({ approvalId: part.approvalId, decision: input.requestApproval(request) });
+              let decision: Promise<{ approved: boolean; reason?: string }>;
+              try { decision = input.requestApproval(request); }
+              catch (error) {
+                const output = rejectPreflight(request.callId, request.name, error);
+                yield { type: "tool_result", callId: request.callId, name: request.name, output, isError: true };
+                continue;
+              }
+              pending.push({ approvalId: part.approvalId, decision });
               yield { type: "approval_required", ...request };
             } else if (part.type === "tool-result") {
               hadToolActivity = true;
@@ -199,12 +224,14 @@ export function createAiSdkNativeStream(
               observedResults.set(part.toolCallId, { output: part.output, isError: false });
               yield { type: "tool_result", callId: part.toolCallId, name: part.toolName, output: part.output, isError: false };
             } else if (part.type === "tool-error") {
+              if (preflightFailures.has(part.toolCallId)) continue;
               hadToolActivity = true;
               permissionByCallId.delete(part.toolCallId);
               const output = nativeToolErrorOutput(part.error);
               observedResults.set(part.toolCallId, { output, isError: true });
               yield { type: "tool_result", callId: part.toolCallId, name: part.toolName, output, isError: true };
             } else if (part.type === "tool-output-denied") {
+              if (preflightFailures.has(part.toolCallId)) continue;
               hadToolActivity = true;
               permissionByCallId.delete(part.toolCallId);
               yield { type: "tool_result", callId: part.toolCallId, name: part.toolName, output: JSON.stringify(deniedToolOutcome()), isError: true };
@@ -223,14 +250,26 @@ export function createAiSdkNativeStream(
       // The SDK normally projects thrown tools as just Error.message. Replace
       // that projection with the host's durable failure output, including any
       // scoped full-result reference, before the next provider sample.
-      messages = [...messages, ...responseMessages.map((message): ModelMessage => message.role !== "tool" ? message : ({
-        ...message,
-        content: message.content.map((part) => {
+      const projected = responseMessages.map((message): ModelMessage => {
+        // A rejected preflight is already a completed failed tool call. Do not
+        // leave an SDK approval request for it to execute on a later sample.
+        if (message.role === "assistant" && Array.isArray(message.content)) return { ...message,
+          content: message.content.filter((part) => part.type !== "tool-approval-request" || !preflightFailures.has(part.toolCallId)) };
+        if (message.role !== "tool") return message;
+        return { ...message, content: message.content.map((part) => {
           const observed = part.type === "tool-result" ? observedResults.get(part.toolCallId) : undefined;
           return observed ? { ...part, output: { type: observed.isError ? "error-text" as const : "text" as const,
             value: modelToolOutput(asToolOutputRef(observed.output)) } } : part;
-        }),
-      }))];
+        }) };
+      });
+      const resultIds = new Set(projected.flatMap((message) => message.role === "tool"
+        ? message.content.flatMap((part) => part.type === "tool-result" ? [part.toolCallId] : []) : []));
+      const rejectedResults = [...preflightFailures].filter(([callId]) => !resultIds.has(callId)).map(([callId, rejected]) => ({
+        type: "tool-result" as const, toolCallId: callId, toolName: rejected.name,
+        output: { type: "error-text" as const, value: modelToolOutput(asToolOutputRef(rejected.output)) },
+      }));
+      if (rejectedResults.length) projected.push({ role: "tool", content: rejectedResults });
+      messages = [...messages, ...projected];
       remainingSteps -= Math.max(steps.length, 1);
       if (pending.length) {
         const responses = await Promise.all(pending.map(async ({ approvalId, decision }) => {

@@ -120,6 +120,14 @@ ToolCall/ToolResult；等待审批、尚未进入 executor 的调用补为 `TOOL
 修改保留保守unknown分类，不执行工具主体。该恢复事件与projection、输出及旧审批过期同事务提交。
 未提供人工清除unknown状态的UI；新的修改仍需自己的精确审批。
 
+成功的结果/恢复事务提交之后，宿主才按 exact request 与证据 inode 清理已确认的
+操作记录及隔离残留，避免它们阻塞后续 copy/archive/delete-directory。清理不触碰
+当前目标，不递归删除；失败保留已提交成功并在启动时重试。结果事务失败仍保留证据。
+
+Native审批前的参数/语义失败会形成配对 ToolCall/失败 ToolResult，规范错误进入下一次
+模型采样；相应SDK审批请求被移除，不请求用户批准非法输入、不盲重试、不直接终止Run。
+允许自动执行的调用在executor内检查前置条件，避免SDK提前执行成功后再次检查已改变的文件状态。
+
 升级前 Native 写入的 agent-session 身份通过持久 runtime-session/Run 关系解析，
 不会漏掉旧操作的未知或已知结果。SDK 的明确审批拒绝写为 `TOOL_APPROVAL_DENIED`，
 历史修复也保留已有拒绝证据。补写仍是 append-only；模型投影将结果放到原始调用批次
@@ -147,7 +155,7 @@ ToolCall/ToolResult；等待审批、尚未进入 executor 的调用补为 `TOOL
 
 这些改动不移植Harness整体、插件容器、agent编排、subagent、PTY会话或新的持久化架构。
 重复调用检测是advisory；长输出分页ref绑定Session/workspace；deadline是单次attempt。
-生产工具统一由`createNativeBuiltinTools`注册，规范结果/ref通过SDK采样与历史修复保留；journal已接入FS证据核验。实际能力与尚未真机验证的sandbox边界见
+生产工具统一由`createNativeBuiltinTools`注册，规范结果/ref通过SDK采样与历史修复保留；journal已接入FS证据核验。真实macOS sandbox已通过测试；工具链配置及桌面自动化的验证边界见
 [`doc/native-tool-audit.md`](../doc/native-tool-audit.md)及
 [`doc/single-agent-phase5-8-acceptance.md`](../doc/single-agent-phase5-8-acceptance.md)。
 

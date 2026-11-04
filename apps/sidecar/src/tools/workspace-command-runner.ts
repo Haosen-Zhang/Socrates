@@ -89,6 +89,17 @@ function signalProcessGroup(pid: number | undefined, signal: NodeJS.Signals): vo
   }
 }
 
+function processGroupExists(pid: number | undefined): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM is evidence that a group still exists; it cannot certify cleanup.
+    return !(error && typeof error === "object" && "code" in error && error.code === "ESRCH");
+  }
+}
+
 function textOutput(chunks: Buffer[]): string {
   return Buffer.concat(chunks)
     .toString("utf-8")
@@ -151,12 +162,28 @@ export class SupervisedCommandRunner implements WorkspaceCommandRunner {
         signalProcessGroup(child.pid, "SIGTERM");
         // Do not clear escalation when the direct child closes: a resistant
         // descendant may have closed its inherited pipes and still be alive.
-        termination = new Promise((done) => setTimeout(() => {
-          signalProcessGroup(child.pid, "SIGKILL");
-          // Allow the kernel/reaper to observe SIGKILL before another sample.
-          setTimeout(done, 25);
-        }, TERMINATION_GRACE_MS));
+        const terminationStarted = performance.now();
+        termination = new Promise((done) => {
+          let escalated = false;
+          const join = () => {
+            if (!processGroupExists(child.pid)) return done();
+            if (!escalated && performance.now() - terminationStarted >= TERMINATION_GRACE_MS) {
+              escalated = true;
+              signalProcessGroup(child.pid, "SIGKILL");
+            }
+            // An unkillable group remains pending so the shared deadline
+            // policy quarantines this scope instead of certifying completion.
+            setTimeout(join, 10);
+          };
+          join();
+        });
       };
+      child.once("exit", () => {
+        // A successful leader can leave background work with closed stdio.
+        // Keep ownership until its ordinary process-group descendants stop;
+        // preserve the leader's own exit code/signal in the final result.
+        if (processGroupExists(child.pid)) terminate();
+      });
       const onAbort = () => {
         const reason = context.signal.reason as { detail?: { code?: string } } | undefined;
         timedOut = reason?.detail?.code === "TOOL_TIMEOUT";

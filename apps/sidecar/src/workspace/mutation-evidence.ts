@@ -166,6 +166,22 @@ export function removeEvidence(parentFd: number, operationId: string): void {
   }
 }
 
+/** Remove only a verified retained entry, after the host has committed its result. */
+export function removeVerifiedMutationEntry(parentFd: number, name: string, expected: EntryIdentity): void {
+  const quarantine = `.socrates-committed-cleanup-${crypto.randomUUID()}`;
+  renamePinnedWorkspaceEntryExclusive(parentFd, name, quarantine);
+  try {
+    if (!sameIdentity(expected, inspectEntry(parentFd, quarantine))) throw new Error("WORKSPACE_FILE_CHANGED");
+    // Retained stages are single files or already verified empty directories.
+    // Never recursively delete data as part of result cleanup.
+    unlinkPinnedWorkspaceEntry(parentFd, quarantine, expected.kind === "directory");
+    fsyncSync(parentFd);
+  } catch (error) {
+    try { renamePinnedWorkspaceEntryExclusive(parentFd, quarantine, name); } catch { /* Preserve an ambiguous quarantine. */ }
+    throw error;
+  }
+}
+
 /** A bounded, real replacement hunk; unchanged prefix/suffix lines are omitted. */
 export function boundedDiff(path: string, before: string | null, after: string, basisTruncated: boolean): { diff: string; diffTruncated: boolean } {
   const limit = 16 * 1024;

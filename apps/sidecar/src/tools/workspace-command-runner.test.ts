@@ -138,6 +138,33 @@ describe("SupervisedCommandRunner", () => {
     await expect(running).rejects.toThrow("tool_cancelled");
     expect(existsSync(`${root}/should-not-exist`)).toBe(false);
   });
+
+  it("stops background mutations before returning a normally exited leader's result", async () => {
+    const shellRunner = new SupervisedCommandRunner(() => ({ executable: "/bin/sh", argv: ["-c", "(sleep 0.4; echo late > marker) >/dev/null 2>&1 & exit 0"], env: { PATH: "/usr/bin:/bin" } }));
+    const result = await shellRunner.run(root, { executable: "test-shell", argv: [], timeoutMs: 100 }, context);
+    expect(result.exitCode).toBe(0);
+    expect(result.timedOut).toBe(false);
+    await Bun.sleep(650);
+    expect(existsSync(`${root}/marker`)).toBe(false);
+  });
+
+  it("joins a resistant background child after normal leader exit while preserving output and exit code", async () => {
+    writeFileSync(`${root}/background.js`, "process.on('SIGTERM',()=>{}); require('fs').writeFileSync('background.pid',String(process.pid)); setInterval(()=>require('fs').writeFileSync('activity',String(Date.now())),20);\n");
+    writeFileSync(`${root}/leader.js`, "require('child_process').spawn(process.execPath,['background.js'],{stdio:'ignore'}); const fs=require('fs'); const ready=setInterval(()=>{if(fs.existsSync('background.pid')){clearInterval(ready); console.log('leader output'); process.exit(7);}},10);\n");
+    const full = { stdout: "", stderr: "" };
+    const captured = new SupervisedCommandRunner((_root, input) => ({ executable: process.execPath, argv: input.argv, env: {} }), 8192, () => ({
+      write(stream, chunk) { full[stream] += Buffer.from(chunk).toString("utf8"); },
+      finish() { return { stdout: "opaque:stdout", stderr: "opaque:stderr" }; },
+    }));
+    const result = await captured.run(root, { executable: "node", argv: ["leader.js"], timeoutMs: 2_000 }, context);
+    const pid = Number(readFileSync(`${root}/background.pid`, "utf8"));
+    let alive = true;
+    try { process.kill(pid, 0); } catch { alive = false; }
+    if (alive) process.kill(pid, "SIGKILL");
+    expect(alive).toBe(false);
+    expect(result).toMatchObject({ exitCode: 7, signal: null, stdoutPreview: "leader output\n", timedOut: false, cancelled: false, fullOutputRefs: { stdout: "opaque:stdout", stderr: "opaque:stderr" } });
+    expect(full.stdout).toBe("leader output\n");
+  });
 });
 
 const macSandboxAvailable = process.platform === "darwin"

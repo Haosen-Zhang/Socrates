@@ -27,7 +27,7 @@ import {
   withPinnedWorkspaceParent,
 } from "./native-fs";
 
-import { assertPublishedEntry, boundedDiff, inspectEntry, mutationNames, persistEvidence, updateEvidence, readEvidence, readStableDescriptor, removeEvidence, sameIdentity, sha256, writeFully, type MutationOptions, type MutationRequest, type MutationRecovery } from "./mutation-evidence";
+import { assertPublishedEntry, boundedDiff, inspectEntry, mutationNames, persistEvidence, updateEvidence, readEvidence, readStableDescriptor, removeEvidence, removeVerifiedMutationEntry, sameIdentity, sha256, writeFully, type MutationOptions, type MutationRequest, type MutationRecovery } from "./mutation-evidence";
 
 const SECRET_SEGMENTS = new Set([".env", ".ssh", ".gnupg", ".aws", ".npmrc", ".pypirc"]);
 const SECRET_SUFFIXES = [".pem", ".key", ".p12", ".pfx"];
@@ -278,6 +278,29 @@ export class WorkspacePathPolicy {
         return { disposition: "requires_user_confirmation", outcome: "unknown", evidence: projected, reason: "workspace_mutation_evidence_diverged" };
       });
     } catch (error) { return { disposition: "recovery_blocked", outcome: "unknown", reason: error instanceof Error ? error.message : String(error) }; }
+  }
+
+  /** Host-only postcommit cleanup. Failure preserves proof and never reverses success. */
+  finalizeCommittedMutation(request: MutationRequest): boolean {
+    try {
+      const path = normalizeWorkspaceRelativePath(request.path);
+      if (!path || path !== request.path) return false;
+      this.assertNotSecret(path);
+      if (request.destination) this.assertNotSecret(normalizeWorkspaceRelativePath(request.destination));
+      // Durable SQL success, checked by the host, is authoritative even when
+      // later user edits changed the destination. Verify only our exact journal
+      // and retained staging identities; never touch the current destination.
+      return withPinnedWorkspaceParent(this.canonicalRoot, request.path, (parentFd) => {
+        const evidence = readEvidence(parentFd, request);
+        const retained = inspectEntry(parentFd, evidence.stage);
+        if (retained) {
+          if ((request.kind !== "write" && request.kind !== "delete") || !evidence.before || !sameIdentity(evidence.before, retained)) return false;
+          removeVerifiedMutationEntry(parentFd, evidence.stage, evidence.before);
+        }
+        removeEvidence(parentFd, request.operationId);
+        return true;
+      });
+    } catch { return false; }
   }
 
   createDirectory(input: string, options: MutationOptions = {}): { path: string } {
