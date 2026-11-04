@@ -6,7 +6,7 @@ import { deniedToolOutcome, interruptedToolOutcome } from "./recovery-outcome";
 export async function repairToolHistory(db: Database, memory: ConversationMemoryStore, threadId: string): Promise<void> {
   const rows = db.query<{
     id: string; session_id: string; task_id: string; turn_id: string; agent_id: string;
-    name: string; input_json: string; preview_text: string; byte_size: number; truncated: number; is_error: number;
+    name: string; input_json: string; preview_text: string; byte_size: number; truncated: number; is_error: number; storage_key: string | null;
     owning_run_id: string; owning_turn_id: string;
   }, [string]>(`SELECT tool_calls.*, tool_outputs.*, agent_runs.id AS owning_run_id,
       agent_runs.turn_id AS owning_turn_id FROM tool_calls
@@ -26,7 +26,8 @@ export async function repairToolHistory(db: Database, memory: ConversationMemory
         parts: [{ type: "tool_call", callId: row.id, name: row.name, input: JSON.parse(row.input_json) }],
         status: "completed", idempotencyKey: callKey });
     }
-    const output = { preview: row.preview_text, byteSize: row.byte_size, truncated: row.truncated === 1 };
+    const output = { preview: row.preview_text, byteSize: row.byte_size, truncated: row.truncated === 1,
+      ...(row.storage_key ? { storageKey: row.storage_key } : {}) };
     await memory.appendMessage({ ...common, role: "tool", kind: "tool_result", content: row.preview_text,
       parts: [{ type: "tool_result", callId: row.id, output, isError: row.is_error === 1 }],
       status: row.is_error ? "failed" : "completed", idempotencyKey: `tool-result:${row.owning_run_id}:${row.id}` });

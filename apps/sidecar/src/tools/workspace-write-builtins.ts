@@ -4,40 +4,17 @@
  * 提供工作区写入能力：文件创建/更新、安全删除、结构化命令执行。
  * 所有写操作需要审批（risk: high/destructive, freshHumanRequired）。
  */
-import { existsSync, realpathSync } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, extname } from "node:path";
 import type { JsonSchema, ToolContext, ToolDefinition } from "@socrates/core";
 import { Document, HeadingLevel, Packer, Paragraph } from "docx";
 import ExcelJS from "exceljs";
 import { zipSync } from "fflate";
-import { containsCredentialMaterial } from "../security/redaction";
 import { WorkspacePathPolicy, isSecretWorkspacePath } from "../workspace/path-policy";
 import { nativeWorkspaceMutationSupported } from "../workspace/native-fs";
-import {
-  createMacOsSandboxCommandRunner,
-  type StructuredCommandInput,
-  type WorkspaceCommandRunner,
-} from "./workspace-command-runner";
-
-function systemGitPath(): string {
-  try {
-    const developerDir = realpathSync("/var/db/xcode_select_link");
-    const git = join(developerDir, "usr/bin/git");
-    if (existsSync(git)) return git;
-  } catch {
-    // Fall through to the stable system launcher.
-  }
-  return "/usr/bin/git";
-}
-
-const COMMAND_PATHS = new Map([
-  ["echo", "/bin/echo"],
-  ["pwd", "/bin/pwd"],
-  ["git", systemGitPath()],
-  ["uname", "/usr/bin/uname"],
-]);
-const SHELL_ALLOWLIST = new Set(COMMAND_PATHS.keys());
-const GIT_VALIDATION_SUBCOMMANDS = new Set(["status", "rev-parse"]);
+import type { CommandCaptureFactory, WorkspaceCommandRunner } from "./workspace-command-runner";
+import { createCommandTools } from "./command-tools";
+import { applyNativeToolContracts } from "./native-tool-contracts";
 
 const objectSchema = (properties: NonNullable<JsonSchema["properties"]>, required: string[]) => ({
   type: "object" as const,
@@ -46,12 +23,6 @@ const objectSchema = (properties: NonNullable<JsonSchema["properties"]>, require
   additionalProperties: false as const,
 });
 
-const SHELL_METACHARACTERS = /[|;&><`\n\r\0]|\$\(/;
-const OUTSIDE_PATH = /^(?:\/|~(?:\/|$)|[A-Za-z]:[\\/])/;
-const TRAVERSAL_SEGMENT = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
-const COMMAND_TIMEOUT_MAX_MS = 120_000;
-const COMMAND_ARGV_MAX_ITEMS = 128;
-const COMMAND_ARGV_MAX_CHARS = 8 * 1024;
 const TREE_MAX_ENTRIES = 256;
 const TREE_MAX_BYTES = 50 * 1024 * 1024;
 const DOC_MAX_PARAGRAPHS = 1_000;
@@ -247,69 +218,13 @@ function csvValue(value: CellValue): string {
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
-function validateStructuredCommand(policy: WorkspacePathPolicy, input: unknown): string[] {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return ["expected:object"];
-  const { executable, argv, timeoutMs } = input as Partial<StructuredCommandInput>;
-  const errors: string[] = [];
-  if (typeof executable === "string") {
-    if (!SHELL_ALLOWLIST.has(executable) || executable.includes("/") || executable.includes("\\")) {
-      errors.push("shell_executable_not_allowed");
-    } else if (SHELL_METACHARACTERS.test(executable)) {
-      errors.push("shell_metacharacter_denied");
-    }
-  }
-  if (Array.isArray(argv)) {
-    if (!argv.every((argument) => typeof argument === "string")) errors.push("shell_argv_must_be_strings");
-    if (argv.length > COMMAND_ARGV_MAX_ITEMS || argv.reduce((total, argument) => (
-      total + (typeof argument === "string" ? argument.length : 0)
-    ), 0) > COMMAND_ARGV_MAX_CHARS) {
-      errors.push("shell_argv_too_large");
-    }
-    for (const argument of argv) {
-      if (typeof argument !== "string") continue;
-      if (SHELL_METACHARACTERS.test(argument)) errors.push("shell_metacharacter_denied");
-      if (containsCredentialMaterial(argument)) errors.push("shell_credential_argument_denied");
-      const optionValue = argument.startsWith("-") && argument.includes("=")
-        ? argument.slice(argument.indexOf("=") + 1)
-        : argument.startsWith("-C") && argument.length > 2
-          ? argument.slice(2)
-          : argument;
-      if (
-        argument.startsWith("file:")
-        || OUTSIDE_PATH.test(optionValue)
-        || TRAVERSAL_SEGMENT.test(optionValue)
-      ) {
-        errors.push("shell_argument_path_outside");
-      }
-      const candidatePaths = [optionValue, optionValue.includes(":") ? optionValue.slice(optionValue.lastIndexOf(":") + 1) : ""]
-        .filter(Boolean);
-      for (const candidate of candidatePaths) {
-        if (isSecretWorkspacePath(candidate)) errors.push("workspace_secret_path_denied");
-        if (!candidate.startsWith("-") && existsSync(join(policy.canonicalRoot, candidate))) {
-          try {
-            policy.resolveExisting(candidate);
-          } catch (error) {
-            errors.push(errorCode(error));
-          }
-        }
-      }
-    }
-    if (executable === "git" && !GIT_VALIDATION_SUBCOMMANDS.has(argv[0] ?? "")) {
-      errors.push("shell_argument_not_allowed");
-    }
-  }
-  if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > COMMAND_TIMEOUT_MAX_MS)) {
-    errors.push("shell_timeout_invalid");
-  }
-  return [...new Set(errors)];
-}
-
 export function createWorkspaceWriteBuiltins(
   policy: WorkspacePathPolicy,
-  commandRunner: WorkspaceCommandRunner = createMacOsSandboxCommandRunner(COMMAND_PATHS),
+  commandRunner?: WorkspaceCommandRunner,
+  captureFactory?: CommandCaptureFactory,
 ): ToolDefinition[] {
   if (!nativeWorkspaceMutationSupported) return [];
-  return [
+  return applyNativeToolContracts([
     {
       name: "write_file",
       description: "Create or overwrite a file in the workspace. Shows diff for existing files.",
@@ -321,28 +236,11 @@ export function createWorkspaceWriteBuiltins(
       idempotency: "non_idempotent",
       capability: "workspace_write",
       generation: 1,
-      async execute(input: unknown) {
-        const { path, content } = input as { path: string; content: string };
-        let previousLines = 0;
-        if (existsSync(policy.resolveMutationTarget(path).absolutePath)) {
-          try {
-            const existingText = policy.readText(path, 1024 * 1024).text;
-            previousLines = existingText.split("\n").length;
-          } catch (error) {
-            const code = errorCode(error);
-            if (code !== "workspace_binary_file" && code !== "workspace_non_utf8_file") throw error;
-          }
-        }
-        const written = policy.writeText(path, content);
-
-        const newLines = content.split("\n");
-        return {
-          action: written.existed ? "overwritten" : "created",
-          path: written.relativePath,
-          previousLines,
-          newLines: newLines.length,
-          preview: newLines.slice(0, 10).join("\n") + (newLines.length > 10 ? "\n..." : ""),
-        };
+      async execute(input: unknown, context: ToolContext) {
+        const { path, content, expectedSha256 } = input as { path: string; content: string; expectedSha256?: string };
+        const written = policy.writeText(path, content, { expectedSha256, operationId: context.toolOperationId, signal: context.signal });
+        return { action: written.existed ? "overwritten" : "created", path: written.relativePath,
+          oldSha256: written.oldSha256, newSha256: written.newSha256, diff: written.diff, diffTruncated: written.diffTruncated };
       },
     },
     {
@@ -364,9 +262,9 @@ export function createWorkspaceWriteBuiltins(
           return [errorCode(error)];
         }
       },
-      async execute(input: unknown) {
+      async execute(input: unknown, context: ToolContext) {
         const { path } = input as { path: string };
-        return { action: "created", kind: "directory", ...policy.createDirectory(path) };
+        return { action: "created", kind: "directory", ...policy.createDirectory(path, mutationOptions(context)) };
       },
     },
     {
@@ -383,7 +281,7 @@ export function createWorkspaceWriteBuiltins(
       validateInput(input: unknown) {
         return validatePathPair(policy, input);
       },
-      async execute(input: unknown) {
+      async execute(input: unknown, context: ToolContext) {
         const validation = validatePathPair(policy, input);
         if (validation.length) throw new Error(`invalid_tool_input:${validation.join(",")}`);
         const { source, destination } = input as { source: string; destination: string };
@@ -394,9 +292,9 @@ export function createWorkspaceWriteBuiltins(
         if (snapshot.kind === "file") {
           const file = snapshot.entries[0];
           if (!file || file.kind !== "file") throw new Error("workspace_tree_invalid");
-          policy.createFile(destination, file.bytes);
+          policy.createFile(destination, file.bytes, mutationOptions(context));
         } else {
-          policy.createTree(destination, snapshot);
+          policy.createTree(destination, snapshot, mutationOptions(context));
         }
         return {
           action: "copied",
@@ -422,11 +320,11 @@ export function createWorkspaceWriteBuiltins(
       validateInput(input: unknown) {
         return validatePathPair(policy, input, true);
       },
-      async execute(input: unknown) {
+      async execute(input: unknown, context: ToolContext) {
         const validation = validatePathPair(policy, input, true);
         if (validation.length) throw new Error(`invalid_tool_input:${validation.join(",")}`);
         const { source, destination } = input as { source: string; destination: string };
-        return { action: "moved", ...policy.movePath(source, destination) };
+        return { action: "moved", ...policy.movePath(source, destination, mutationOptions(context)) };
       },
     },
     {
@@ -446,7 +344,7 @@ export function createWorkspaceWriteBuiltins(
       validateInput(input: unknown) {
         return validateArchiveInput(policy, input);
       },
-      async execute(input: unknown) {
+      async execute(input: unknown, context: ToolContext) {
         const validation = validateArchiveInput(policy, input);
         if (validation.length) throw new Error(`invalid_tool_input:${validation.join(",")}`);
         const { path, sources } = input as { path: string; sources: string[] };
@@ -483,7 +381,7 @@ export function createWorkspaceWriteBuiltins(
           }
         }
         const compressed = zipSync(archiveEntries, { level: 6 });
-        const written = policy.createFile(path, compressed);
+        const written = policy.createFile(path, compressed, mutationOptions(context));
         return {
           action: "created",
           format: "zip",
@@ -512,7 +410,7 @@ export function createWorkspaceWriteBuiltins(
       validateInput(input: unknown) {
         return validateDocumentInput(policy, input);
       },
-      async execute(input: unknown) {
+      async execute(input: unknown, context: ToolContext) {
         const validation = validateDocumentInput(policy, input);
         if (validation.length) throw new Error(`invalid_tool_input:${validation.join(",")}`);
         const { path, title, paragraphs } = input as {
@@ -525,7 +423,7 @@ export function createWorkspaceWriteBuiltins(
           ...paragraphs.map((text) => new Paragraph({ text })),
         ];
         const bytes = await Packer.toBuffer(new Document({ sections: [{ children }] }));
-        const written = policy.createFile(path, bytes);
+        const written = policy.createFile(path, bytes, mutationOptions(context));
         return {
           action: "created",
           format: "docx",
@@ -553,7 +451,7 @@ export function createWorkspaceWriteBuiltins(
       validateInput(input: unknown) {
         return validateSpreadsheetInput(policy, input);
       },
-      async execute(input: unknown) {
+      async execute(input: unknown, context: ToolContext) {
         const validation = validateSpreadsheetInput(policy, input);
         if (validation.length) throw new Error(`invalid_tool_input:${validation.join(",")}`);
         const { path, format } = input as { path: string; format: "xlsx" | "csv" };
@@ -573,7 +471,7 @@ export function createWorkspaceWriteBuiltins(
           }
           bytes = new Uint8Array(await workbook.xlsx.writeBuffer());
         }
-        const written = policy.createFile(path, bytes);
+        const written = policy.createFile(path, bytes, mutationOptions(context));
         return {
           action: "created",
           format,
@@ -595,37 +493,18 @@ export function createWorkspaceWriteBuiltins(
       validateInput(input: unknown) {
         return validateDeleteInput(policy, input);
       },
-      async execute(input: unknown) {
+      async execute(input: unknown, context: ToolContext) {
         const validation = validateDeleteInput(policy, input);
         if (validation.length) throw new Error(`invalid_tool_input:${validation.join(",")}`);
         const { path } = input as { path: string };
-        const deleted = policy.deletePath(path);
+        const deleted = policy.deletePath(path, mutationOptions(context));
         return { action: "deleted", ...deleted };
       },
     },
-    {
-      name: "run_shell",
-      description: "Execute one sandboxed validation command (echo, pwd, uname, git status, or git rev-parse) with an exact argv array. No shell parsing, pipes, redirects, command substitution, network, secret paths, or outside-workspace access.",
-      inputSchema: objectSchema(
-        {
-          executable: { type: "string" },
-          argv: { type: "array", items: { type: "string" } },
-          timeoutMs: { type: "integer", minimum: 100, maximum: COMMAND_TIMEOUT_MAX_MS },
-        },
-        ["executable", "argv"],
-      ),
-      risk: "destructive",
-      idempotency: "non_idempotent",
-      capability: "shell",
-      generation: 2,
-      validateInput(input: unknown) {
-        return validateStructuredCommand(policy, input);
-      },
-      async execute(input: unknown, context: ToolContext) {
-        const validation = validateStructuredCommand(policy, input);
-        if (validation.length) throw new Error(`invalid_tool_input:${validation.join(",")}`);
-        return commandRunner.run(policy.canonicalRoot, input as StructuredCommandInput, context);
-      },
-    },
-  ];
+    ...createCommandTools(policy, commandRunner, captureFactory),
+  ]);
+}
+
+function mutationOptions(context: ToolContext) {
+  return { operationId: context.toolOperationId, signal: context.signal };
 }

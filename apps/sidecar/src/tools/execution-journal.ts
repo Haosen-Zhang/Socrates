@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
-import { StructuredExecutionError, type ExecutionErrorDetail, type ExecutionEventInput, type ToolContext } from "@socrates/core";
+import { normalizeWorkspaceRelativePath, StructuredExecutionError, type ExecutionErrorDetail, type ExecutionEventInput, type ToolContext } from "@socrates/core";
 import { ExecutionEventStore } from "../store/execution-event-store";
+import { WorkspacePathPolicy } from "../workspace/path-policy";
+import { sha256, type MutationRecovery, type MutationRequest } from "../workspace/mutation-evidence";
 import { interruptedToolOutcome } from "./recovery-outcome";
 
 /** The journal and its SQL projection commit together, always outside the tool body. */
@@ -38,7 +40,7 @@ export class ToolExecutionJournal {
     return id;
   }
 
-  result(context: ToolContext, attemptId: string, status: string, output: { preview: string; byteSize: number; truncated: boolean }, error?: ExecutionErrorDetail, willRetry = false): void {
+  result(context: ToolContext, attemptId: string, status: string, output: { preview: string; byteSize: number; truncated: boolean; canonicalJson?: string; storageKey?: string }, error?: ExecutionErrorDetail, willRetry = false): void {
     this.commit(context, `tool-result:${attemptId}`, "tool.attempt.result", {
       status, isError: Boolean(error), ...(error ? { error } : {}), willRetry,
     }, () => {
@@ -46,8 +48,8 @@ export class ToolExecutionJournal {
       this.db.query("UPDATE tool_attempts SET status = ?, error_json = ?, completed_at = ? WHERE id = ?")
         .run(status, error ? JSON.stringify(error) : null, now, attemptId);
       if (willRetry) return;
-      this.db.query(`INSERT INTO tool_outputs (tool_call_id, preview_text, byte_size, truncated, is_error)
-        VALUES (?, ?, ?, ?, ?)`).run(context.callId, output.preview, output.byteSize, Number(output.truncated), Number(Boolean(error)));
+      this.db.query(`INSERT INTO tool_outputs (tool_call_id, preview_text, byte_size, truncated, is_error, canonical_json, storage_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`).run(context.callId, output.preview, output.byteSize, Number(output.truncated), Number(Boolean(error)), output.canonicalJson ?? null, output.storageKey ?? null);
       this.db.query("UPDATE tool_calls SET status = ?, error = ?, error_detail_json = ?, updated_at = ? WHERE id = ?")
         .run(status, error?.message ?? null, error ? JSON.stringify(error) : null, now, context.callId);
     }, attemptId);
@@ -58,6 +60,7 @@ export class ToolExecutionJournal {
     const rows = this.db.query<{
       id: string; session_id: string; task_id: string; turn_id: string; step_id: string | null;
       agent_id: string; status: string; idempotency: string; capability: string | null;
+      name: string; input_json: string; workspace_identity: string;
       latest_attempt_id: string | null; latest_attempt_status: string | null;
     }, [string | null, string | null, string | null]>(`SELECT tool_calls.*,
       (SELECT id FROM tool_attempts WHERE tool_operation_id = tool_calls.id ORDER BY attempt_no DESC LIMIT 1) AS latest_attempt_id,
@@ -75,27 +78,78 @@ export class ToolExecutionJournal {
       // output is stronger evidence than the old running projection.
       const known = this.db.query<{ is_error: number }, [string]>("SELECT is_error FROM tool_outputs WHERE tool_call_id = ?").get(row.id);
       if (known) {
-        this.db.query("UPDATE tool_calls SET status = ? WHERE id = ?").run(known.is_error ? "failed" : "succeeded", row.id);
+        this.db.transaction(() => {
+          this.db.query("UPDATE tool_calls SET status = ? WHERE id = ?").run(known.is_error ? "failed" : "succeeded", row.id);
+          this.db.query("UPDATE approval_requests SET status = 'expired' WHERE subject_id = ? AND status IN ('pending', 'allowed')").run(row.id);
+        })();
         continue;
       }
       const started = row.status === "running";
-      const outcome = interruptedToolOutcome(started, row.idempotency, row.capability);
+      const fallback = interruptedToolOutcome(started, row.idempotency, row.capability);
+      const recovery = started && row.capability === "workspace_write" ? this.inspectWorkspaceMutation(row) : null;
+      const verified = recovery?.outcome === "applied";
+      const notApplied = recovery?.outcome === "not_applied";
+      const status = verified ? "succeeded" : notApplied || !started ? "cancelled" : "outcome_unknown";
+      const outcome = recovery ? {
+        code: verified ? "TOOL_RECOVERED_APPLIED" : notApplied ? "TOOL_MUTATION_NOT_APPLIED" : "TOOL_OUTCOME_UNKNOWN",
+        disposition: recovery.disposition,
+        message: verified
+          ? "The workspace mutation was verified from durable filesystem evidence. The tool body was not repeated."
+          : notApplied
+            ? "The requested filesystem publication was not applied. Staging or parent directories may remain. Request a new operation and fresh approval if still needed."
+            : "The workspace mutation could not be verified. Inspect its recovery evidence or ask the user before any new mutation. The tool body was not repeated.",
+        recovery,
+      } : fallback;
       const attemptId = row.latest_attempt_id ?? `${row.id}:attempt:recovered`;
       const preview = JSON.stringify(outcome);
-      this.commit(context, `tool-recovered:${row.id}`, started ? "tool.outcome_unknown" : "tool.attempt.result",
-        started ? { code: outcome.code, disposition: outcome.disposition } : { status: "cancelled", isError: true }, () => {
+      this.commit(context, `tool-recovered:${row.id}`, status === "outcome_unknown" ? "tool.outcome_unknown" : "tool.attempt.result",
+        status === "outcome_unknown" ? { code: outcome.code, disposition: outcome.disposition } : { status, isError: !verified }, () => {
           const now = new Date().toISOString();
           this.db.query(`INSERT OR IGNORE INTO tool_attempts (id, tool_operation_id, attempt_no, status, started_at)
             VALUES (?, ?, 1, 'checkpointed', ?)`).run(attemptId, row.id, now);
           this.db.query("UPDATE tool_attempts SET status = ?, error_json = ?, completed_at = ? WHERE id = ?")
-            .run(started ? "outcome_unknown" : "cancelled", preview, now, attemptId);
-          this.db.query(`INSERT INTO tool_outputs (tool_call_id, preview_text, byte_size, truncated, is_error)
-            VALUES (?, ?, ?, 0, 1)`).run(row.id, preview, Buffer.byteLength(preview));
+            .run(status, verified ? null : preview, now, attemptId);
+          this.db.query(`INSERT INTO tool_outputs (tool_call_id, preview_text, byte_size, truncated, is_error, canonical_json)
+            VALUES (?, ?, ?, 0, ?, ?)`).run(row.id, preview, Buffer.byteLength(preview), Number(!verified), preview);
           this.db.query("UPDATE tool_calls SET status = ?, error = ?, recovery_disposition = ?, updated_at = ? WHERE id = ?")
-            .run(started ? "outcome_unknown" : "cancelled", started ? outcome.code : "sidecar_restarted", outcome.disposition, now, row.id);
+            .run(status, verified ? null : started ? outcome.code : "sidecar_restarted", outcome.disposition, now, row.id);
           this.db.query("UPDATE approval_requests SET status = 'expired' WHERE subject_id = ? AND status IN ('pending', 'allowed')").run(row.id);
         }, attemptId);
     }
     return rows.length;
   }
+
+  private inspectWorkspaceMutation(call: { id: string; name: string; input_json: string; workspace_identity: string }): MutationRecovery | null {
+    const supported = new Set(["write_file", "create_directory", "copy_path", "move_path", "delete_path", "create_archive", "create_document", "create_spreadsheet"]);
+    if (!supported.has(call.name)) return null;
+    const workspace = this.db.query<{ canonical_path: string }, [string]>("SELECT canonical_path FROM workspaces WHERE identity_hash = ?").get(call.workspace_identity);
+    // Legacy or custom workspace-write tools retain their conservative Phase 4
+    // classification. A tool name or a path alone never supplies workspace authority.
+    if (!workspace) return null;
+    try {
+      const input: unknown = JSON.parse(call.input_json);
+      if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("workspace_recovery_input_invalid");
+      const value = input as Record<string, unknown>;
+      const policy = new WorkspacePathPolicy(workspace.canonical_path);
+      if (sha256(policy.canonicalRoot) !== call.workspace_identity) throw new Error("workspace_recovery_identity_changed");
+      const request: MutationRequest = { operationId: call.id, kind: "create", path: "" };
+      const path = call.name === "copy_path" ? value.destination : call.name === "move_path" ? value.source : value.path;
+      if (typeof path !== "string") throw new Error("workspace_recovery_input_invalid");
+      request.path = normalizeWorkspaceRelativePath(path);
+      if (call.name === "write_file") {
+        if (typeof value.content !== "string") throw new Error("workspace_recovery_input_invalid");
+        request.kind = "write";
+        request.expectedNewSha256 = sha256(value.content);
+      } else if (call.name === "delete_path") request.kind = "delete";
+      else if (call.name === "move_path") {
+        if (typeof value.destination !== "string") throw new Error("workspace_recovery_input_invalid");
+        request.kind = "move";
+        request.destination = normalizeWorkspaceRelativePath(value.destination);
+      }
+      return policy.recoverMutation(request);
+    } catch (error) {
+      return { disposition: "recovery_blocked", outcome: "unknown", reason: error instanceof Error ? error.message : "workspace_recovery_failed" };
+    }
+  }
+
 }

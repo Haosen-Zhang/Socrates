@@ -108,14 +108,17 @@ Multi-Agent 计划执行使用持久 `multi_task_attempts.id` 作为 Turn 身份
 | 已提交输出 | 保留已知结果 | 不重复工具主体 |
 | 尚未开始 | `TOOL_NOT_STARTED` | 旧审批过期，可重新请求 |
 | 已开始、结果缺失，read/idempotent | `TOOL_OUTCOME_UNKNOWN` / `safe_to_retry` | 模型可明确重新请求 |
-| 已开始、结果缺失，工作区修改 | `TOOL_OUTCOME_UNKNOWN` / `verify_then_continue` | 先检查文件状态；再次修改需新审批 |
+| 已开始、结果缺失，已登记Native工作区修改 | descriptor绑定的FS证据核验：`TOOL_RECOVERED_APPLIED` / `TOOL_MUTATION_NOT_APPLIED` / `TOOL_OUTCOME_UNKNOWN` | 已应用则保留成功；未应用或不确定均不重放主体，后续修改需新操作/审批 |
 | 已开始、结果缺失，其他非幂等工具 | `TOOL_OUTCOME_UNKNOWN` / `requires_user_confirmation` | 重新人工确认 |
 
 恢复本身不执行工具。下一轮采样前，通过 HistoryStore-backed writer 补齐公开
 ToolCall/ToolResult；等待审批、尚未进入 executor 的调用补为 `TOOL_NOT_STARTED`。
 模型只看到可见工具结果及恢复提示，不接收执行日志。未知非幂等操作会使相同工作区、
-同名工具重新要求人工审批，即使 Room policy 为 allow。当前采用保守保护，未实现
-“已核验并清除未知状态”的 UI；每次新的操作均需自己的精确审批。
+同名工具重新要求人工审批，即使 Room policy 为 allow。Phase 5–8 journal恢复会在
+已登记workspace identity内核验8种Native修改的operation证据；write还绑定持久请求content的SHA。
+核验applied记为成功，not_applied记为cancelled；证据缺失、外部变化或不支持的legacy/custom
+修改保留保守unknown分类，不执行工具主体。该恢复事件与projection、输出及旧审批过期同事务提交。
+未提供人工清除unknown状态的UI；新的修改仍需自己的精确审批。
 
 升级前 Native 写入的 agent-session 身份通过持久 runtime-session/Run 关系解析，
 不会漏掉旧操作的未知或已知结果。SDK 的明确审批拒绝写为 `TOOL_APPROVAL_DENIED`，
@@ -126,6 +129,28 @@ ToolCall/ToolResult；等待审批、尚未进入 executor 的调用补为 `TOOL
 [`session/repair.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/8bd073392eef6f54e921a093b95076248eb08cbb/packages/core/session/src/repair.ts)，
 固定版本 `8bd0733`，MIT 许可保留于 `third-party/DeepSeek-Harness-LICENSE`。
 直接复用其恢复语义和提示，适配已有 SQLite/HistoryStore，未引入新的运行时框架。
+
+### Phase 5–8 的 DeepSeek Harness 复用出处
+
+全部引用固定到 commit `8bd073392eef6f54e921a093b95076248eb08cbb`，不引用浮动 main。
+上游为 MIT，Copyright (c) 2026 DeepSeek；完整许可保留于
+[`third-party/DeepSeek-Harness-LICENSE`](../third-party/DeepSeek-Harness-LICENSE)。
+代码中的 adapted-from 标记和此表共同记录来源；设计参考与直接复用文字分别列明。
+
+| 上游固定源码 | Socrates 落点 | 复用性质与保留的边界 |
+| --- | --- | --- |
+| [`core/session/src/repair.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/8bd073392eef6f54e921a093b95076248eb08cbb/packages/core/session/src/repair.ts) | `apps/sidecar/src/tools/recovery-outcome.ts`、execution journal / public history repair | 已开始/无结果的恢复语义与模型提示适配；SQLite/HistoryStore仍是本地权威，不引入Harness session实现。 |
+| [`fs/fs-local/src/fsio.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/8bd073392eef6f54e921a093b95076248eb08cbb/packages/fs/fs-local/src/fsio.ts) | `apps/sidecar/src/workspace/path-policy.ts`、`mutation-evidence.ts`、`native-fs.ts` | 适配同目录独占stage、完整写入/fsync、保留权限和发布前取消的原子写思路；用Socrates已固定descriptor的native发布操作替代通用路径rename，继续拒绝secret/symlink/hardlink/escape。mutation evidence、SHA CAS及恢复分类在现有policy内实现。 |
+| [`core/tools/src/json-schema.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/8bd073392eef6f54e921a093b95076248eb08cbb/packages/core/tools/src/json-schema.ts) | `packages/core/src/tools.ts`、`apps/sidecar/src/tools/native-tool-contracts.ts` | 递归object/array/scalar、own-property与有限JSON数字校验的设计适配；保留Socrates诊断格式，使用anyOf表示nullable，补充字符串/数字/数组约束，不移植其完整schema compiler或registry。 |
+| [`guard/repeat-tool-reminder/src/index.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/8bd073392eef6f54e921a093b95076248eb08cbb/packages/guard/repeat-tool-reminder/src/index.ts) | `packages/core/src/tool-repeat.ts`、`apps/sidecar/src/tools/executor.ts` | 直接复用gentle reminder文字及默认3/5/8阈值，适配后续提示；按现有durable logical calls与完整canonical input hash统计，同stable-key结果重放不新增计数。提示只帮助模型调整下一步，不veto调用、不改变审批，也不判定外部等待任务“无进展”。 |
+| [`shell/bash-local/src/index.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/8bd073392eef6f54e921a093b95076248eb08cbb/packages/shell/bash-local/src/index.ts) | `apps/sidecar/src/tools/command-tools.ts`、`workspace-command-runner.ts`、`output-store.ts` | 终端环境最小化与预览/完整输出分离的设计参考；仍使用exact executable+argv、shell=false、现有macOS sandbox、SQLite私有artifact及精确审批。未复用任意shell字符串接口。 |
+
+这些改动不移植Harness整体、插件容器、agent编排、subagent、PTY会话或新的持久化架构。
+重复调用检测是advisory；长输出分页ref绑定Session/workspace；deadline是单次attempt。
+生产工具统一由`createNativeBuiltinTools`注册，规范结果/ref通过SDK采样与历史修复保留；journal已接入FS证据核验。实际能力与尚未真机验证的sandbox边界见
+[`doc/native-tool-audit.md`](../doc/native-tool-audit.md)及
+[`doc/single-agent-phase5-8-acceptance.md`](../doc/single-agent-phase5-8-acceptance.md)。
+
 
 ## Phase 1B–1C：独立 Run 所有权与持久观察
 

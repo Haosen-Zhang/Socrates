@@ -34,8 +34,8 @@ export function contentRoutes(db: Database, workspaces: WorkspaceManager, attach
     if (!relativePath) return c.json({ error: "relative_path_required" }, 400);
     try {
       const policy = new WorkspacePathPolicy(workspace.canonicalPath);
-      const result = policy.readText(relativePath, 512 * 1024);
-      return c.json({ relativePath: policy.resolveExisting(relativePath).relativePath, ...result });
+      const { text, byteSize, truncated } = policy.readText(relativePath, 512 * 1024);
+      return c.json({ relativePath: policy.resolveExisting(relativePath).relativePath, text, byteSize, truncated });
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : "workspace_file_failed" }, 400);
     }

@@ -13,6 +13,7 @@ import {
   type ToolOutputRef,
   truncateToolOutput,
   isStructuredExecutionError,
+  StructuredExecutionError,
   validateJsonSchemaInput,
 } from "@socrates/core";
 import { hashToolInput, type ToolExecutor } from "../tools/executor";
@@ -105,7 +106,8 @@ export function validateNativeToolInput(definition: ToolDefinition, input: unkno
     ...validateJsonSchemaInput(definition.inputSchema, input),
     ...(definition.validateInput?.(input) ?? []),
   ];
-  if (errors.length) throw new Error(`invalid_tool_input:${errors.join(",")}`);
+  if (errors.length) throw new StructuredExecutionError({ code: "TOOL_INPUT_INVALID", category: "tool_validation",
+    phase: "tool_validation", retryable: false, message: `invalid_tool_input:${errors.join(",")}` });
 }
 
 export function createAiSdkNativeStream(
@@ -119,6 +121,7 @@ export function createAiSdkNativeStream(
     let remainingSteps = input.maxSteps;
     const permissionByCallId = new Map<string, PermissionEvaluation>();
     while (remainingSteps > 0) {
+      input.signal?.throwIfAborted();
       // Re-snapshot room policy before every provider sample. A policy change
       // never mutates an already-pending call, but the next call sees it.
       const sample = Object.entries(input.tools).flatMap(([name, native]) => {
@@ -149,6 +152,7 @@ export function createAiSdkNativeStream(
         decision: Promise<{ approved: boolean; reason?: string }>;
       }> = [];
       let hadToolActivity = false;
+      const observedResults = new Map<string, { output: unknown; isError: boolean }>();
       const retried = executeProviderWithRetry<NativeStreamPart>({
         signal: input.signal,
         classifyError: classifyProviderError,
@@ -192,11 +196,14 @@ export function createAiSdkNativeStream(
             } else if (part.type === "tool-result") {
               hadToolActivity = true;
               permissionByCallId.delete(part.toolCallId);
+              observedResults.set(part.toolCallId, { output: part.output, isError: false });
               yield { type: "tool_result", callId: part.toolCallId, name: part.toolName, output: part.output, isError: false };
             } else if (part.type === "tool-error") {
               hadToolActivity = true;
               permissionByCallId.delete(part.toolCallId);
-              yield { type: "tool_result", callId: part.toolCallId, name: part.toolName, output: String(part.error), isError: true };
+              const output = nativeToolErrorOutput(part.error);
+              observedResults.set(part.toolCallId, { output, isError: true });
+              yield { type: "tool_result", callId: part.toolCallId, name: part.toolName, output, isError: true };
             } else if (part.type === "tool-output-denied") {
               hadToolActivity = true;
               permissionByCallId.delete(part.toolCallId);
@@ -213,7 +220,17 @@ export function createAiSdkNativeStream(
       }
       if (!successfulResult) throw new Error("native_provider_result_missing");
       const [responseMessages, steps] = await Promise.all([successfulResult.responseMessages, successfulResult.steps]);
-      messages = [...messages, ...responseMessages];
+      // The SDK normally projects thrown tools as just Error.message. Replace
+      // that projection with the host's durable failure output, including any
+      // scoped full-result reference, before the next provider sample.
+      messages = [...messages, ...responseMessages.map((message): ModelMessage => message.role !== "tool" ? message : ({
+        ...message,
+        content: message.content.map((part) => {
+          const observed = part.type === "tool-result" ? observedResults.get(part.toolCallId) : undefined;
+          return observed ? { ...part, output: { type: observed.isError ? "error-text" as const : "text" as const,
+            value: modelToolOutput(asToolOutputRef(observed.output)) } } : part;
+        }),
+      }))];
       remainingSteps -= Math.max(steps.length, 1);
       if (pending.length) {
         const responses = await Promise.all(pending.map(async ({ approvalId, decision }) => {
@@ -250,6 +267,16 @@ function asToolOutputRef(output: unknown): ToolOutputRef {
   }
   const serialized = typeof output === "string" ? output : JSON.stringify(output);
   return truncateToolOutput(serialized ?? String(output), { maxBytes: 64 * 1024, maxLines: 1_000 });
+}
+
+function nativeToolErrorOutput(error: unknown): unknown {
+  if (error && typeof error === "object" && "output" in error && error.output) return error.output;
+  if (isStructuredExecutionError(error)) return JSON.stringify({ error: error.detail });
+  return String(error);
+}
+
+function modelToolOutput(output: ToolOutputRef): string {
+  return output.storageKey ? `${output.preview}\n[Full result reference: ${output.storageKey}]` : output.preview;
 }
 
 /** Convert Socrates-owned durable history to the AI SDK's provider-neutral model messages. */
@@ -300,8 +327,8 @@ export function toAiSdkModelMessages(history: RuntimeConversationMessage[]): Mod
           toolCallId: part.callId,
           toolName: toolNames.get(part.callId) ?? "unknown_tool",
           output: part.isError
-            ? { type: "error-text", value: part.output.preview }
-            : { type: "text", value: part.output.preview },
+            ? { type: "error-text", value: modelToolOutput(part.output) }
+            : { type: "text", value: modelToolOutput(part.output) },
         });
       }
       index += 1;
@@ -316,6 +343,7 @@ type PendingApproval = {
   callId: string;
   inputHash: string;
   policyVersion: number;
+  freshHumanRequired: boolean;
   resolve: (decision: { approved: boolean; reason?: string }) => void;
   reject: (error: Error) => void;
 };
@@ -369,7 +397,7 @@ export class NativeAgentRuntime implements AgentRuntime {
       risk: definition.risk,
       matchedRuleIds: [],
       reasonCode: safeRead ? "runtime_safe_read_default" : "runtime_fail_closed_default",
-      freshHumanRequired: definition.risk === "destructive",
+      freshHumanRequired: definition.risk === "destructive" || definition.capability === "shell",
       policyVersion: 1,
     };
   }
@@ -411,7 +439,10 @@ export class NativeAgentRuntime implements AgentRuntime {
     const tools = Object.fromEntries(definitions.map((definition) => [definition.name, {
       definition,
       permission: () => {
-        const permission = this.input.permissionForTool?.(definition) ?? this.defaultPermission(definition);
+        let permission = this.input.permissionForTool?.(definition) ?? this.defaultPermission(definition);
+        if (definition.capability === "shell" && permission.effect !== "deny") {
+          permission = { ...permission, effect: "ask", freshHumanRequired: true, reasonCode: "shell_execution_requires_fresh_approval" };
+        }
         if (permission.effect !== "deny" && this.input.executor.requiresRecoveryConfirmation(definition.name, this.input.workspaceIdentity)) {
           return { ...permission, effect: "ask" as const, freshHumanRequired: true, reasonCode: "tool_outcome_unknown" };
         }
@@ -421,7 +452,7 @@ export class NativeAgentRuntime implements AgentRuntime {
         if (fatalToolError) throw fatalToolError;
         if (permission.effect === "deny") throw new Error("native_tool_permission_denied");
         const recoveryConfirmation = this.input.executor.requiresRecoveryConfirmation(definition.name, this.input.workspaceIdentity);
-        if (permission.effect === "ask" || recoveryConfirmation) {
+        if (permission.effect === "ask" || recoveryConfirmation || definition.capability === "shell") {
           const grant = this.approvedCalls.get(callId);
           this.approvedCalls.delete(callId);
           if (!grant) throw new Error("native_tool_approval_missing");
@@ -463,13 +494,18 @@ export class NativeAgentRuntime implements AgentRuntime {
               : permission.reasonCode,
           });
         } catch (error) {
-          if (isStructuredExecutionError(error) && error.detail.category === "persistence") {
+          if (isStructuredExecutionError(error) && (error.detail.category === "persistence" || error.detail.code === "TOOL_EXECUTION_UNRESOLVED")) {
             fatalToolError = error;
             abortController.abort(error);
           }
           throw error;
         }
-        if (record.status !== "succeeded" || !record.output) throw new Error(record.error ?? "native_tool_failed");
+        if (record.status !== "succeeded" || !record.output) {
+          const error = new StructuredExecutionError(record.errorDetail ?? { code: "NATIVE_TOOL_FAILED", category: "tool_execution",
+            phase: "tool_execution", retryable: false, message: record.error ?? "native_tool_failed" });
+          if (record.output) Object.assign(error, { output: record.output });
+          throw error;
+        }
         return record.output;
       },
     }]));
@@ -506,6 +542,7 @@ export class NativeAgentRuntime implements AgentRuntime {
             callId,
             inputHash: hashToolInput(toolInput),
             policyVersion: permission.policyVersion,
+            freshHumanRequired: permission.freshHumanRequired || definition.capability === "shell",
             resolve,
             reject,
           }));
@@ -549,6 +586,7 @@ export class NativeAgentRuntime implements AgentRuntime {
   async answerApproval(requestId: string, decision: "allow_once" | "allow_session" | "deny"): Promise<void> {
     const pending = this.pendingApprovals.get(requestId);
     if (!pending) throw new Error("native_approval_not_pending");
+    if (decision === "allow_session" && pending.freshHumanRequired) throw new Error("native_tool_fresh_approval_required");
     this.pendingApprovals.delete(requestId);
     if (decision !== "deny") this.approvedCalls.set(pending.callId, {
       inputHash: pending.inputHash,

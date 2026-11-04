@@ -150,7 +150,7 @@ describe("NativeAgentRuntime", () => {
     expect(() => validateNativeToolInput(shell, {
       executable: "git",
       argv: ["status; rm", "-rf"],
-    })).toThrow("invalid_tool_input:shell_metacharacter_denied");
+    })).toThrow("invalid_tool_input:shell_argument_not_allowed");
 
     const db = openDb(":memory:");
     const events: unknown[] = [];
@@ -181,7 +181,7 @@ describe("NativeAgentRuntime", () => {
     const drain = async () => {
       for await (const event of runtime.start({ prompt: "invalid" })) events.push(event);
     };
-    await expect(drain()).rejects.toThrow("invalid_tool_input:shell_metacharacter_denied");
+    await expect(drain()).rejects.toThrow("invalid_tool_input:shell_argument_not_allowed");
     expect(events.some((event) => (
       Boolean(event)
       && typeof event === "object"

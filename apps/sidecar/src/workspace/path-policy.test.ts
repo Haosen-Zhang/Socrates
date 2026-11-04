@@ -66,11 +66,11 @@ describe("WorkspacePathPolicy", () => {
 
   it("writes through no-follow descriptors and rejects hardlink overwrites", () => {
     const policy = new WorkspacePathPolicy(root);
-    expect(policy.writeText("src/new.txt", "new\n")).toEqual({
+    expect(policy.writeText("src/new.txt", "new\n")).toMatchObject({
       relativePath: "src/new.txt",
       existed: false,
     });
-    expect(policy.writeText("src/nested/deep.txt", "nested\n")).toEqual({
+    expect(policy.writeText("src/nested/deep.txt", "nested\n")).toMatchObject({
       relativePath: "src/nested/deep.txt",
       existed: false,
     });

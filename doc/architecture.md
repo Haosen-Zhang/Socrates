@@ -348,16 +348,16 @@ graph TB
   RM -->|"native_ai_sdk (唯一生产运行时)"| N["NativeAgentRuntime"]
   N -->|"你配的 provider key (AI SDK)"| Prov["OpenAI/DeepSeek/…"]
   N -->|"read-only 会话"| RO["只读内建 (list/read/search) + MCP"]
-  N -->|"workspace-write 会话"| RW["写内建 (write_file / run_shell) + 只读 + MCP"]
+  N -->|"workspace-write 会话"| RW["原子文件修改 / run_command + 读取 / 输出分页 + MCP"]
   LG["LangGraphAgentRuntime (存在但未接入)"] -.->|Phase 2| RM
 ```
 
-`native_ai_sdk` 按 sandbox 决定可用能力（`index.ts` 计算 `writeCapabilities` 传入运行时）：
+`native_ai_sdk` 按宿主传入的 `allowedCapabilities` 决定可用能力；生产 Co-work 工厂注册16个 Native 工具及获准的 MCP 工具，逐次调用再执行权限与审批检查：
 
 | sandbox | 鉴权/计费 | 可用工具 |
 | --- | --- | --- |
 | `read-only` | **你配的 API key** | 只读内建（list/read/search）+ MCP |
-| `workspace-write` | **你配的 API key** | 上面 + 写内建 `write_file` / `run_shell`（risk high/destructive，须审批） |
+| `workspace-write` | **你配的 API key** | 上面 + 8个文件修改工具、结构化 `run_command` / `run_shell` 别名、`read_tool_result`；命令及破坏性操作必须 fresh 精确人工审批 |
 
 > **计费**：整条链路（讨论 + 执行）都走 `ModelGateway` / `native_ai_sdk`，用的是**你配的 provider key**。不再有"codex 登录额度"这回事。
 >
@@ -365,8 +365,9 @@ graph TB
 
 ### 7.2 单 Agent 的本地会话记忆
 
-`ConversationMemoryStore`（`store/conversation-memory-store.ts`）是单 Agent
-房间可见历史的产品级唯一真源，数据保存在 Socrates SQLite：
+`HistoryStore` 的持久公开历史是房间消息权威；`ConversationMemoryStore`
+维护 SQLite 中的 Thread/Turn 与可查询消息投影。执行事实由 `ExecutionEventStore`
+及同事务 SQL 投影记录，公开历史不等于全部内部执行事件：
 
 ```mermaid
 sequenceDiagram
@@ -407,11 +408,22 @@ Run 独立的 `AbortController`。SSE/WebView 断开不能取消执行；
 - 单 Agent 工具在主体执行前提交 intent/checkpoint/started，输出与结果事件原子提交。
   `tool_calls` 表示逻辑操作，`tool_attempts` 表示最多 3 次安全的瞬时错误尝试；
   非幂等工具不自动重试。重启或已停止 Run 的下一轮对话会补齐公开工具历史，已开始
-  却没有结果的操作明确标为 `TOOL_OUTCOME_UNKNOWN`，再次修改需新审批。
+  却没有结果的工作区修改先按 exact operation ID、工作区身份、路径与哈希核验持久文件证据。
+  确认生效可记录恢复成功，确认未发布标记取消；无法确认的操作明确标为
+  `TOOL_OUTCOME_UNKNOWN`，再次修改需新审批。恢复只核验，不重放工具主体。
   详见 [执行事件与工具恢复](../docs/07-execution-event-authority.md)。
-- 上下文窗口已知时读取 Agent 的 `modelCapabilities.contextWindowTokens`；未知时使用保守 4K
-  fallback。超限会记录 `memory.context_truncated`；当前工作单元本身超限时在调用 Provider
+- 上下文窗口取模型目录或用户 override 的已解析值；未知保持 unavailable，不伪造 4K 上限。
+  已知窗口超限会记录 `memory.context_truncated`；当前工作单元本身超限时在调用 Provider
   前明确失败，不发送越界 payload。
+- Native 输入/规范输出共用递归 schema。输出验证后持久化，再独立生成模型预览；
+  长结果和完整 stdout/stderr 存私有 SQLite artifact，`read_tool_result` 按 Session/workspace
+  限定范围分页读取。命令每流最多64MiB，超限明确终止。历史修复保留完整输出引用。
+- 工具 deadline 限制单个 attempt，通过派生 AbortSignal 统一执行；超时/取消等待清理，
+  未收敛的工具阻止该工作区继续 dispatch。相同工具与归一化参数连续3/5/8次仅提示模型
+  检查结果或改变方法，不把基础设施 retry 当作模型重复调用。
+- `write_file` 使用同目录 staging/fsync/原子发布，返回前后 SHA-256 与有界真实 diff；
+  可传 `expectedSha256` 拒绝 stale 更新。16个工具的风险、契约和边界见
+  [Native 工具审计](native-tool-audit.md)，验收证据见 [Phase 5–8 验收](single-agent-phase5-8-acceptance.md)。
 - LangGraph checkpoint、Zustand 和 Provider 均不是产品会话记录；API Key 仍只在 Keychain。
 
 ### 7.3 执行内核（ExecutionRunner）
@@ -425,7 +437,7 @@ Run 独立的 `AbortController`。SSE/WebView 断开不能取消执行；
 
 ### 7.4 下一步（roadmap）
 
-seam 已就绪且已被用上（execution-runner 现在指向 `native_ai_sdk`）。后续按 [native-runtime-and-langgraph-roadmap.md](native-runtime-and-langgraph-roadmap.md)：把 `LangGraphAgentRuntime` register 进生产做治理编排（Phase 2），以及可选的 Rust 执行辅助进程强化沙箱/资源限制（Phase 6）。当前的沙箱是**软沙箱**（工作区路径策略 `path-policy.ts` + 写锁 + 逐工具审批），跨平台但非内核级隔离。
+单 Agent 可靠性 Phase 1–8 与 [演进路线](native-runtime-and-langgraph-roadmap.md) 中的旧阶段编号是两套计划。下一产品阶段仍是多 Agent 治理编排与执行者分派。当前文件修改依赖 macOS native descriptor/rename 原语，命令依赖 macOS sandbox-exec；不支持的宿主拒绝执行，不承诺跨平台隔离。未来可在现有运行时与命令适配 seam 下接入更强的执行宿主。
 
 ---
 
@@ -435,10 +447,10 @@ seam 已就绪且已被用上（execution-runner 现在指向 `native_ai_sdk`）
 | --- | --- |
 | 传输 | 仅回环 `127.0.0.1` + 一次性 Bearer token + origin 校验（否则 403） |
 | 密钥 | macOS Keychain，库里只存引用；日志里 `sk-…` 主动打码（`security/redaction.ts`） |
-| 执行沙箱 | 软沙箱：工作区路径策略（`path-policy.ts`，禁越界/symlink 逃逸）+ read-only/workspace-write 能力分级 + 写锁 |
+| 执行沙箱 | 文件路径/descriptor策略（拒绝secret/symlink/hardlink/越界）+ macOS命令沙箱（网络禁止）+ 能力分级 + 写锁 |
 | 逐步审批 | 计划审批（人/审核 Agent）+ 每个高风险工具调用审批（`ApprovalManager`），计划范围外强制人工 |
 | 工作区隔离 | 写锁租约（`leases.ts`）+ 路径策略（`path-policy.ts`，禁止越界访问） |
-| 子进程 | 环境变量白名单，父进程死亡自动退出 |
+| 子进程 | 精确 argv、shell=false、环境变量白名单，超时/取消 TERM→KILL 整个进程组；不承诺杀死自行脱离组的恶意 daemon |
 
 ---
 
@@ -452,7 +464,7 @@ seam 已就绪且已被用上（execution-runner 现在指向 `native_ai_sdk`）
 | Boss 统筹 | 协调器 `effectiveSynthesizerId` | Boss 接管综合，默认不执行 |
 | Agent 审核 | 协调器 `reviewPlan()` | 真跑审核 Agent，request_changes 自动改一版 |
 | 本地执行 | `execution-runner.ts` + `native_ai_sdk` | 你配的 key + 写内建 + 写锁 + 逐工具审批 |
-| 单 Agent 带工具 | `native-agent-runtime.ts` | AI SDK + 只读内建 + MCP 工具 |
+| 单 Agent 带工具 | `native-agent-runtime.ts`、`tools/native-builtins.ts` | AI SDK + 16个Native工具 + MCP，宿主精确审批与恢复 |
 | 用量统计 | `services/usage-collector.ts` | 按 stableKey 幂等记账，前端 usageSummaries |
 | MCP 工具 | `mcp/manager.ts` `mcp/adapter.ts` | 官方 MCP client，工具注入 native runtime |
 | 附件/工作区文件 | `attachments/` `content` 路由 | 快照哈希，消息 parts 引用 |
