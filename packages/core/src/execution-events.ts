@@ -78,8 +78,8 @@ export interface ExecutionEventPayloadMap {
   "tool.operation.requested": { name?: string; inputHash?: string };
   "tool.attempt.checkpointed": Record<string, never>;
   "tool.attempt.started": Record<string, never>;
-  "tool.attempt.result": { status?: string; isError?: boolean };
-  "tool.outcome_unknown": { disposition?: string };
+  "tool.attempt.result": { status?: string; isError?: boolean; error?: ExecutionErrorDetail; willRetry?: boolean };
+  "tool.outcome_unknown": { disposition?: string; code?: string };
   "runtime.event": { runtimeSessionId: string; event: RuntimeEvent };
   "context.truncated": {
     threadId: string;

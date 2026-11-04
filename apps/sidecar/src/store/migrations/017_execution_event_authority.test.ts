@@ -19,7 +19,7 @@ describe("017 execution event authority migration", () => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run("legacy-1", "run-1", "turn-1", "agent-1", 1, "runtime.status", "{}", "now");
 
-    expect(runMigrations(db, migrations)).toEqual([17]);
+    expect(runMigrations(db, migrations)).toEqual(migrations.filter((migration) => migration.version >= 17).map((migration) => migration.version));
     expect(db.query(`SELECT session_id, schema_version, step_id, provider_attempt_id,
       tool_operation_id, tool_attempt_id FROM runtime_events WHERE id = 'legacy-1'`).get())
       .toEqual({

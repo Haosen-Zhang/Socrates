@@ -1,8 +1,10 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { approvalMatchesExecution, truncateToolOutput, validateJsonSchemaInput, type PermissionEvaluation, type ToolCallStatus, type ToolContext } from "@socrates/core";
+import { approvalMatchesExecution, isStructuredExecutionError, StructuredExecutionError, truncateToolOutput, validateJsonSchemaInput, type ExecutionErrorDetail, type PermissionEvaluation, type ToolCallStatus, type ToolContext, type ToolDefinition } from "@socrates/core";
 import type { ApprovalManager, DurableApprovalRequest } from "../approvals/manager";
 import type { ToolRegistry } from "./registry";
+import { ToolExecutionJournal } from "./execution-journal";
+import type { ExecutionEventStore } from "../store/execution-event-store";
 
 type ToolCallRow = {
   id: string; stable_key: string; session_id: string; task_id: string; attempt_id: string; turn_id: string;
@@ -34,12 +36,19 @@ export function hashToolInput(value: unknown): string {
 }
 
 export class ToolExecutor {
+  private readonly journal: ToolExecutionJournal;
   constructor(
     private readonly db: Database,
     private readonly registry: ToolRegistry,
     private readonly approvals: ApprovalManager,
     private readonly outputLimits = { maxBytes: 64 * 1024, maxLines: 1_000 },
-  ) {}
+    events?: ExecutionEventStore,
+  ) { this.journal = new ToolExecutionJournal(db, events); }
+
+  requiresRecoveryConfirmation(name: string, workspaceIdentity: string): boolean {
+    return Boolean(this.db.query(`SELECT 1 FROM tool_calls WHERE name = ? AND workspace_identity = ?
+      AND status = 'outcome_unknown' AND idempotency = 'non_idempotent' LIMIT 1`).get(name, workspaceIdentity));
+  }
 
   async invoke(
     request: { stableKey: string; name: string; generation: number; input: unknown; workspaceIdentity: string; policyVersion: number; attemptId?: string },
@@ -49,6 +58,10 @@ export class ToolExecutor {
     const inputHash = hashToolInput(request.input);
     const existing = this.db.query<ToolCallRow, [string]>("SELECT * FROM tool_calls WHERE stable_key = ?").get(request.stableKey);
     if (existing) {
+      assertExecutionScope(existing, context);
+      if (existing.workspace_identity !== request.workspaceIdentity || existing.policy_version !== request.policyVersion) {
+        throw new Error("tool_call_scope_mismatch");
+      }
       if (existing.input_hash !== inputHash) throw new Error("tool_call_key_input_mismatch");
       if (existing.name !== request.name || existing.generation !== request.generation) {
         throw new Error("tool_call_key_definition_mismatch");
@@ -62,11 +75,13 @@ export class ToolExecutor {
     if (semanticValidation.length) throw new Error(`invalid_tool_input:${semanticValidation.join(",")}`);
 
     const id = context.callId || crypto.randomUUID();
+    context = { ...context, callId: id };
     if (this.db.query("SELECT id FROM tool_calls WHERE id = ?").get(id)) throw new Error("tool_call_id_reused");
     const now = new Date().toISOString();
     const status: ToolCallStatus = permission.effect === "ask" ? "awaiting_approval" : permission.effect === "deny" ? "failed" : "queued";
     const error = permission.effect === "deny" ? permissionDenialError(permission) : null;
-    this.db.query(`
+    this.journal.commit(context, `tool-operation:${id}`, "tool.operation.requested", { name: tool.name, inputHash }, () => {
+      this.db.query(`
       INSERT INTO tool_calls
       (id, stable_key, session_id, task_id, attempt_id, turn_id, agent_id, name, generation, input_json, input_hash,
        workspace_identity, policy_version, risk, idempotency, status, error, created_at, updated_at)
@@ -74,6 +89,9 @@ export class ToolExecutor {
     `).run(id, request.stableKey, context.sessionId, context.taskId, request.attemptId ?? context.taskId, context.turnId,
       context.agentId, tool.name, tool.generation, JSON.stringify(request.input), inputHash, request.workspaceIdentity,
       request.policyVersion, permission.risk, tool.idempotency, status, error, now, now);
+      this.db.query("UPDATE tool_calls SET step_id = ?, capability = ? WHERE id = ?")
+        .run(context.stepId ?? null, tool.capability, id);
+    });
 
     if (permission.effect === "deny") return this.get(id)!;
     if (permission.effect === "ask") {
@@ -84,12 +102,13 @@ export class ToolExecutor {
       });
       return { ...this.get(id)!, approval };
     }
-    return this.execute(id, tool.execute, request.input, context);
+    return this.execute(id, tool, request.input, context);
   }
 
   async resumeApproved(callId: string, context: ToolContext): Promise<ToolExecutionRecord> {
     const row = this.db.query<ToolCallRow, [string]>("SELECT * FROM tool_calls WHERE id = ?").get(callId);
     if (!row) throw new Error("tool_call_not_found");
+    assertExecutionScope(row, context);
     if (row.status !== "awaiting_approval") return this.toRecord(row);
     const request = this.approvals.getRequestForSubject(callId);
     const decision = request ? this.approvals.getDecision(request.id) : null;
@@ -99,36 +118,42 @@ export class ToolExecutor {
       { inputHash: row.input_hash, workspaceIdentity: row.workspace_identity, attemptId: row.attempt_id, policyVersion: row.policy_version },
     )) throw new Error("tool_approval_evidence_mismatch");
     const tool = this.registry.resolve(row.name, row.generation);
-    return this.execute(callId, tool.execute, JSON.parse(row.input_json), { ...context, callId });
+    return this.execute(callId, tool, JSON.parse(row.input_json), { ...context, callId });
   }
 
-  private async execute(id: string, execute: ((input: unknown, context: ToolContext) => Promise<unknown>) | undefined, input: unknown, context: ToolContext): Promise<ToolExecutionRecord> {
-    if (!execute) throw new Error("tool_has_no_native_executor");
-    this.updateStatus(id, "running");
-    try {
-      if (context.signal.aborted) throw new Error("tool_cancelled");
-      const raw = await execute(input, context);
-      const serialized = typeof raw === "string" ? raw : JSON.stringify(raw);
-      const output = truncateToolOutput(serialized, this.outputLimits);
-      this.db.query(`
-        INSERT INTO tool_outputs (tool_call_id, preview_text, byte_size, truncated, is_error)
-        VALUES (?, ?, ?, ?, 0)
-      `).run(id, output.preview, output.byteSize, output.truncated ? 1 : 0);
-      this.updateStatus(id, "succeeded");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const status: ToolCallStatus = message === "tool_cancelled"
-        ? "cancelled"
-        : message === "tool_timed_out"
-          ? "timed_out"
-          : "failed";
-      this.db.query("UPDATE tool_calls SET status = ?, error = ?, updated_at = ? WHERE id = ?").run(status, message, new Date().toISOString(), id);
+  private async execute(id: string, tool: ToolDefinition, input: unknown, context: ToolContext): Promise<ToolExecutionRecord> {
+    if (!tool.execute) throw new Error("tool_has_no_native_executor");
+    for (let attemptNo = 1; attemptNo <= 3; attemptNo++) {
+      const attemptId = this.journal.start(context, attemptNo);
+      let raw: unknown;
+      let failure: ExecutionErrorDetail | undefined;
+      try {
+        if (context.signal.aborted) throw new Error("tool_cancelled");
+        raw = await tool.execute(input, { ...context, toolOperationId: id, toolAttemptId: attemptId, idempotencyKey: id });
+      } catch (error) {
+        failure = classifyToolError(error);
+      }
+      const willRetry = Boolean(failure?.retryable && isTransientToolError(failure) && tool.idempotency !== "non_idempotent" && attemptNo < 3 && !context.signal.aborted);
+      const status = !failure ? "succeeded" : failure.category === "cancelled" ? "cancelled" : failure.category === "timeout" ? "timed_out" : "failed";
+      // Serialization and persistence are outside the body catch. Their failure
+      // must leave a started attempt, never claim the effect itself failed.
+      let serialized: string | undefined;
+      try {
+        serialized = failure ? JSON.stringify({ error: failure }) : typeof raw === "string" ? raw : JSON.stringify(raw);
+      } catch (cause) {
+        throw new StructuredExecutionError({ code: "TOOL_RESULT_SERIALIZATION_FAILED", category: "persistence",
+          phase: "tool_checkpoint", retryable: false, message: cause instanceof Error ? cause.message : String(cause) });
+      }
+      const output = truncateToolOutput(serialized ?? "null", this.outputLimits);
+      this.journal.result(context, attemptId, status, output, failure, willRetry);
+      if (!willRetry) break;
+      await new Promise<void>((resolve) => {
+        const done = () => { clearTimeout(timer); context.signal.removeEventListener("abort", done); resolve(); };
+        const timer = setTimeout(done, Math.min(250 * 2 ** (attemptNo - 1), 1_000));
+        context.signal.addEventListener("abort", done, { once: true });
+      });
     }
     return this.get(id)!;
-  }
-
-  private updateStatus(id: string, status: ToolCallStatus): void {
-    this.db.query("UPDATE tool_calls SET status = ?, updated_at = ? WHERE id = ?").run(status, new Date().toISOString(), id);
   }
 
   private get(id: string): ToolExecutionRecord | null {
@@ -143,6 +168,28 @@ export class ToolExecutor {
       output: output ? { preview: output.preview_text, byteSize: output.byte_size, truncated: output.truncated === 1, isError: output.is_error === 1 } : undefined,
     };
   }
+}
+
+function assertExecutionScope(row: ToolCallRow, context: ToolContext): void {
+  if (row.session_id !== context.sessionId || row.task_id !== context.taskId || row.turn_id !== context.turnId || row.agent_id !== context.agentId) {
+    throw new Error("tool_call_scope_mismatch");
+  }
+}
+
+function isTransientToolError(error: ExecutionErrorDetail): boolean {
+  return ["network", "rate_limit", "timeout"].includes(error.category)
+    || error.category === "tool_execution" && ["ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ETIMEDOUT"].includes(error.code);
+}
+
+function classifyToolError(error: unknown): ExecutionErrorDetail {
+  if (isStructuredExecutionError(error)) return error.detail;
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "TOOL_EXECUTION_FAILED";
+  const cancelled = message === "tool_cancelled" || error instanceof DOMException && error.name === "AbortError";
+  const timeout = message === "tool_timed_out" || code === "ETIMEDOUT";
+  return { code: cancelled ? "TOOL_CANCELLED" : timeout ? "TOOL_TIMEOUT" : code,
+    category: cancelled ? "cancelled" : timeout ? "timeout" : "tool_execution", phase: "tool_execution",
+    retryable: !cancelled && ["ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ETIMEDOUT"].includes(code), message };
 }
 
 function permissionDenialError(permission: PermissionEvaluation): string {

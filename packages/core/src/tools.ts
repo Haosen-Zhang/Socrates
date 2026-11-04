@@ -16,7 +16,8 @@ export type JsonSchema = {
 
 export type ToolRisk = "low" | "medium" | "high" | "destructive";
 export type ToolIdempotency = "read" | "idempotent" | "non_idempotent";
-export type ToolCallStatus = "queued" | "awaiting_approval" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
+export type ToolCallStatus = "queued" | "awaiting_approval" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out" | "outcome_unknown";
+export type ToolRecoveryDisposition = "safe_to_retry" | "verify_then_continue" | "requires_user_confirmation" | "recovery_blocked";
 
 export interface ToolDefinition<I = unknown, O = unknown> {
   name: string;
@@ -35,6 +36,11 @@ export interface ToolContext {
   sessionId: string;
   taskId: string;
   turnId: string;
+  stepId?: string;
+  toolOperationId?: string;
+  toolAttemptId?: string;
+  /** Stable across attempts; adapters may forward this to an idempotency-aware service. */
+  idempotencyKey?: string;
   agentId: string;
   workspaceId?: string;
   mode: ConversationMode;
