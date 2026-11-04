@@ -117,6 +117,11 @@ ToolCall/ToolResult；等待审批、尚未进入 executor 的调用补为 `TOOL
 同名工具重新要求人工审批，即使 Room policy 为 allow。当前采用保守保护，未实现
 “已核验并清除未知状态”的 UI；每次新的操作均需自己的精确审批。
 
+升级前 Native 写入的 agent-session 身份通过持久 runtime-session/Run 关系解析，
+不会漏掉旧操作的未知或已知结果。SDK 的明确审批拒绝写为 `TOOL_APPROVAL_DENIED`，
+历史修复也保留已有拒绝证据。补写仍是 append-only；模型投影将结果放到原始调用批次
+之后、后续消息之前，避免并行调用或迟到恢复结果破坏 Provider 的消息配对协议。
+
 恢复区分和模型提示改编自 DeepSeek Harness 的
 [`session/repair.ts`](https://github.com/deepseek-ai/deepseek-harness/blob/8bd073392eef6f54e921a093b95076248eb08cbb/packages/core/session/src/repair.ts)，
 固定版本 `8bd0733`，MIT 许可保留于 `third-party/DeepSeek-Harness-LICENSE`。

@@ -2,6 +2,10 @@
 // Copyright (c) 2026 DeepSeek. MIT license: see third-party/DeepSeek-Harness-LICENSE.
 import type { ToolRecoveryDisposition } from "@socrates/core";
 
+export function deniedToolOutcome(): { code: "TOOL_APPROVAL_DENIED"; message: string } {
+  return { code: "TOOL_APPROVAL_DENIED", message: "The user denied this tool call. It was not executed. Do not retry it without a new explicit user instruction and approval." };
+}
+
 export function interruptedToolOutcome(started: boolean, idempotency: string, capability: string | null): {
   code: "TOOL_NOT_STARTED" | "TOOL_OUTCOME_UNKNOWN";
   disposition: ToolRecoveryDisposition;

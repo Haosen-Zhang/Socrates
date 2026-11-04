@@ -17,6 +17,7 @@ import {
 } from "@socrates/core";
 import { hashToolInput, type ToolExecutor } from "../tools/executor";
 import type { ToolRegistry } from "../tools/registry";
+import { deniedToolOutcome } from "../tools/recovery-outcome";
 import { classifyProviderError } from "../provider-errors";
 import { executeProviderWithRetry, type ProviderRetryLifecycleEvent } from "../provider-retry";
 
@@ -196,6 +197,10 @@ export function createAiSdkNativeStream(
               hadToolActivity = true;
               permissionByCallId.delete(part.toolCallId);
               yield { type: "tool_result", callId: part.toolCallId, name: part.toolName, output: String(part.error), isError: true };
+            } else if (part.type === "tool-output-denied") {
+              hadToolActivity = true;
+              permissionByCallId.delete(part.toolCallId);
+              yield { type: "tool_result", callId: part.toolCallId, name: part.toolName, output: JSON.stringify(deniedToolOutcome()), isError: true };
             } else if (part.type === "finish") yield { type: "usage", usage: usageOf(part.totalUsage) };
             else if (part.type === "error") yield { type: "error", error: part.error };
             else if (part.type === "abort") throw new DOMException(part.reason ?? "native_agent_cancelled", "AbortError");

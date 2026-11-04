@@ -59,11 +59,14 @@ export class ToolExecutionJournal {
       id: string; session_id: string; task_id: string; turn_id: string; step_id: string | null;
       agent_id: string; status: string; idempotency: string; capability: string | null;
       latest_attempt_id: string | null; latest_attempt_status: string | null;
-    }, [string | null, string | null]>(`SELECT tool_calls.*,
+    }, [string | null, string | null, string | null]>(`SELECT tool_calls.*,
       (SELECT id FROM tool_attempts WHERE tool_operation_id = tool_calls.id ORDER BY attempt_no DESC LIMIT 1) AS latest_attempt_id,
       (SELECT status FROM tool_attempts WHERE tool_operation_id = tool_calls.id ORDER BY attempt_no DESC LIMIT 1) AS latest_attempt_status
       FROM tool_calls WHERE status IN ('running', 'queued', 'awaiting_approval')
-        AND (? IS NULL OR task_id = ?)`).all(runId ?? null, runId ?? null);
+        AND (? IS NULL OR task_id = ? OR task_id IN
+          (SELECT runtime_sessions.agent_session_id FROM runtime_sessions
+            JOIN agent_runs ON agent_runs.runtime_session_id = runtime_sessions.id WHERE agent_runs.id = ?))`)
+      .all(runId ?? null, runId ?? null, runId ?? null);
     for (const row of rows) {
       const context: ToolContext = { callId: row.id, sessionId: row.session_id, taskId: row.task_id,
         turnId: row.turn_id, ...(row.step_id ? { stepId: row.step_id } : {}), agentId: row.agent_id,

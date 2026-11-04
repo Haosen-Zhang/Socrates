@@ -22,6 +22,21 @@ const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
 describe("NativeAgentRuntime", () => {
+  it("persists SDK denial events as explicit tool results", async () => {
+    const stream = createAiSdkNativeStream({} as never, (() => ({
+      fullStream: (async function* () {
+        yield { type: "tool-output-denied", toolCallId: "denied", toolName: "write_file" };
+        yield { type: "text-delta", id: "text", text: "I did not write." };
+      })(), responseMessages: Promise.resolve([]), steps: Promise.resolve([{}]),
+    })) as unknown as typeof import("ai").streamText);
+    const events = [];
+    for await (const event of stream({ prompt: "continue", messages: [], tools: {}, maxSteps: 1,
+      requestApproval: async () => ({ approved: false }) })) events.push(event);
+    expect(events.find((event) => event.type === "tool_result")).toMatchObject({
+      type: "tool_result", callId: "denied", isError: true, output: expect.stringContaining("TOOL_APPROVAL_DENIED"),
+    });
+  });
+
   it("keeps each AI SDK invocation to one visible attempt with internal retries disabled", async () => {
     const maxRetries: number[] = [];
     let invocations = 0;
