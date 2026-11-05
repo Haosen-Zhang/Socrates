@@ -57,3 +57,47 @@ describe("multi-agent routes", () => {
     expect(executions()).toBe(0);
   });
 });
+
+describe("team package routes", () => {
+  async function teamSetup() {
+    const { packageSetup } = await import("../multi-agent/test-fixtures");
+    const { TeamRunner } = await import("../multi-agent/team-runner");
+    const { db, store: packages, definitions } = packageSetup();
+    db.query("UPDATE multi_tasks SET state = 'awaiting_plan_approval', config_json = ? WHERE id = 't'").run(JSON.stringify({ speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a", teamExecution: true }));
+    const store = new MultiTaskStore(db);
+    const plan = await store.addPlan({ taskId: "t", createdBy: "a", content: { objective: "work", summary: "two jobs", steps: [{ id: "1", title: "work", description: "do it", files: [], commands: [], risks: [], verification: ["check"] }], evidence: [], workPackages: definitions } });
+    const approvals = new ApprovalManager(db);
+    const execution = { run: async () => {}, runPackage: async (input: { packageId: string; attemptNo: number }) => ({ status: "completed" as const, runId: `package:${input.packageId}:${input.attemptNo}`, result: "done" }), cancelPackage: async () => {} };
+    const coordinator = { reviewWorkPackage: async () => ({ verdict: "approve" as const, notes: "verified" }) };
+    const team = new TeamRunner(db, store, packages, execution, coordinator, new EventStore(db));
+    const app = new Hono().route("/multi", multiAgentRoutes(store, coordinator as unknown as MultiAgentCoordinator, execution as unknown as ExecutionRunner, approvals, team));
+    return { db, store, packages, approvals, app, plan };
+  }
+  it("changes assignment with a new plan hash and rejects approval of the previous plan", async () => {
+    const { app, packages, store, plan } = await teamSetup();
+    const packageId = packages.list("t")[0]!.id;
+    const changed = await app.request(`/multi/tasks/t/packages/${encodeURIComponent(packageId)}`, { method: "PATCH", body: JSON.stringify({ executorAgentId: "b", reviewerAgentId: "a" }) });
+    expect(changed.status).toBe(200);
+    const next = await changed.json() as { plan: { contentHash: string; version: number } };
+    expect(next.plan.contentHash).not.toBe(plan.contentHash);
+    expect(store.getPlan("t", plan.version)?.status).toBe("superseded");
+    const oldApproval = await app.request("/multi/tasks/t/plan-decisions", { method: "POST", body: JSON.stringify({ version: plan.version, hash: plan.contentHash, clientDecisionKey: "old", decision: "approve_exact_plan" }) });
+    expect(oldApproval.status).toBe(409);
+    expect(packages.get(packageId)?.executorAgentId).toBe("b");
+  });
+  it("includes child approvals and requires explicit review for an uncertain package retry", async () => {
+    const { app, packages, approvals, store } = await teamSetup();
+    const item = packages.start(packages.list("t")[0]!.id);
+    const request = approvals.request({ taskId: item.runId!, kind: "write_file", subjectId: `${item.runId}:tool`, inputHash: "hash", workspaceIdentity: "hash", attemptId: item.runId!, policyVersion: 1, risk: "high", freshHumanRequired: true });
+    const view = await (await app.request("/multi/tasks/t")).json() as { pendingApprovals: Array<{ id: string }> };
+    expect(view.pendingApprovals.map((r) => r.id)).toContain(request.id);
+    packages.finish(item.id, { status: "failed", runId: item.runId!, result: "", reason: "execution_outcome_unknown" });
+    const task = store.get("t")!;
+    store.decidePlan({ taskId: "t", version: 1, hash: store.getPlan("t")!.contentHash, clientDecisionKey: "approve", decision: "approve_exact_plan" });
+    store.transition(task.id, { type: "pause", reason: "work_package_partial_failure" });
+    const retry = await app.request(`/multi/tasks/t/packages/${encodeURIComponent(item.id)}/retry`, { method: "POST", body: "{}" });
+    expect(retry.status).toBe(409);
+    expect(await retry.json()).toMatchObject({ error: "outcome_unknown_confirmation_required" });
+    expect(packages.get(item.id)?.state).toBe("failed");
+  });
+});

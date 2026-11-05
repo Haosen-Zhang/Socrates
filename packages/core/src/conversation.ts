@@ -27,6 +27,7 @@ export interface SessionAgentSnapshot {
   snapshot: Record<string, unknown>;
   position: number;
   executionEligible: boolean;
+  unavailableReason?: string | null;
 }
 
 export interface ConversationSession {
@@ -54,6 +55,8 @@ export interface SessionMessage {
   sessionId: string;
   role: StoredMessageRole;
   authorId: string | null;
+  /** Frozen identity/configuration of the actual author for this run. */
+  authorSnapshot?: Record<string, unknown>;
   kind: StoredMessageKind;
   content: string;
   sequence: number;

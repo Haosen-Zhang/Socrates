@@ -99,7 +99,7 @@ export interface TerminateConversationTurnInput {
   roomId: string;
   runId: string;
   turnId: string;
-  status: "failed" | "cancelled";
+  status: "failed" | "cancelled" | "interrupted";
   error: string;
   completedAt: string;
   assistantMessage?: AppendMessageInput;

@@ -8,6 +8,7 @@ describe("WorkspaceDockButtons", () => {
     expect(active).toContain('aria-pressed="true"');
     expect(active).toContain("pixel-button--primary");
     expect(active.match(/<button/g)?.length).toBe(1);
-    expect(active).toContain("workspace_overview");
+    expect(active).toContain("概览");
+    expect(active).not.toContain("workspace_overview");
   });
 });

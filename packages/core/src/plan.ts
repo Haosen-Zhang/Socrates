@@ -1,3 +1,5 @@
+import { validateWorkPackages, type WorkPackageDefinition } from "./work-package";
+
 export interface PlanStep {
   id: string;
   title: string;
@@ -13,6 +15,7 @@ export interface StructuredPlan {
   summary: string;
   steps: PlanStep[];
   evidence: Array<{ refId: string; snapshotHash: string }>;
+  workPackages?: WorkPackageDefinition[];
 }
 
 export function validateStructuredPlan(value: unknown): string[] {
@@ -27,6 +30,7 @@ export function validateStructuredPlan(value: unknown): string[] {
     for (const key of ["files", "commands", "risks", "verification"] as const) if (!Array.isArray(step?.[key]) || !step[key].every((item) => typeof item === "string")) errors.push(`plan_step_${key}_invalid:${index}`);
   }
   if (!Array.isArray(plan.evidence) || !plan.evidence.every((item) => item && typeof item.refId === "string" && typeof item.snapshotHash === "string")) errors.push("plan_evidence_invalid");
+  if (plan.workPackages !== undefined) errors.push(...validateWorkPackages(plan.workPackages));
   return errors;
 }
 

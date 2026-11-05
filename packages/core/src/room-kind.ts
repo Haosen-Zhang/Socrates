@@ -44,6 +44,9 @@ export function validateCollaborationCapabilities(
   if (settings.discussion.enabled && !capabilities.discussion) {
     errors.push("discussion_runtime_unavailable");
   }
+  if (settings.discussion.enabled && settings.discussion.mode === "debate") {
+    errors.push("discussion_mode_unavailable");
+  }
   const routingConfigured =
     settings.assignment.routing.mode !== "automatic"
     || settings.assignment.routing.automaticPolicy !== "balanced";

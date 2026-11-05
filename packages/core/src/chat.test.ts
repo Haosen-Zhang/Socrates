@@ -24,6 +24,14 @@ const msg = (over: Partial<StoredMessage>): StoredMessage => ({
 });
 
 describe("sse codec", () => {
+  it("retains Hono event IDs written after data, across arbitrary chunk boundaries", () => {
+    const wire = 'event: runtime.event\ndata: {"type":"delta","text":"x"}\nid: 7\n\n';
+    for (let cut = 1; cut < wire.length; cut++) {
+      const first = parseSseChunk(wire.slice(0, cut));
+      const second = parseSseChunk(first.rest + wire.slice(cut));
+      expect([...first.events, ...second.events]).toEqual([{ type: "delta", text: "x", _sseId: "7" }]);
+    }
+  });
   it("round-trips events through chunked buffers", () => {
     const events: StreamEvent[] = [
       { type: "turn_started", agentId: "a", agentName: "GPT", model: "gpt-5.4" },

@@ -1,6 +1,5 @@
 import type { Database } from "bun:sqlite";
 import { Hono } from "hono";
-import { createHash } from "node:crypto";
 import type { AttachmentResolver } from "../attachments/resolver";
 import type { WorkspaceManager } from "../workspace/manager";
 import { WorkspacePathPolicy } from "../workspace/path-policy";
@@ -71,20 +70,20 @@ export function contentRoutes(db: Database, workspaces: WorkspaceManager, attach
     try {
       const policy = new WorkspacePathPolicy(workspace.canonicalPath);
       const resolved = policy.resolveExisting(body.relativePath);
-      const bytes = policy.readBytes(resolved.relativePath, 512 * 1024);
-      const snapshotHash = bytes.truncated ? null : createHash("sha256").update(bytes.bytes).digest("hex");
+      const { record, kind } = attachments.importWorkspaceReference(workspace, resolved.relativePath);
+      const snapshotHash = record.sha256;
       const existing = db.query<{ id: string }, [string, string]>("SELECT id FROM workspace_refs WHERE workspace_id = ? AND relative_path = ?").get(workspace.id, resolved.relativePath);
       const id = existing?.id ?? crypto.randomUUID();
       if (existing) {
-        db.query("UPDATE workspace_refs SET snapshot_hash = ?, snapshot_size = ?, created_at = ? WHERE id = ?")
-          .run(snapshotHash, bytes.byteSize, new Date().toISOString(), id);
+        db.query("UPDATE workspace_refs SET kind = ?, snapshot_hash = ?, snapshot_size = ?, created_at = ? WHERE id = ?")
+          .run(kind, snapshotHash, record.byteSize, new Date().toISOString(), id);
       } else {
         db.query(`
           INSERT INTO workspace_refs (id, workspace_id, relative_path, kind, snapshot_hash, snapshot_size, created_at)
-          VALUES (?, ?, ?, 'file', ?, ?, ?)
-        `).run(id, workspace.id, resolved.relativePath, snapshotHash, bytes.byteSize, new Date().toISOString());
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(id, workspace.id, resolved.relativePath, kind, snapshotHash, record.byteSize, new Date().toISOString());
       }
-      return c.json({ id, workspaceId: workspace.id, relativePath: resolved.relativePath, kind: "file", snapshotHash, snapshotSize: bytes.byteSize }, existing ? 200 : 201);
+      return c.json({ id, workspaceId: workspace.id, relativePath: resolved.relativePath, kind, snapshotHash, snapshotSize: record.byteSize }, existing ? 200 : 201);
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : "workspace_ref_failed" }, 400);
     }

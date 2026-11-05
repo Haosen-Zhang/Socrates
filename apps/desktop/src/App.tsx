@@ -108,9 +108,9 @@ function App() {
           </p>
         </div>
       ) : (
-        <ChatPage onOpenSettings={showSettings} />
+        <ChatPage onOpenSettings={showSettings} settingsOpen={settings.open} />
       )}
-      <SettingsOverlayHost open={settings.open} focusNonce={settings.focusNonce} onClose={hideSettings} />
+      <SettingsOverlayHost section={settings.section} open={settings.open} focusNonce={settings.focusNonce} onClose={hideSettings} />
     </main>
   );
 }

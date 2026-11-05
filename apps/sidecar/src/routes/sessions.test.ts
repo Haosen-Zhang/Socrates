@@ -195,8 +195,8 @@ describe("session routes", () => {
         agents: [agent],
       }),
     });
-    expect(legacyWorkspaceLess.status).toBe(400);
-    expect(await legacyWorkspaceLess.json()).toEqual({ error: "workspace_selection_required" });
+    expect(legacyWorkspaceLess.status).toBe(201);
+    expect((await legacyWorkspaceLess.json()).workspaceId).toBeNull();
   });
 
   it("rejects binding another room's managed workspace as an existing project", async () => {
@@ -290,7 +290,7 @@ describe("session routes", () => {
       "/sessions",
       sessionRoutes(sessions, events, undefined, new WorkspaceManager(db, managedRoot)),
     );
-    const response = await app.request("/sessions", { method: "POST", body: JSON.stringify({ title: "Chat", mode: "chat", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }], workspaceSelection: { kind: "managed" } }) });
+    const response = await app.request("/sessions", { method: "POST", body: JSON.stringify({ title: "Chat", mode: "chat", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] }) });
     expect(response.status).toBe(201);
     const session = await response.json();
     events.append({ eventId: "e1", sessionId: session.id, type: "first", payload: {} });
@@ -305,7 +305,7 @@ describe("session routes", () => {
     const managedRoot = `${tmpdir()}/socrates-session-rename-${crypto.randomUUID()}`;
     roots.push(managedRoot);
     const app = new Hono().route("/sessions", sessionRoutes(sessions, new EventStore(db), undefined, new WorkspaceManager(db, managedRoot)));
-    const created = await (await app.request("/sessions", { method: "POST", body: JSON.stringify({ title: "Draft", mode: "chat", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }], workspaceSelection: { kind: "managed" } }) })).json() as { id: string };
+    const created = await (await app.request("/sessions", { method: "POST", body: JSON.stringify({ title: "Draft", mode: "chat", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] }) })).json() as { id: string };
     const renamed = await app.request(`/sessions/${created.id}`, { method: "PUT", body: JSON.stringify({ title: "Renamed" }) });
     expect(renamed.status).toBe(200);
     expect((await renamed.json()).title).toBe("Renamed");
@@ -327,7 +327,6 @@ describe("session routes", () => {
         mode: "chat",
         primaryAgentId: "a",
         agents: [{ agentId: "a", snapshot: {}, executionEligible: false }],
-        workspaceSelection: { kind: "managed" },
       }),
     })).json() as { id: string };
 
@@ -359,7 +358,6 @@ describe("session routes", () => {
         title: "Implicit",
         mode: "chat",
         agents: [{ agentId: "a", snapshot: {}, executionEligible: false }],
-        workspaceSelection: { kind: "managed" },
       }),
     });
     expect(response.status).toBe(400);

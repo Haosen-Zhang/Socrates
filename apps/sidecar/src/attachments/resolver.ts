@@ -37,6 +37,19 @@ function detectMediaType(bytes: Buffer, filename: string): string {
 export class AttachmentResolver {
   constructor(private readonly db: Database, private readonly dataRoot: string) {}
 
+  /** Directory mentions freeze a bounded listing; they never recursively read files. */
+  importWorkspaceReference(workspace: WorkspaceRecord, relativePath: string): { record: AttachmentRecord; kind: "file" | "directory" } {
+    const policy = new WorkspacePathPolicy(workspace.canonicalPath);
+    try {
+      const listing = policy.listDirectory(relativePath, 500);
+      const bytes = Buffer.from(JSON.stringify({ directory: relativePath, entries: listing.entries, truncated: listing.truncated }, null, 2));
+      return { record: this.importBytes(workspace.id, `${basename(relativePath) || "workspace"}.directory.json`, bytes, relativePath), kind: "directory" };
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "workspace_not_directory") throw error;
+      return { record: this.importWorkspaceFile(workspace, relativePath), kind: "file" };
+    }
+  }
+
   importWorkspaceFile(workspace: WorkspaceRecord, relativePath: string): AttachmentRecord {
     const policy = new WorkspacePathPolicy(workspace.canonicalPath);
     const first = policy.readBytes(relativePath, MAX_FILE_BYTES);

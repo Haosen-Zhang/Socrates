@@ -218,6 +218,7 @@ export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGat
     if (!Array.isArray(b.agentIds) || b.agentIds.length === 0) {
       return c.json({ error: "至少邀请一个 Agent" }, 400);
     }
+    if (b.workspaceId) return c.json({ error: "chat_room_must_not_bind_workspace" }, 400);
     for (const aid of b.agentIds) {
       if (!db.query("SELECT id FROM agents WHERE id = ?").get(aid)) {
         return c.json({ error: "存在无效的 Agent" }, 400);

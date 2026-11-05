@@ -1,0 +1,45 @@
+{
+  "checks": [
+    {
+      "check": "Work sidebar excludes Chat",
+      "ok": true
+    },
+    {
+      "check": "Chat mode restores last room and draft",
+      "ok": true
+    },
+    {
+      "check": "Room draft A retained",
+      "ok": true
+    },
+    {
+      "check": "Structured target Babbage",
+      "ok": true
+    },
+    {
+      "check": "Other room composer remains enabled during stream",
+      "ok": true
+    },
+    {
+      "check": "Other room draft survives running navigation",
+      "ok": true
+    },
+    {
+      "check": "Default member unchanged after target command",
+      "ok": true
+    },
+    {
+      "check": "Inline editor cancel retains room draft and selection",
+      "ok": true
+    },
+    {
+      "check": "Inline save auto-selects role and preserves room draft",
+      "ok": true
+    },
+    {
+      "check": "New Chat has two frozen members, no workspace, direct strategy",
+      "ok": true
+    }
+  ],
+  "errors": []
+}

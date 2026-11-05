@@ -1,3 +1,12 @@
+import {taskResumeAction} from "./workPackageRecovery";
+import SessionMessageAuthor from "./SessionMessageAuthor";
+import RoomTimeline from "./RoomTimeline";
+import type { SettingsSection } from "./settings/settingsOverlay";
+import { hasOpenNestedDialog } from "./dialog/dialogLayer";
+import AgentEditor from "./AgentEditor";
+import RoomComposer from "./RoomComposer";
+import ModeSegmented from "./sidebar/ModeSegmented";
+import TeamTaskPanel from "./TeamTaskPanel";
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import Markdown from "react-markdown";
@@ -14,7 +23,7 @@ import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
 import { isOwnedManagedWorkspace, roomDraftBlocker, toggleRoomAgentSelection } from "./roomSelection";
 import { searchSidebar, topLevelRooms, workspaceGroups, type SidebarRoom } from "./sidebar/sidebarLists";
-import { useT, type MultiPlan, type StreamingTurn } from "./store";
+import { useStore, useT, type MultiPlan, type StreamingTurn } from "./store";
 import { useStorePick } from "./selectors";
 import { sfx } from "./fx";
 import { shouldSubmitComposerEnter } from "./composerIme";
@@ -23,7 +32,7 @@ import WorkspaceDock from "./workspace/WorkspaceDock";
 import WorkspaceDockButtons from "./workspace/WorkspaceDockButtons";
 import RoomOverview, { type RoomOverviewAgent } from "./workspace/RoomOverview";
 import { toggleWorkspaceDock, type WorkspaceDockMode } from "./workspace/workspaceDockState";
-import AttachmentTray, { AttachmentImage } from "./attachments/AttachmentTray";
+import { AttachmentImage } from "./attachments/AttachmentTray";
 import { canReviewPlan, moveAgentId } from "./multiAgentUi";
 import ResizableComposer from "./composer/ResizableComposer";
 import { roomTitleOrFallback } from "./workspace/projectSelection";
@@ -39,7 +48,6 @@ import { resolveSidebarRevealPath, revealResolvedSidebarTarget } from "./sidebar
 import { agentRunErrorKey } from "./agentRunErrorUi";
 import { canEditCollaboration, collaborationStrategyOptions } from "./collaborationSettingsUi";
 import { taskStatusKey } from "./taskSurface";
-import RoomTaskComposer from "./TaskComposer";
 import WindowRoomToolbar from "./window/WindowRoomToolbar";
 import PanelResizeHandle from "./layout/PanelResizeHandle";
 import { clampPanelSize } from "./layout/panelResize";
@@ -675,15 +683,15 @@ function SimpleComposer() {
 function SingleAgentSession({ chrome }: { chrome: RoomChromeControls }) {
   const {
     sessions, currentSessionId, sessionMessages, agentEvents, agentStreamText, pendingApprovals,
-    agentRunning, activeAgentRunId, agentError, agentCapabilities, sendAgentPrompt, updateApprovalPolicy, decideAgentApproval, cancelAgentRun, rewindSessionTo, workspacePathResults, searchWorkspacePaths, addWorkspaceRef, workspaces,
-  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "agentEvents", "agentStreamText", "pendingApprovals", "agentRunning", "activeAgentRunId", "agentError", "agentCapabilities", "sendAgentPrompt", "updateApprovalPolicy", "decideAgentApproval", "cancelAgentRun", "rewindSessionTo", "workspacePathResults", "searchWorkspacePaths", "addWorkspaceRef", "workspaces");
+    agentRunning, activeAgentRunId, agentError, agentCapabilities, updateApprovalPolicy, decideAgentApproval, cancelAgentRun, rewindSessionTo, continueAgentRun, multiStreamAgentId, workspaces,
+  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "agentEvents", "agentStreamText", "pendingApprovals", "agentRunning", "activeAgentRunId", "agentError", "agentCapabilities", "updateApprovalPolicy", "decideAgentApproval", "cancelAgentRun", "rewindSessionTo", "continueAgentRun", "multiStreamAgentId", "workspaces");
   // 窗口化：长会话只渲染最近 N 条，更早的可展开
   const [sessionLimit, setSessionLimit] = useState(DEFAULT_WINDOW_SIZE);
   useEffect(() => setSessionLimit(DEFAULT_WINDOW_SIZE), [currentSessionId]);
   const sessionWindow = windowTail(sessionMessages, sessionLimit);
   const t = useT();
-  const [draft, setDraft] = useState("");
   const [showCollab, setShowCollab] = useState(false);
+  const [showRoster,setShowRoster]=useState(false);
   const session = sessions.find((item) => item.id === currentSessionId);
   const workspaceLabel = workspaces.find((workspace) => workspace.id === session?.workspaceId)?.label ?? t("workspace_none");
   const approvalOptions = approvalModeOptions(agentCapabilities?.approvalPolicy);
@@ -716,20 +724,9 @@ function SingleAgentSession({ chrome }: { chrome: RoomChromeControls }) {
   const streamingText = agentStreamText;
   const strategy = session?.collaboration.strategy ?? "single";
   const status = taskStatusKey(agentError ? "failed" : agentRunning ? "executing" : null);
-  const strategyStatus = `${t(`strategy_${strategy}`)} · ${t(status)}`;
-  const submit = async () => {
-    const prompt = draft.trim();
-    if (!prompt || agentRunning) return;
-    // Local echo and an empty composer are committed before the network request
-    // starts.  Waiting for the stream here made an Enter press look stuck.
-    setDraft("");
-    void sendAgentPrompt(prompt);
-  };
-  const updateDraft = (value: string) => {
-    setDraft(value);
-    const match = /(?:^|\s)@([^\s]*)$/u.exec(value);
-    if (match) void searchWorkspacePaths(match[1]);
-  };
+  const strategyStatus = `${session?.kind === "chat" ? `Chat · ${t(session.collaboration.discussion.enabled ? "team_discussion":"direct_response")}` : t(`strategy_${strategy}`)} · ${t(status)}`;
+  const lastWorkspaceSignal=[...agentEvents].reverse().find(event=>(event.type === "extension" && event.name === "workspace_queued") || (event.type === "status" && ["running","ready"].includes(event.status)));
+  const queued=agentRunning && lastWorkspaceSignal?.type === "extension";
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <WindowRoomToolbar
@@ -742,12 +739,13 @@ function SingleAgentSession({ chrome }: { chrome: RoomChromeControls }) {
         onToggleSidebar={chrome.onToggleSidebar}
       >
         <div className="pixel-window-toolbar__room-actions">
-          <WorkspaceDockButtons mode={chrome.dockMode} onSelect={chrome.onSelectDock} />
+          {session?.kind === "cowork" && <WorkspaceDockButtons mode={chrome.dockMode} onSelect={chrome.onSelectDock} />}
+          {session && <button className="pixel-button px-2 py-1 text-xs" onClick={()=>setShowRoster(true)}>{t("room_members_title")}</button>}
           {session && <button className="pixel-button pixel-toolbar-icon-action" onClick={() => setShowCollab(true)} title={t("cowork_settings_title")} aria-label={t("cowork_settings_title")}><PixelIcon name="gear" size={16} /></button>}
           {agentRunning && <button className="pixel-button px-2 py-1 text-xs text-red-700" onClick={() => void cancelAgentRun()}>{t("cancel_task")}</button>}
         </div>
       </WindowRoomToolbar>
-      <div className="flex-1 space-y-3 overflow-y-auto p-4">
+      <RoomTimeline roomId={currentSessionId ?? ""} className="flex-1 space-y-3 overflow-y-auto p-4">
         {sessionWindow.hiddenCount > 0 && (
           <button className="pixel-button mx-auto block px-3 py-1 text-xs" onClick={() => setSessionLimit((limit) => expandWindow(limit, sessionMessages.length))}>
             {t("show_earlier", { n: sessionWindow.hiddenCount })}
@@ -769,10 +767,12 @@ function SingleAgentSession({ chrome }: { chrome: RoomChromeControls }) {
             return <PublicReasoningPanel key={message.id} summaries={messageReasoning} running={false} />;
           }
           if (message.kind !== "text" && message.kind !== "error") return null;
+          const author=session?.agents.find(member=>member.agentId === message.authorId);
           return (
             <Fragment key={message.id}>
               {messageReasoning.length > 0 && <PublicReasoningPanel summaries={messageReasoning} running={messageReasoning.some((summary) => summary.running)} />}
               <div className={`anim-msg group flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}>
+                {message.role === "assistant" && <SessionMessageAuthor message={message} roomSnapshot={author?.snapshot}/>}
                 <div className={`pixel-card max-w-[78%] p-3 text-sm ${message.role === "user" ? "whitespace-pre-wrap bg-violet-50" : "md-body bg-white"}`}>
                   {message.role === "user" ? message.content : <Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{message.content}</Markdown>}
                   {message.parts.filter((part) => part.type !== "text" && part.type !== "reasoning_summary").length > 0 && <div className="mt-2 flex flex-wrap gap-2">
@@ -790,39 +790,13 @@ function SingleAgentSession({ chrome }: { chrome: RoomChromeControls }) {
         })}
         <PublicReasoningPanel summaries={liveReasoningSummaries} running={agentRunning} />
         <ToolActivityTimeline activities={unanchoredToolActivities} showHeading={false} />
-        {agentRunning && streamingText && <div className="pixel-card max-w-[78%] whitespace-pre-wrap bg-white p-3 text-sm">{streamingText}</div>}
-      </div>
-      <form className="composer-dock" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-        {agentError && (
-          <div role="alert" className="pixel-card mb-2 border-red-400 bg-red-50 px-3 py-2 text-xs text-red-800">
-            <div className="font-bold">{t("agent_run_failed")}</div>
-            <div className="mt-1">{t(agentRunErrorKey(agentError))}</div>
-          </div>
-        )}
-        <ApprovalShelf
-          approvals={pendingApprovals}
-          activities={toolActivities}
-          workspaceLabel={workspaceLabel}
-          busy={false}
-          onDecision={decideAgentApproval}
-        />
-        {workspacePathResults.length > 0 && (
-          <div className="pixel-card mb-2 max-h-48 overflow-y-auto p-2">
-            {workspacePathResults.filter((result) => result.kind === "file").slice(0, 12).map((result) => (
-              <button key={result.relativePath} type="button" className="block w-full px-2 py-1 text-left text-xs hover:bg-neutral-100" onClick={() => {
-                void addWorkspaceRef(result.relativePath);
-                setDraft((current) => current.replace(/@[^\s]*$/u, `@${result.relativePath} `));
-              }}>@{result.relativePath}</button>
-            ))}
-          </div>
-        )}
-        <AttachmentTray />
-        <ResizableComposer label={t("composer_resize")}>
-          <span className="pixel-composer-chevron mt-1 shrink-0 self-start">›</span>
-          <ComposerTextarea placeholder={agentRunning ? t("replying") : t("message_placeholder")} value={draft} disabled={agentRunning} onChange={updateDraft} onSubmit={() => void submit()} />
-          <button className="pixel-send shrink-0" type="submit" disabled={agentRunning || !draft.trim()} aria-label={t("send")}><PixelIcon name="send" size={18} /></button>
-        </ResizableComposer>
-        {session && (
+        {agentRunning && streamingText && <div className="pixel-card max-w-[78%] whitespace-pre-wrap bg-white p-3 text-sm"><AgentHeader name={String(session?.agents.find(member=>member.agentId===multiStreamAgentId)?.snapshot.nickname ?? "Agent")} model={String(session?.agents.find(member=>member.agentId===multiStreamAgentId)?.snapshot.modelId ?? "")}/>{streamingText}</div>}
+      </RoomTimeline>
+      {queued && <p role="status" className="mx-4 mb-2 text-xs text-amber-700">{t("workspace_writer_queued")}</p>}
+      {agentError && <div role="alert" className="mx-4 mb-2 text-xs text-red-700">{agentError === "budget_exhausted" ? t("budget_exhausted") : t(agentRunErrorKey(agentError))}{agentError === "budget_exhausted" && <button className="pixel-button ml-2 px-3 py-1" onClick={()=>void continueAgentRun()}>{t("continue_task")}</button>}</div>}
+      <ApprovalShelf approvals={pendingApprovals} activities={toolActivities} workspaceLabel={workspaceLabel} busy={false} onDecision={decideAgentApproval}/>
+      {session && <RoomComposer key={session.id} session={session} running={agentRunning} onOpenSettings={()=>setShowCollab(true)}/>}
+        {session?.kind === "cowork" && (
           <div className="approval-policy-row mt-2 flex min-w-0 items-center gap-2 px-1 text-[11px] text-neutral-600">
             <span className="shrink-0">{t("approval_policy_label")}</span>
             <ApprovalPolicySegmented
@@ -845,8 +819,8 @@ function SingleAgentSession({ chrome }: { chrome: RoomChromeControls }) {
             </span>
           </div>
         )}
-      </form>
-      {showCollab && session && <CoworkRoomSettingsDialog session={session} onClose={() => setShowCollab(false)} />}
+      {showRoster && session && <SessionMembersDialog session={session} onClose={()=>setShowRoster(false)}/>}
+    {showCollab && session && <CoworkRoomSettingsDialog session={session} onClose={() => setShowCollab(false)} />}
     </div>
   );
 }
@@ -875,7 +849,7 @@ function MultiPlanCard({ plan }: { plan: MultiPlan }) {
             {step.files.length > 0 && <div className="mt-2 flex flex-wrap gap-1">{step.files.map((file) => <code key={file} className="pixel-chip">{file}</code>)}</div>}
             {step.commands.map((command) => <pre key={command} className="mt-2 overflow-x-auto bg-neutral-900 p-2 text-xs text-white">{command}</pre>)}
             {step.risks.length > 0 && <p className="mt-2 text-xs text-amber-700">⚠ {step.risks.join(" · ")}</p>}
-            {step.verification.length > 0 && <p className="mt-1 text-xs text-green-700">✓ {step.verification.join(" · ")}</p>}
+            {step.verification.length > 0 && <p className="mt-1 text-xs text-neutral-600">{t("acceptance_criteria")}: {step.verification.join(" · ")}</p>}
           </li>)}
         </ol>
       )}
@@ -894,18 +868,20 @@ function MultiPlanCard({ plan }: { plan: MultiPlan }) {
 
 function MultiAgentSession({ chrome }: { chrome: RoomChromeControls }) {
   const {
-    sessions, currentSessionId, sessionMessages, currentMultiTask, multiRunning, multiError, multiStreamAgentId, multiStreamText,
-    sendMultiTask, loadMultiTask, decideMultiApproval, cancelMultiTask, pauseMultiTask, resumeMultiTask, retryMultiTask, rewindSessionTo,
-  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "currentMultiTask", "multiRunning", "multiError", "multiStreamAgentId", "multiStreamText", "sendMultiTask", "loadMultiTask", "decideMultiApproval", "cancelMultiTask", "pauseMultiTask", "resumeMultiTask", "retryMultiTask", "rewindSessionTo");
+    sessions, currentSessionId, sessionMessages, currentMultiTask, multiRunning, multiError, multiStreamAgentId, multiStreamText, agentRunning, agentStreamText, agentError, cancelAgentRun,
+    loadMultiTask, decideMultiApproval, cancelMultiTask, pauseMultiTask, resumeMultiTask, retryMultiTask, rewindSessionTo,
+  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "currentMultiTask", "multiRunning", "multiError", "multiStreamAgentId", "multiStreamText", "agentRunning", "agentStreamText", "agentError", "cancelAgentRun", "loadMultiTask", "decideMultiApproval", "cancelMultiTask", "pauseMultiTask", "resumeMultiTask", "retryMultiTask", "rewindSessionTo");
   // 窗口化：长会话只渲染最近 N 条，更早的可展开
   const [sessionLimit, setSessionLimit] = useState(DEFAULT_WINDOW_SIZE);
   useEffect(() => setSessionLimit(DEFAULT_WINDOW_SIZE), [currentSessionId]);
   const sessionWindow = windowTail(sessionMessages, sessionLimit);
+  const teamToolActivities=useMemo(()=>projectToolActivities({messages:sessionMessages,events:[],approvals:currentMultiTask?.pendingApprovals ?? [],activeRunId:null}),[sessionMessages,currentMultiTask?.pendingApprovals]);
+  const teamReasoning=useMemo(()=>projectPublicReasoning({messages:sessionMessages,events:[],running:false,activeRunId:null}),[sessionMessages]);
   const t = useT();
   const session = sessions.find((item) => item.id === currentSessionId);
   const participants: Array<{ id: string; nickname?: unknown; avatar?: unknown; modelId?: unknown; [key: string]: unknown }> = session?.agents.map((item) => ({ id: item.agentId, ...item.snapshot })) ?? [];
-  const [prompt, setPrompt] = useState("");
   const [showCollab, setShowCollab] = useState(false);
+  const [showRoster,setShowRoster]=useState(false);
   // 主实时路径是 SSE delta / turn 事件（见 store.sendMultiTask）；此定时器仅为无 SSE 流阶段
   // （如 executing）的兜底对账，2s 一次，不再是 750ms 的主轮询。
   useEffect(() => {
@@ -917,14 +893,21 @@ function MultiAgentSession({ chrome }: { chrome: RoomChromeControls }) {
   const pausable = currentMultiTask && ["preparing", "discussing", "synthesizing", "executing", "awaiting_tool_approval"].includes(currentMultiTask.state);
   const strategy = session?.collaboration.strategy ?? "team";
   const status = taskStatusKey(
-    multiError ? "failed" : multiRunning && !currentMultiTask ? "preparing" : currentMultiTask?.state ?? null,
+    multiError || agentError ? "failed" : agentRunning ? "discussing" : multiRunning && !currentMultiTask ? "preparing" : currentMultiTask?.state ?? null,
   );
   const strategyStatus = `${t(`strategy_${strategy}`)} · ${t(status)}`;
+  const resumeAction=currentMultiTask ? taskResumeAction(currentMultiTask) : "resume";
+  const handleResume=()=>{
+    if(!currentMultiTask) return;
+    if(resumeAction === "packages") document.getElementById(`team-packages-${currentMultiTask.id}`)?.scrollIntoView({behavior:"smooth",block:"start"});
+    else void (resumeAction === "retry" ? retryMultiTask() : resumeMultiTask());
+  };
   return <div className="flex min-h-0 flex-1 flex-col">
     <WindowRoomToolbar title={session?.title ?? "Socrates"} subtitle={strategyStatus} sidebarHidden={chrome.sidebarHidden} toolbarMode={chrome.toolbarMode} collapseLabel={t("sidebar_collapse")} expandLabel={t("sidebar_expand")} onToggleSidebar={chrome.onToggleSidebar}>
-      <div className="pixel-window-toolbar__room-actions"><WorkspaceDockButtons mode={chrome.dockMode} onSelect={chrome.onSelectDock} />{session && canEditCollaboration(currentMultiTask?.state) && <button className="pixel-button pixel-toolbar-icon-action" onClick={() => setShowCollab(true)} title={t("cowork_settings_title")} aria-label={t("cowork_settings_title")}><PixelIcon name="gear" size={16} /></button>}{currentMultiTask?.state === "paused" ? <button className="pixel-button pixel-toolbar-task-action pixel-button--primary px-2 py-1 text-xs" onClick={() => void (currentMultiTask.outcomeUnknown || currentMultiTask.requiresExecutionReview ? retryMultiTask() : resumeMultiTask())}>{t(currentMultiTask.outcomeUnknown || currentMultiTask.requiresExecutionReview ? "multi_retry_reviewed" : "multi_resume")}</button> : pausable && <button className="pixel-button pixel-toolbar-task-action px-2 py-1 text-xs" onClick={() => void pauseMultiTask()}>{t("multi_pause")}</button>}{currentMultiTask && !terminal && <button className="pixel-button pixel-toolbar-task-action px-2 py-1 text-xs text-red-700" onClick={() => void cancelMultiTask()}>{t("cancel_task")}</button>}</div>
+      <div className="pixel-window-toolbar__room-actions"><button className="pixel-button px-2 py-1 text-xs" onClick={()=>setShowRoster(true)}>{t("room_members_title")}</button><WorkspaceDockButtons mode={chrome.dockMode} onSelect={chrome.onSelectDock} />{session && canEditCollaboration(currentMultiTask?.state) && <button className="pixel-button pixel-toolbar-icon-action" onClick={() => setShowCollab(true)} title={t("cowork_settings_title")} aria-label={t("cowork_settings_title")}><PixelIcon name="gear" size={16} /></button>}{currentMultiTask?.state === "paused" ? <button className="pixel-button pixel-toolbar-task-action pixel-button--primary px-2 py-1 text-xs" onClick={handleResume}>{t(resumeAction === "packages" ? "view_work_packages" : resumeAction === "retry" ? "multi_retry_reviewed" : "multi_resume")}</button> : pausable && <button className="pixel-button pixel-toolbar-task-action px-2 py-1 text-xs" onClick={() => void pauseMultiTask()}>{t("multi_pause")}</button>}{agentRunning && <button className="pixel-button px-2 py-1 text-xs" onClick={()=>void cancelAgentRun()}>{t("cancel_task")}</button>}{currentMultiTask && !terminal && <button className="pixel-button pixel-toolbar-task-action px-2 py-1 text-xs text-red-700" onClick={() => void cancelMultiTask()}>{t("cancel_task")}</button>}</div>
     </WindowRoomToolbar>
-    <div className="flex-1 space-y-4 overflow-y-auto p-4">
+    <RoomTimeline roomId={currentSessionId ?? ""} className="flex-1 space-y-4 overflow-y-auto p-4">
+      {agentError && <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{t(agentRunErrorKey(agentError))}</div>}
       {multiError && <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{multiError}</div>}
       {/* 执行是脱离 SSE 的后台任务，失败原因不会走 task_failed 事件——直接读 terminalReason 展示 */}
       {!multiError && currentMultiTask?.state === "failed" && currentMultiTask.terminalReason && (
@@ -938,9 +921,16 @@ function MultiAgentSession({ chrome }: { chrome: RoomChromeControls }) {
           </button>
         )}
         {sessionWindow.visible.map((message) => {
-        const author = participants.find((item) => item.id === message.authorId);
-        return <div key={message.id} className={`anim-msg group flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}><div className={`max-w-[82%] ${message.role === "user" ? "" : "flex gap-3"}`}>
-          {message.role !== "user" && <AgentAvatar src={String(author?.avatar ?? "")} label={String(author?.nickname ?? "Agent")} size={34} />}
+        if(message.kind === "tool_result") return null;
+        if(message.kind === "tool_call") {
+          const call=message.parts.find(part=>part.type === "tool_call");
+          const activity=teamToolActivities.find(item=>item.id===toolActivityId(message.runId,call?.callId ?? ""));
+          return activity ? <ToolActivityTimeline key={message.id} activities={[activity]} showHeading={false}/> : null;
+        }
+        if(message.kind === "summary") return <PublicReasoningPanel key={message.id} summaries={teamReasoning.filter(item=>item.id === message.id)} running={false}/>;
+        const author = session?.agents.find((item) => item.agentId === message.authorId);
+        return <div key={message.id} className={`anim-msg group flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}><div className="max-w-[82%]">
+          {message.role !== "user" && <SessionMessageAuthor message={message} roomSnapshot={author?.snapshot}/>}
           <div className={`md-body pixel-card p-3 text-sm ${message.role === "user" ? "bg-violet-50" : "bg-white"}`}><Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{message.content}</Markdown></div>
         </div><MsgActions m={message} align={message.role === "user" ? "right" : "left"} busy={multiRunning} onRewind={(messageId) => void rewindSessionTo(messageId)} /></div>;
       })}
@@ -953,32 +943,23 @@ function MultiAgentSession({ chrome }: { chrome: RoomChromeControls }) {
           </div>
         );
       })}
+      {agentRunning && agentStreamText && <div className="pixel-card whitespace-pre-wrap p-3 text-sm"><AgentHeader name={String(participants.find(member=>member.id===multiStreamAgentId)?.nickname ?? "Agent")}/>{agentStreamText}</div>}
       {currentMultiTask?.plan && <MultiPlanCard plan={currentMultiTask.plan} />}
       {currentMultiTask?.pendingApprovals.map((approval) => <section key={approval.id} className="pixel-approval-card p-4">
         <div className="flex items-center justify-between"><strong>{approval.kind}</strong><span className="pixel-chip">{approval.risk}</span></div>
         <p className="my-2 text-xs text-neutral-600">{approval.kind === "plan_scope_expansion" ? t("multi_scope_expansion") : t("multi_tool_approval_hint")}</p>
         <div className="flex gap-2"><button className="pixel-button pixel-button--primary px-3 py-1.5 text-xs" onClick={() => void decideMultiApproval(approval.id, "allow_once")}>{t("approval_allow_once")}</button>{!approval.freshHumanRequired && <button className="pixel-button px-3 py-1.5 text-xs" onClick={() => void decideMultiApproval(approval.id, "allow_session")}>{t("approval_allow_session")}</button>}<button className="pixel-button px-3 py-1.5 text-xs text-red-700" onClick={() => void decideMultiApproval(approval.id, "deny")}>{t("approval_deny")}</button></div>
       </section>)}
-      {terminal && <RoomTaskComposer
-        prompt={prompt}
-        summary={strategyStatus}
-        running={multiRunning}
-        title={t("multi_new_task")}
-        settingsLabel={t("cowork_settings_title")}
-        promptLabel={t("task_prompt_label")}
-        placeholder={t("multi_prompt_placeholder")}
-        startLabel={t("multi_start")}
-        runningLabel={t("multi_discussing")}
-        onPromptChange={setPrompt}
-        onOpenSettings={() => setShowCollab(true)}
-        onSubmit={() => void sendMultiTask(prompt)}
-      />}
-    </div>
+      {currentMultiTask && session && <TeamTaskPanel task={currentMultiTask} session={session}/>}
+
+    </RoomTimeline>
+    {terminal && session && <RoomComposer key={session.id} session={session} running={multiRunning || agentRunning} onOpenSettings={()=>setShowCollab(true)}/> }
+    {showRoster && session && <SessionMembersDialog session={session} onClose={()=>setShowRoster(false)}/>}
     {showCollab && session && <CoworkRoomSettingsDialog session={session} onClose={() => setShowCollab(false)} />}
   </div>;
 }
 
-function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; presetWorkspaceId?: string | null }) {
+function NewRoomDialog({ onClose, presetWorkspaceId, kind, onOpenSettings, settingsOpen }: { onClose: () => void; presetWorkspaceId?: string | null; kind: "chat" | "cowork"; onOpenSettings: () => void; settingsOpen:boolean }) {
   const { agents, workspaces, createRoomFromDraft, registerWorkspacePath } = useStorePick(
     "agents",
     "workspaces",
@@ -990,6 +971,9 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
   // 从某个工作区分组的「＋」进入时，沿用该 existing workspace。
   const locked = presetWorkspaceId != null && projectWorkspaces.some((w) => w.id === presetWorkspaceId);
   const [name, setName] = useState("");
+  const [submitting,setSubmitting]=useState(false);
+  const [creatingAgent,setCreatingAgent]=useState(false);
+  const [memberQuery,setMemberQuery]=useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [primaryAgentId, setPrimaryAgentId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1015,7 +999,7 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") dialog.close();
+      if (event.key === "Escape" && !hasOpenNestedDialog(document) && !settingsOpen) dialog.close();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
@@ -1023,14 +1007,17 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if(submitting) return;
+    setSubmitting(true);
     try {
-      const workspaceSelection = await prepareNewRoomWorkspace({
+      const workspaceSelection = kind === "chat" ? {kind:"managed" as const} : await prepareNewRoomWorkspace({
         mode: workspaceMode,
         workspaceId,
         pickAndRegisterWorkspace,
       });
       if (!workspaceSelection) return;
       await createRoomFromDraft({
+        kind,
         title: roomTitleOrFallback(name, t("room_untitled")),
         agentIds: selected,
         primaryAgentId,
@@ -1039,7 +1026,7 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
       dialog.close();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    }
+    } finally {setSubmitting(false);}
   };
 
   return (
@@ -1056,7 +1043,7 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
           <div>
             <div className="pixel-kicker">NEW PARTY</div>
             <h2 id="new-room-title" className="text-xl font-bold">{t("new_room_title")}</h2>
-            <p className="mt-1 text-sm text-neutral-500">{t("new_room_subtitle")}</p>
+            <p className="mt-1 text-sm text-neutral-500">{t(kind === "chat" ? "new_chat_room_subtitle":"new_room_subtitle")}</p>
           </div>
           <button
             type="button"
@@ -1085,7 +1072,7 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
           />
         </label>
 
-        <div className="mt-5">
+        {kind === "cowork" && <div className="mt-5">
           <h3 className="mb-2 text-sm font-bold">{t("room_workspace")}</h3>
           <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label={t("room_workspace")}>
             {(["temporary", "project"] as const).map((value) => (
@@ -1145,17 +1132,18 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
               </button>
             </div>
           )}
-        </div>
+        </div>}
 
         <div className="mb-2 mt-5 flex items-center justify-between">
           <h3 className="text-sm font-bold">{t("choose_agents")}</h3>
           <span className="pixel-chip">{t("selected_agents", { n: selected.length })}</span>
         </div>
+        <div className="mb-3 flex gap-2"><input type="search" aria-label={t("search_members")} placeholder={t("search_members")} className="pixel-input min-w-0 flex-1 px-3 py-2 text-sm" value={memberQuery} onChange={event=>setMemberQuery(event.target.value)}/><button type="button" className="pixel-button px-3 py-2 text-sm" onClick={()=>setCreatingAgent(true)}>+ {t("agent_create")}</button></div>
         {agents.length === 0 ? (
           <div className="pixel-empty p-6 text-center text-sm text-neutral-500">{t("create_agent_first")}</div>
         ) : (
           <div className="grid max-h-[42vh] grid-cols-2 gap-3 overflow-y-auto p-1 sm:grid-cols-3">
-            {agents.map((agent) => {
+            {agents.filter(agent=>`${agent.nickname} ${agent.role} ${agent.modelId}`.toLowerCase().includes(memberQuery.toLowerCase())).map((agent) => {
               const isSelected = selected.includes(agent.id);
               return (
                 <button
@@ -1176,6 +1164,7 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
             })}
           </div>
         )}
+        {selected.length>0 && <label className="mt-4 block text-sm">{t(kind === "chat" ? "default_responder":"default_executor")}<select className="pixel-input mt-1 w-full px-3 py-2" value={primaryAgentId ?? ""} onChange={event=>setPrimaryAgentId(event.target.value)}>{selected.map(id=><option value={id} key={id}>{agents.find(agent=>agent.id===id)?.nickname ?? id}</option>)}</select></label>}
         {error && <p className="mt-3 text-sm text-red-700">{error}</p>}
         <footer className="mt-5 flex items-center justify-between gap-4 border-t border-neutral-200 pt-4">
           <div className="flex min-w-0 items-center">
@@ -1192,7 +1181,8 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
             <button
               className="pixel-button pixel-button--primary px-5 py-2 text-sm"
               type="submit"
-              disabled={roomDraftBlocker({
+              disabled={submitting || roomDraftBlocker({
+                kind,
                 title: name,
                 agentIds: selected,
                 primaryAgentId,
@@ -1206,6 +1196,7 @@ function NewRoomDialog({ onClose, presetWorkspaceId }: { onClose: () => void; pr
           </div>
         </footer>
       </form>
+      {creatingAgent && <AgentEditor onClose={()=>setCreatingAgent(false)} suspended={settingsOpen} onSaved={agent=>{setSelected(current=>[...current,agent.id]);setPrimaryAgentId(current=>current ?? agent.id);}} onSetupProvider={onOpenSettings}/>}
     </div>
   );
 }
@@ -1497,7 +1488,7 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
   const [saving, setSaving] = useState(false);
 
   const memberIds = session.agents.map((agent) => agent.agentId);
-  const nameOf = (id: string) => agents.find((agent) => agent.id === id)?.nickname ?? id;
+  const nameOf = (id: string) => String(session.agents.find(member=>member.agentId===id)?.snapshot.nickname ?? agents.find((agent) => agent.id === id)?.nickname ?? id);
   const shape = {
     kind: session.kind,
     workspaceId: session.workspaceId,
@@ -1514,7 +1505,7 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
     patch({ discussion: { ...draft.discussion, ...over } });
   const patchPlan = (over: Partial<RoomCollaborationSettings["planConfirmation"]>) =>
     patch({ planConfirmation: { ...draft.planConfirmation, ...over } });
-  const strategyOptions = collaborationStrategyOptions(agentCapabilities?.collaboration);
+  const strategyOptions = collaborationStrategyOptions(agentCapabilities?.collaboration).filter(option=>session.kind === "cowork" || option.strategy === "single");
 
   const save = async () => {
     if (problems.length) { setError(problems[0]); return; }
@@ -1536,7 +1527,7 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
     </select>
   );
   const executableIds = session.agents
-    .filter((member) => member.executionEligible)
+    .filter((member) => session.kind === "chat" || member.executionEligible)
     .map((member) => member.agentId);
   const strategyNeedsCoordinator = draft.strategy !== "single";
   const discussionAvailable = agentCapabilities?.collaboration.discussion === true;
@@ -1554,6 +1545,7 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
           <button className="pixel-button h-8 w-8" aria-label={t("close")} onClick={() => { sfx.close(); dialog.close(); }}>×</button>
         </div>
 
+        {session.kind === "cowork" && <>
         <label className="block text-sm font-bold">{t("execution_strategy")}</label>
         <div className="mt-1 grid grid-cols-3 gap-2">
           {strategyOptions.map(({ strategy, enabled }) => {
@@ -1580,6 +1572,7 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
           })}
         </div>
 
+        </>}
         <div className="pixel-card mt-4 space-y-3 p-3">
           <h4 className="text-sm font-bold">{t("agent_assignment")}</h4>
           <label className="block text-sm font-bold">{t("primary_agent")}
@@ -1655,10 +1648,10 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
 
         <div className="pixel-card mt-4 space-y-3 p-3">
           <label className="flex items-center justify-between gap-3 text-sm font-bold">
-            <span>{t("pre_execution_discussion")}</span>
+            <span>{t(session.kind === "chat" ? "team_discussion":"pre_execution_discussion")}</span>
             <input
               type="checkbox"
-              disabled={!discussionAvailable}
+              disabled={!discussionAvailable || memberIds.length<2}
               checked={draft.discussion.enabled}
               onChange={(event) => patchDiscussion({ enabled: event.target.checked })}
             />
@@ -1669,7 +1662,7 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
                 <label className="block text-xs font-bold">{t("discussion_mode")}
                   <select className="pixel-input mt-1 w-full px-3 py-2 text-sm" value={draft.discussion.mode} onChange={(event) => patchDiscussion({ mode: event.target.value as "round_robin" | "debate" })}>
                     <option value="round_robin">{t("discussion_mode_round_robin")}</option>
-                    <option value="debate">{t("discussion_mode_debate")}</option>
+                    <option value="debate" disabled>{t("discussion_mode_debate")} · {t("runtime_unavailable")}</option>
                   </select>
                 </label>
                 <label className="block text-xs font-bold">{t("max_discussion_rounds")}
@@ -1697,6 +1690,7 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
           )}
         </div>
 
+        {session.kind === "cowork" && <>
         <div className="pixel-card mt-4 space-y-2 p-3">
           <h4 className="text-sm font-bold">{t("plan_confirmation")}</h4>
           {(["coordinator", "user", "reviewer"] as const).map((mode) => (
@@ -1727,6 +1721,7 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
           </p>
         </div>
 
+        </>}
         {error && <p className="mt-3 text-sm text-red-700">{t(error)}</p>}
         <div className="mt-5 flex justify-between gap-2">
           <button
@@ -1754,12 +1749,13 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
 
 /** Co-work 房间的成员管理：可加人、可踢人（会话空闲时；至少保留一人）。加/减人后 mode 由后端重算。 */
 function SessionMembersDialog({ session, onClose }: { session: ConversationSession; onClose: () => void }) {
-  const { agents, addSessionAgent, removeSessionAgent } = useStorePick("agents", "addSessionAgent", "removeSessionAgent");
+  const { agents, providers, addSessionAgent, removeSessionAgent, applyMemberTemplate, updatePrimaryAgent } = useStorePick("agents", "providers", "addSessionAgent", "removeSessionAgent", "applyMemberTemplate", "updatePrimaryAgent");
   const t = useT();
   const dialog = useAnimatedDialogClose(onClose);
+  const [creatingAgent,setCreatingAgent]=useState(false);
   const [error, setError] = useState<string | null>(null);
   const memberIds = session.agents.map((agent) => agent.agentId);
-  const members = memberIds.map((id) => agents.find((agent) => agent.id === id)).filter((agent): agent is Agent => !!agent);
+  const members = session.agents.map(member=>({...member.snapshot,id:member.agentId} as unknown as Agent));
   const available = agents.filter((agent) => !memberIds.includes(agent.id));
   const busy = !["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status);
   const run = (op: () => Promise<void>) => op().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
@@ -1783,6 +1779,10 @@ function SessionMembersDialog({ session, onClose }: { session: ConversationSessi
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-bold">{agentLabel(agent)}</div>
                 <div className="truncate text-xs text-neutral-500">{agent.role || agent.modelId}</div>
+                {!providers.some(provider=>provider.id === agent.providerId) ? <p className="text-xs text-red-700">{t("provider_deleted")}</p> : !providers.find(provider=>provider.id === agent.providerId)?.enabled ? <p className="text-xs text-red-700">{t("provider_disabled")}</p> : null}
+                {session.agents.find(member=>member.agentId===agent.id)?.unavailableReason === "multi_provider_key_missing" && <p className="text-xs text-red-700">{t("multi_provider_key_missing")}</p>}
+                <details className="mt-1 text-xs"><summary>{t("member_configuration")}</summary><p>{agent.modelId} · {agent.reasoningEffort ?? "auto"} · T={agent.temperature ?? "—"}</p><p className="max-h-24 overflow-auto whitespace-pre-wrap">{agent.systemPrompt}</p></details>
+                <div className="mt-2 flex flex-wrap gap-2"><button disabled={busy || session.primaryAgentId === agent.id} className="pixel-button px-2 py-1 text-xs" onClick={()=>void run(()=>updatePrimaryAgent(session.id,agent.id))}>{t(session.primaryAgentId===agent.id ? "default_member":"set_default_member")}</button><button disabled={busy || !agents.some(template=>template.id===agent.id)} className="pixel-button px-2 py-1 text-xs" onClick={()=>void run(()=>applyMemberTemplate(session.id,agent.id))}>{t("apply_template_update")}</button></div>
               </div>
               <button
                 className="pixel-button px-3 py-1.5 text-xs text-red-700 disabled:opacity-40"
@@ -1796,7 +1796,7 @@ function SessionMembersDialog({ session, onClose }: { session: ConversationSessi
           ))}
         </div>
         <div className="my-5 h-[2px] bg-neutral-200" />
-        <h4 className="mb-2 text-sm font-bold">{t("invite_agents")}</h4>
+        <div className="mb-2 flex items-center justify-between"><h4 className="text-sm font-bold">{t("invite_agents")}</h4><button disabled={busy} className="pixel-button px-2 py-1 text-xs" onClick={()=>setCreatingAgent(true)}>+ {t("agent_create")}</button></div>
         {available.length === 0 ? (
           <p className="text-sm text-neutral-500">{t("all_agents_joined")}</p>
         ) : (
@@ -1821,13 +1821,15 @@ function SessionMembersDialog({ session, onClose }: { session: ConversationSessi
         )}
         {error && <p className="mt-3 text-sm text-red-700">{t(error)}</p>}
       </section>
+      {creatingAgent && <AgentEditor onClose={()=>setCreatingAgent(false)} onSaved={agent=>{void run(()=>addSessionAgent(session.id,agent.id));}}/>}
     </div>
   );
 }
 
-export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => void }) {
-  const { rooms, agents, sessions, workspaces, activeWorkspace, currentRoomId, currentSessionId, config, updateConfig, messages, streaming, activeTaskId, rewindTo, chatError, tasks, usageSummaries, selectRoom, selectAgentSession, setActiveWorkspace, clearChatError, handshake } =
-    useStorePick("rooms", "agents", "sessions", "workspaces", "activeWorkspace", "currentRoomId", "currentSessionId", "config", "updateConfig", "messages", "streaming", "activeTaskId", "rewindTo", "chatError", "tasks", "usageSummaries", "selectRoom", "selectAgentSession", "setActiveWorkspace", "clearChatError", "handshake");
+export default function ChatPage({ onOpenSettings, settingsOpen=false }: { onOpenSettings: (section?:SettingsSection) => void; settingsOpen?:boolean }) {
+  const { rooms, agents, sessions, workspaces, activeWorkspace, currentRoomId, currentSessionId, config, updateConfig, messages, streaming, activeTaskId, rewindTo, chatError, tasks, usageSummaries, selectRoom, selectAgentSession, setActiveWorkspace, clearChatError, handshake, roomNavigation, setAppMode } =
+    useStorePick("rooms", "agents", "sessions", "workspaces", "activeWorkspace", "currentRoomId", "currentSessionId", "config", "updateConfig", "messages", "streaming", "activeTaskId", "rewindTo", "chatError", "tasks", "usageSummaries", "selectRoom", "selectAgentSession", "setActiveWorkspace", "clearChatError", "handshake", "roomNavigation", "setAppMode");
+  const mode=roomNavigation.mode;
   const bubbleBusy = !!streaming || !!activeTaskId;
   const t = useT();
   const [creating, setCreating] = useState<false | { presetWorkspaceId: string | null }>(false);
@@ -1835,18 +1837,23 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
   const [sidebarError, setSidebarError] = useState<string | null>(null);
-  const [showArchived, setShowArchived] = useState(false);
+  const [archivedByMode,setArchivedByMode]=useState({chat:false,cowork:false});
+  const showArchived=archivedByMode[mode];
+  const setShowArchived=(value:React.SetStateAction<boolean>)=>setArchivedByMode(current=>({...current,[mode]:typeof value === "function" ? value(current[mode]) : value}));
   const [showMembers, setShowMembers] = useState(false);
   const [collabSessionId, setCollabSessionId] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
+  const [queries,setQueries]=useState({chat:"",cowork:""});
+  const query=queries[mode];
+  const setQuery=(value:string)=>setQueries(current=>({...current,[mode]:value}));
   const [foldedGroups, setFoldedGroups] = useState<string[]>([]);
-  const [dockMode, setDockMode] = useState<WorkspaceDockMode>("overview");
+  const [dockModes,setDockModes]=useState<Record<string,WorkspaceDockMode>>({});
   const currentRoom = rooms.find((room) => room.id === currentRoomId);
   const currentSession = sessions.find((session) => session.id === currentSessionId);
   const boundWorkspaceId = currentSession?.workspaceId ?? null;
   const activeSessionWorkspaceId = workspaces.some((workspace) => workspace.id === boundWorkspaceId && !workspace.archived) ? boundWorkspaceId : null;
   const activeConversationId = currentSessionId ?? currentRoomId;
-  useEffect(() => setDockMode(activeConversationId ? "overview" : "closed"), [activeConversationId]);
+  const dockMode=activeConversationId ? dockModes[activeConversationId] ?? "overview" : "closed";
+  const setDockMode=(value:React.SetStateAction<WorkspaceDockMode>)=>{if(activeConversationId) setDockModes(current=>({...current,[activeConversationId]:typeof value === "function" ? value(current[activeConversationId] ?? "overview") : value}));};
   const collapsed = config?.sidebar.collapsed ?? false;
   const windowState = useWindowChromeState();
   const chromeLayout = deriveWindowChromeLayout({
@@ -1867,14 +1874,16 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
     onSelectDock: (mode) => setDockMode((current) => toggleWorkspaceDock(current, mode, !!activeSessionWorkspaceId)),
   };
   const bottomRef = useRef<HTMLDivElement>(null);
+  const followBottom=useRef(true);
 
   // 侧栏统一视图：历史 rooms 与 workspace sessions 折算成同一种行，
   // source 决定点击走 selectRoom 还是 selectAgentSession。
-  const entries = useMemo<SidebarEntry[]>(() => [
+  const allEntries = useMemo<SidebarEntry[]>(() => [
     ...rooms.map((room) => ({ id: room.id, name: room.name, kind: "chat" as const, workspaceId: null, archived: room.archived, source: "room" as const })),
     ...sessions.map((session) => ({ id: session.id, name: session.title, kind: session.kind, workspaceId: session.workspaceId, archived: session.archived, source: "session" as const })),
   ], [rooms, sessions]);
 
+  const entries=useMemo(()=>allEntries.filter(entry=>entry.kind === mode),[allEntries,mode]);
   const memberNamesByRoom = useMemo(() => {
     const named = (ids: string[]) => ids.map((id) => agents.find((agent) => agent.id === id)?.nickname ?? "");
     return Object.fromEntries([
@@ -1888,19 +1897,20 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
 
   const searchHits = searchSidebar(query, {
     rooms: entries,
-    workspaces: workspaces.map((workspace) => ({ ...workspace, path: workspace.canonicalPath })),
+    workspaces: (mode === "cowork" ? workspaces : []).map((workspace) => ({ ...workspace, path: workspace.canonicalPath })),
     memberNamesByRoom,
   });
   const topLevelEntries = useMemo(() => topLevelRooms(entries, workspaces) as SidebarEntry[], [entries, workspaces]);
-  const projectGroups = useMemo(() => workspaceGroups(entries, workspaces), [entries, workspaces]);
+  const projectGroups = useMemo(() => mode === "cowork" ? workspaceGroups(entries, workspaces) : [], [entries, workspaces,mode]);
 
-  const archivedRooms = rooms.filter((r) => r.archived);
-  const archivedSessions = sessions.filter((session) => session.archived);
-  const archivedWorkspaces = workspaces.filter((workspace) => workspace.archived);
+  const archivedRooms = mode === "chat" ? rooms.filter((r) => r.archived) : [];
+  const archivedSessions = sessions.filter((session) => session.archived && session.kind === mode);
+  const archivedWorkspaces = mode === "cowork" ? workspaces.filter((workspace) => workspace.archived) : [];
 
   const entryRow = (entry: SidebarEntry) => {
     const active = entry.id === (entry.source === "room" ? currentRoomId : currentSessionId);
     const menuKind: SidebarEntityKind = entry.source;
+    const roomStatus=sessions.find(session=>session.id===entry.id)?.status;
     return (
       <div
         key={`${entry.source}-${entry.id}`}
@@ -1916,6 +1926,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
         {!collapsed && (
           <>
             <span className="min-w-0 flex-1 truncate font-medium">{entry.name}</span>
+            {roomStatus && !["idle","completed"].includes(roomStatus) && <span className="text-[9px] text-neutral-500">{t(taskStatusKey(roomStatus === "failed" ? "failed" : roomStatus === "awaiting_approval" ? "awaiting_tool_approval" : roomStatus === "interrupted" ? "paused" : roomStatus === "cancelled" ? "cancelled" : "executing"))}</span>}
             <button
               title={t("room_menu")}
               className={`pixel-room-more shrink-0 px-1 text-sm opacity-0 group-hover:opacity-100 ${menu?.id === entry.id ? "opacity-100" : ""}`}
@@ -1977,10 +1988,10 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
   // A smooth scroll for every token queues animations in WKWebView and makes
   // Enter feel delayed. New turns ease in once; streaming follows immediately.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    if(followBottom.current) bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages.length]);
   useEffect(() => {
-    if (streaming?.text) bottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+    if (streaming?.text && followBottom.current) bottomRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
   }, [streaming?.text]);
 
   const roomAgents = useMemo(
@@ -2063,14 +2074,16 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
         <div className="pixel-sidebar-brand" data-tauri-drag-region>
           <span>Socrates</span>
         </div>
+        <div className="mb-3"><ModeSegmented mode={mode} onChange={next=>{void setAppMode(next).catch(cause=>setSidebarError(String(cause)));}} labels={{chat:"Chat",cowork:"Work"}}/></div>
         <button
           className="pixel-new-room-button flex min-w-0 items-center justify-center gap-2 px-3 py-2.5 text-sm font-bold"
-          onClick={() => setCreating({ presetWorkspaceId: null })}
+          onClick={() => setCreating({ presetWorkspaceId: mode === "cowork" ? activeWorkspace?.id ?? null : null })}
         >
           <PixelIcon name="plus" size={20} />
           {t("new_room")}
         </button>
 
+        {mode === "cowork" && <button className="pixel-button mt-2 px-3 py-2 text-xs" onClick={()=>{void open({directory:true,multiple:false,title:t("new_project")}).then(async selected=>{if(typeof selected !== "string") return;const workspace=await useStore.getState().registerWorkspacePath(selected);setCreating({presetWorkspaceId:workspace.id});}).catch(cause=>setSidebarError(String(cause)));}}>+ {t("new_project")}</button>}
         {!collapsed && (
           <input
             type="search"
@@ -2166,10 +2179,11 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
               </>
             )}
           </button>
+          <button className="pixel-archive-button mt-2 flex w-full items-center gap-2 px-3 py-2 text-left text-xs" title={t("agents_title")} onClick={()=>onOpenSettings("bots")}><PixelIcon name="robot" size={20}/>{!collapsed && <span>{t("agents_title")}</span>}</button>
           {/* Settings 固定在左下角；打开的是 overlay，不改变当前房间导航状态 */}
           <button
             className="pixel-archive-button mt-2 flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
-            onClick={onOpenSettings}
+            onClick={()=>onOpenSettings()}
             title={`${t("settings_title")} (⌘,)`}
           >
             <PixelIcon name="gear" size={20} />
@@ -2177,7 +2191,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
           </button>
         </div>
       </aside>
-      {creating && <NewRoomDialog onClose={() => setCreating(false)} presetWorkspaceId={creating.presetWorkspaceId} />}
+      {creating && <NewRoomDialog kind={mode} settingsOpen={settingsOpen} onOpenSettings={()=>onOpenSettings("providers")} onClose={() => setCreating(false)} presetWorkspaceId={creating.presetWorkspaceId} />}
       {renameTarget && <RenameDialog target={renameTarget} onClose={() => setRenameTarget(null)} />}
       {menu && <SidebarEntityMenu menu={menu} onClose={() => setMenu(null)} onRename={setRenameTarget} onCollab={setCollabSessionId} onError={setSidebarError} />}
       {collabSessionId && (() => {
@@ -2189,7 +2203,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
         : currentRoom ? <RoomMembersDialog roomId={currentRoom.id} memberIds={currentRoom.agentIds} onClose={() => setShowMembers(false)} /> : null)}
 
       <section className="pixel-room-content flex min-w-0 flex-1 flex-col">
-        {currentSessionId ? (currentSession?.collaboration.strategy === "team" ? <MultiAgentSession chrome={chrome} /> : <SingleAgentSession chrome={chrome} />) : currentRoomId ? (
+        {currentSessionId ? (currentSession?.collaboration.strategy === "team" ? <MultiAgentSession key={currentSessionId} chrome={chrome} /> : <SingleAgentSession key={currentSessionId} chrome={chrome} />) : currentRoomId ? (
           <>
             <WindowRoomToolbar
               title={currentRoom?.name ?? "Socrates"}
@@ -2199,10 +2213,10 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
               expandLabel={t("sidebar_expand")}
               onToggleSidebar={chrome.onToggleSidebar}
             >
-              <WorkspaceDockButtons mode={chrome.dockMode} onSelect={chrome.onSelectDock} />
+              <button className="pixel-button px-2 py-1 text-xs" onClick={()=>setShowMembers(true)}>{t("room_members_title")}</button>
             </WindowRoomToolbar>
             {showTasks && <TaskHistoryPanel onJump={jumpToTask} />}
-            <div key={currentRoomId} className="anim-view flex-1 space-y-3 overflow-y-auto p-4">
+            <div key={currentRoomId} className="anim-view flex-1 space-y-3 overflow-y-auto p-4" onScroll={event=>{const el=event.currentTarget;followBottom.current=el.scrollHeight-el.scrollTop-el.clientHeight<80;}}>
               {chatWindow.hiddenCount > 0 && (
                 <button
                   className="pixel-button mx-auto block px-3 py-1 text-xs"
@@ -2251,7 +2265,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
                 <p className="text-lg font-bold text-neutral-700">{t("pick_room_title")}</p>
                 <p className="text-sm text-neutral-500">{t("pick_room")}</p>
               </div>
-              <button className="pixel-button pixel-button--primary flex items-center gap-2 px-4 py-2 text-sm" onClick={() => setCreating({ presetWorkspaceId: null })}>
+              <button className="pixel-button pixel-button--primary flex items-center gap-2 px-4 py-2 text-sm" onClick={() => setCreating({ presetWorkspaceId: mode === "cowork" ? activeWorkspace?.id ?? null : null })}>
                 <PixelIcon name="plus" size={16} />
                 {t("new_room")}
               </button>
@@ -2259,7 +2273,7 @@ export default function ChatPage({ onOpenSettings }: { onOpenSettings: () => voi
           </>
         )}
       </section>
-      {dockMode !== "closed" && activeConversationId && (
+      {currentSession?.kind === "cowork" && dockMode !== "closed" && activeConversationId && (
         <WorkspaceDock
           key={activeConversationId}
           handshake={handshake}

@@ -227,3 +227,7 @@ describe("agent Run observer recovery", () => {
     expect(result).toEqual({ lastSeq: 3, terminal: true });
   });
 });
+
+it("lets invalid event protocol failures enter durable status reconciliation",async()=>{
+  await expect(observeDurableRun({runId:"run-1",afterSeq:0,open:()=> (async function*(){throw new Error("invalid_execution_event");})(),shouldContinue:()=>true,onEvent:()=>{},wait:async()=>{}})).rejects.toThrow("invalid_execution_event");
+});

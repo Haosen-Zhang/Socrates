@@ -94,6 +94,8 @@ export class SessionStore {
     if (!primaryAgentId || !agentIds.includes(primaryAgentId)) throw new Error("primary_agent_must_be_room_member");
     // 房间形状由 core 统一裁决：chat 不得绑定 workspace，cowork 必须绑定
     const kind: RoomKind = input.kind ?? (input.mode === "chat" ? "chat" : "cowork");
+    if (kind === "chat" && input.workspaceId) throw new Error("chat_room_must_not_bind_workspace");
+    if ((kind === "chat") !== (input.mode === "chat")) throw new Error("room_mode_kind_mismatch");
     const workspaceId = kind === "chat" ? null : input.workspaceId ?? null;
     const shapeErrors = validateRoomShape({ kind, workspaceId, agentIds });
     if (shapeErrors.length) throw new Error(shapeErrors[0]);
@@ -201,6 +203,7 @@ export class SessionStore {
       sessionId: row.session_id,
       role: row.role,
       authorId: row.author_id,
+      authorSnapshot: this.authorSnapshot(row),
       kind: row.kind ?? (row.role === "tool" ? "tool_result" : "text"),
       content: row.content,
       sequence: row.sequence ?? Number.MAX_SAFE_INTEGER,
@@ -233,9 +236,29 @@ export class SessionStore {
     }));
   }
 
+  private authorSnapshot(message: MessageRow): Record<string, unknown> | undefined {
+    if (!message.author_id) return undefined;
+    if (message.turn_id) {
+      const turn = this.db.query<{ context_json: string | null }, [string]>("SELECT context_json FROM conversation_turns WHERE id = ?").get(message.turn_id);
+      const profile = turn?.context_json ? JSON.parse(turn.context_json).runProfile : undefined;
+      if (profile?.agentId === message.author_id) return profile;
+    }
+    if (!message.run_id) return undefined;
+    const member = this.db.query<{ definition_json: string }, [string]>(`SELECT work_packages.definition_json FROM work_packages
+      JOIN work_package_attempts ON work_package_attempts.package_id = work_packages.id
+      WHERE work_package_attempts.run_id = ?`).get(message.run_id);
+    if (member) return JSON.parse(member.definition_json).executorProfile;
+    const task = this.db.query<{ config_json: string }, [string]>("SELECT config_json FROM multi_tasks WHERE id = ?").get(message.run_id);
+    if (task) return JSON.parse(task.config_json).memberProfiles?.[message.author_id];
+    const command = this.db.query<{ payload_json: string }, [string]>("SELECT payload_json FROM room_command_events WHERE command_id = ? AND type = 'participants_resolved' LIMIT 1").get(message.run_id);
+    return command ? (JSON.parse(command.payload_json).profiles as Array<Record<string, unknown>>).find((profile) => profile.agentId === message.author_id) : undefined;
+  }
+
   bindWorkspace(sessionId: string, workspaceId: string | null): ConversationSession {
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
+    const shapeErrors = validateRoomShape({ kind: session.kind, workspaceId, agentIds: session.agents.map((a) => a.agentId) });
+    if (shapeErrors.length) throw new Error(shapeErrors[0]);
     if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) {
       throw new Error("active_session_workspace_locked");
     }
@@ -263,7 +286,7 @@ export class SessionStore {
     const nextPrimaryAgentId = primaryAgentId ?? session.primaryAgentId;
     const primary = session.agents.find((agent) => agent.agentId === nextPrimaryAgentId);
     if (!primary) throw new Error("primary_agent_must_be_room_member");
-    if (!primary.executionEligible) throw new Error("primary_agent_must_be_execution_eligible");
+    if (session.kind === "cowork" && !primary.executionEligible) throw new Error("primary_agent_must_be_execution_eligible");
     const normalized = normalizeCollaborationSettings(settings);
     const errors = validateCollaborationSettings(
       {
@@ -296,7 +319,7 @@ export class SessionStore {
     }
     const member = session.agents.find((agent) => agent.agentId === primaryAgentId);
     if (!member) throw new Error("primary_agent_must_be_room_member");
-    if (!member.executionEligible) throw new Error("primary_agent_must_be_execution_eligible");
+    if (session.kind === "cowork" && !member.executionEligible) throw new Error("primary_agent_must_be_execution_eligible");
     this.db.query("UPDATE sessions SET primary_agent_id = ?, updated_at = ? WHERE id = ?")
       .run(primaryAgentId, new Date().toISOString(), sessionId);
     return this.get(sessionId)!;
@@ -311,7 +334,7 @@ export class SessionStore {
     return this.updateCollaboration(
       sessionId,
       resolveCollaborationDefaults(
-        defaults,
+        session.kind === "chat" ? { ...defaults, strategy: "single", planConfirmation: { mode: "user", reviewerAgentId: null } } : defaults,
         {
           kind: session.kind,
           workspaceId: session.workspaceId,
@@ -336,6 +359,17 @@ export class SessionStore {
   }
 
   private static readonly INACTIVE = ["idle", "completed", "failed", "cancelled", "interrupted"];
+
+  updateAgentSnapshot(sessionId: string, agentId: string, snapshot: Record<string, unknown>): ConversationSession {
+    const session = this.get(sessionId);
+    if (!session) throw new Error("session_not_found");
+    if (!SessionStore.INACTIVE.includes(session.status)) throw new Error("active_session_members_locked");
+    if (!session.agents.some((member) => member.agentId === agentId)) throw new Error("session_agent_not_member");
+    this.db.query("UPDATE session_agents SET snapshot_json = ? WHERE session_id = ? AND agent_id = ?")
+      .run(JSON.stringify(snapshot), sessionId, agentId);
+    this.db.query("UPDATE sessions SET updated_at = ? WHERE id = ?").run(new Date().toISOString(), sessionId);
+    return this.get(sessionId)!;
+  }
 
   /** 会话人数变了，mode 随之重算：1 人 single_agent，≥2 人 multi_agent（chat 不变）。 */
   private syncMode(sessionId: string, kind: RoomKind, memberCount: number): void {

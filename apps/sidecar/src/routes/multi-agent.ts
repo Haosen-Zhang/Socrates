@@ -5,22 +5,28 @@ import type { ApprovalManager } from "../approvals/manager";
 import type { MultiAgentCoordinator, MultiAgentEvent } from "../multi-agent/coordinator";
 import type { MultiTaskConfig, MultiTaskStore } from "../multi-agent/task-store";
 import type { ExecutionRunner } from "../runtime/execution-runner";
+import type { TeamRunner } from "../multi-agent/team-runner";
 
 const TOOL_DECISIONS = new Set<ApprovalDecision>(["allow_once", "allow_session", "deny"]);
 
-export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentCoordinator, execution: ExecutionRunner, approvals: ApprovalManager): Hono {
+export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentCoordinator, execution: ExecutionRunner, approvals: ApprovalManager, team?: TeamRunner): Hono {
   const app = new Hono();
+  const executeTask = (id: string) => team?.hasPackages(id) ? team.run(id) : execution.run(id);
   const taskView = (id: string) => {
     const task = store.get(id);
     if (!task) return null;
+    const packages = team?.list(id) ?? [];
+    const childRunIds = new Set(packages.flatMap((p) => p.runId ? [p.runId] : []));
     return {
       ...task,
+      workPackages: packages,
+      summary: team?.hasPackages(id) ? team.summary(id) : null,
       plan: store.getPlan(id),
       turns: store.listTurns(id),
-      outcomeUnknown: store.hasOutcomeUnknown(id),
-      requiresExecutionReview: task.terminalReason === "execution_interrupted_requires_review" || (task.state === "paused" && (task.resumeFrom === "executing" || task.resumeFrom === "awaiting_tool_approval")),
+      outcomeUnknown: store.hasOutcomeUnknown(id) || packages.some((p) => p.failureReason === "execution_outcome_unknown"),
+      requiresExecutionReview: packages.length > 0 ? packages.some((p) => p.failureReason === "execution_outcome_unknown") : task.terminalReason === "execution_interrupted_requires_review" || (task.state === "paused" && (task.resumeFrom === "executing" || task.resumeFrom === "awaiting_tool_approval")),
       usageSummaries: store.usageSummaries(id),
-      pendingApprovals: approvals.recoverPending().pending.filter((item) => item.taskId === id),
+      pendingApprovals: approvals.recoverPending().pending.filter((item) => item.taskId === id || childRunIds.has(item.taskId)),
     };
   };
 
@@ -53,12 +59,12 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
         const plan = await store.addPlan({ taskId: c.req.param("id"), content: body.content as StructuredPlan, createdBy: "user", parentVersion: body.version });
         store.transition(c.req.param("id"), { type: "edited_plan_ready" });
         const decision = store.decidePlan({ taskId: c.req.param("id"), version: plan.version, hash: plan.contentHash, clientDecisionKey: body.clientDecisionKey, decision: "approve_exact_plan", reason: typeof body.reason === "string" ? body.reason : undefined });
-        if (!decision.replayed) void execution.run(c.req.param("id")).catch(() => {});
+        if (!decision.replayed) void executeTask(c.req.param("id")).catch(() => {});
         return c.json({ decision, plan });
       }
       if (!["approve_exact_plan", "request_replan", "reject"].includes(body.decision)) return c.json({ error: "plan_decision_invalid" }, 400);
       const decision = store.decidePlan({ taskId: c.req.param("id"), version: body.version, hash: body.hash, clientDecisionKey: body.clientDecisionKey, decision: body.decision as "approve_exact_plan" | "request_replan" | "reject", reason: typeof body.reason === "string" ? body.reason : undefined });
-      if (!decision.replayed && body.decision === "approve_exact_plan") void execution.run(c.req.param("id")).catch(() => {});
+      if (!decision.replayed && body.decision === "approve_exact_plan") void executeTask(c.req.param("id")).catch(() => {});
       if (!decision.replayed && body.decision === "request_replan") void coordinator.replan(c.req.param("id"), typeof body.reason === "string" ? body.reason : "Please revise the plan.").catch(() => {});
       return c.json(decision);
     } catch (error) {
@@ -76,7 +82,8 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
     const task = store.get(c.req.param("id"));
     if (!task) return c.json({ error: "multi_task_not_found" }, 404);
     try {
-      if (task.state === "executing" || task.state === "awaiting_tool_approval") await execution.cancel(task.id);
+      if (team?.hasPackages(task.id)) await team.cancel(task.id);
+      else if (task.state === "executing" || task.state === "awaiting_tool_approval") await execution.cancel(task.id);
       else coordinator.cancel(task.id);
       return c.json({ ok: true });
     } catch (error) { return c.json({ error: error instanceof Error ? error.message : "multi_cancel_failed" }, 409); }
@@ -85,7 +92,8 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
     const task = store.get(c.req.param("id"));
     if (!task) return c.json({ error: "multi_task_not_found" }, 404);
     try {
-      if (task.state === "executing" || task.state === "awaiting_tool_approval") await execution.pause(task.id);
+      if (team?.hasPackages(task.id)) await team.pause(task.id);
+      else if (task.state === "executing" || task.state === "awaiting_tool_approval") await execution.pause(task.id);
       else coordinator.pause(task.id);
       return c.json({ ok: true, task: store.get(task.id) });
     } catch (error) { return c.json({ error: error instanceof Error ? error.message : "multi_pause_failed" }, 409); }
@@ -95,14 +103,39 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
     if (!task) return c.json({ error: "multi_task_not_found" }, 404);
     if (task.state !== "paused" || !task.resumeFrom) return c.json({ error: "multi_task_not_paused" }, 409);
     try {
+      if (team?.hasPackages(task.id)) { team.resumeInBackground(task.id); return c.json({ accepted: true }, 202); }
       if (task.resumeFrom === "executing" || task.resumeFrom === "awaiting_tool_approval") return c.json({ error: "execution_resume_requires_manual_review" }, 409);
       else await coordinator.resumeInBackground(task.id);
       return c.json({ accepted: true }, 202);
     } catch (error) { return c.json({ error: error instanceof Error ? error.message : "multi_resume_failed" }, 409); }
   });
+  app.post("/tasks/:id/packages/:packageId/retry", async (c) => {
+    if (!team?.hasPackages(c.req.param("id"))) return c.json({ error: "team_work_packages_required" }, 404);
+    const body = await c.req.json().catch(() => null) as { confirmOutcomeUnknown?: unknown } | null;
+    try {
+      team.retryInBackground(c.req.param("id"), c.req.param("packageId"), body?.confirmOutcomeUnknown === true);
+      return c.json({ accepted: true }, 202);
+    } catch (error) { return c.json({ error: error instanceof Error ? error.message : "work_package_retry_failed" }, 409); }
+  });
+  app.patch("/tasks/:id/packages/:packageId", async (c) => {
+    const task = store.get(c.req.param("id"));
+    const plan = task && store.getPlan(task.id);
+    const item = team?.list(c.req.param("id")).find((p) => p.id === c.req.param("packageId"));
+    if (!task || !plan || !item || task.state !== "awaiting_plan_approval" || !plan.content.workPackages) return c.json({ error: "work_package_assignment_locked" }, 409);
+    const body = await c.req.json().catch(() => null) as { executorAgentId?: unknown; reviewerAgentId?: unknown } | null;
+    if (!body || typeof body.executorAgentId !== "string" || (body.reviewerAgentId !== undefined && body.reviewerAgentId !== null && typeof body.reviewerAgentId !== "string")) return c.json({ error: "work_package_assignment_invalid" }, 400);
+    const content = { ...plan.content, workPackages: plan.content.workPackages.map((p) => `${task.id}/${p.id}` === item.id ? { ...p, executorAgentId: body.executorAgentId as string, reviewerAgentId: body.reviewerAgentId === undefined ? p.reviewerAgentId : body.reviewerAgentId as string | null } : p) };
+    if (validateStructuredPlan(content).length) return c.json({ error: "work_package_assignment_invalid" }, 400);
+    try {
+      // A changed assignment creates a new plan/hash for explicit user confirmation.
+      const next = await store.addPlan({ taskId: task.id, content, createdBy: "user", parentVersion: plan.version });
+      return c.json({ plan: next, workPackages: team!.list(task.id) });
+    } catch (error) { return c.json({ error: error instanceof Error ? error.message : "work_package_assignment_invalid" }, 400); }
+  });
   app.post("/tasks/:id/retry", async (c) => {
     const task = store.get(c.req.param("id"));
     if (!task) return c.json({ error: "multi_task_not_found" }, 404);
+    if (team?.hasPackages(task.id)) return c.json({ error: "work_package_retry_required" }, 409);
     const body = await c.req.json().catch(() => null) as { confirmOutcomeUnknown?: unknown } | null;
     const executionReview = task.resumeFrom === "executing" || task.resumeFrom === "awaiting_tool_approval";
     if (task.state !== "paused" || (!store.hasOutcomeUnknown(task.id) && !executionReview)) return c.json({ error: "multi_task_retry_not_required" }, 409);

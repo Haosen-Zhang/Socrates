@@ -1,3 +1,45 @@
+# Chat / Work and room-member collaboration
+
+Base: origin/main e13de16. Branch: codex/chat-work-member-collaboration.
+
+## Design and execution
+Preserve the existing React/Tauri/Bun product, Native Runtime, event and recovery authority. Room kind (chat/cowork), persistent members, explicit collaboration strategy and per-command targets remain independent. New Chat rooms use sessions without workspace or tools; existing legacy rooms remain readable. Commands persist structured mentions and stable request identity. Member snapshots freeze template configuration, run profiles freeze execution. Team work packages reuse native execution and a single workspace writer queue.
+
+## Phases
+- [x] A1 Inspect current main, architecture and user requirements; isolate branch; preserve .reasonix changes.
+- [x] A2 Frozen profiles, honest budget interruption and shared workspace leases.
+- [x] B Chat/Work navigation, room drafts, inline reusable role editor and member configuration.
+- [x] C Structured command routing, idempotency, bounded discussion and room isolation.
+- [x] D Persistent work packages, distinct owners, dependency execution, review, stop and recovery.
+- [x] E Full test/typecheck/build gates, UI verification and document synchronization.
+
+## Ownership
+- runtime_foundation: native and member runners, profiles, leases.
+- frontend: desktop components and state.
+- team_execution: coordinator, team/work-package persistence and routes.
+- root: room commands, sessions, migration registration, production wiring, integration and docs.
+
+## Validation
+Meaningful route/config/state/lease/recovery tests plus reproducible two-member team execution including failure and retry. Run bun test, bun run typecheck, bun run --cwd apps/desktop build and browser interaction checks. No supplied provider credential; mocked-provider evidence is reported separately.
+
+## Findings / constraints
+- Local main was behind; fetched remote and started at latest e13de16.
+- Sandbox gh check initially reported invalid auth; host recheck verified authentication. The user subsequently requested PR publication; tracked as GitHub issue #136.
+- Initial sandbox git fetch denied .git write; authorized escalation succeeded.
+
+## Status
+Completed A–E. Final host gate: bun test 828 pass / 0 fail, including all four macOS command tests. Typecheck and desktop build pass. Targeted lint covers changed TS/TSX. Twelve browser checks passed with no page errors. No real Provider API or native Tauri window verification.
+
+
+## Verification history
+- One earlier concurrent sandbox test run hit the existing command-runner 100 ms deadline in `stops background mutations before returning a normally exited leader’s result`; isolated retry and later full host suites passed. No timeout thresholds or production process policy were loosened.
+- Playwright CLI wrapper was not executable and its daemon socket was unavailable between calls; validation used the installed Playwright module in an isolated Chrome process. Temporary browser diagnostics were removed; passing evidence remains in output/playwright.
+- Final review P2 findings (unknown-package recovery confirmation; hidden team discussion error) fixed with regression tests.
+
+---
+
+## Prior development record (preserved)
+
 # Task Plan: Socrates proxy and product polish tickets
 
 ## Goal

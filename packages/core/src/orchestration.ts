@@ -37,6 +37,8 @@ export type OrchestrationAgent = {
   providerType: ProviderType;
   baseUrl: string;
   apiKey: string;
+  /** Resolved from the same frozen member profile used for the request. */
+  contextWindowTokens?: number | null;
 };
 
 export type TurnPhase = "discussion" | "summary";

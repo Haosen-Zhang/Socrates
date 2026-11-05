@@ -1,7 +1,7 @@
 # Socrates 软件架构总览
 
 > 事无巨细版：从进程拓扑、前端 UI 策略，到运行时骨架、房间/多 Agent 编排、执行内核与安全边界。
-> 描述的是**当前代码库的真实实现**（不是规划稿）。截止 main 分支。
+> 描述当前实现。2026-11-05 更新：Chat / Work、结构化房间命令与持久工作包已接通。验收证据见 [本轮验收](chat-work-collaboration-acceptance.md)。
 
 ---
 
@@ -136,7 +136,7 @@ graph LR
 2. **节流 Markdown**（`useThrottledValue.ts`）：流式期间不对每帧全量重解析 Markdown，最终值仍落定。
 3. **列表窗口化**（`listWindow.ts`）：长会话只渲染最近 N 条（`DEFAULT_WINDOW_SIZE=80`），更早的折叠可展开。选窗口而非虚拟化——因为变高的 Markdown/代码/审批卡会破坏滚动和无障碍。
 
-### 3.2 导航模型（顶层只有 Chat / Co-work）
+### 3.2 导航模型（顶层只有 Chat / Work）
 
 `AppMode = "chat" | "cowork"`，由 `NavigationTarget`（`core/navigation.ts`）单一真源派生：
 
@@ -147,7 +147,7 @@ NavigationTarget =
   | { kind: "cowork_workspace"; workspaceId }
 ```
 
-- `workspaceOfTarget()`：**Chat 永远返回 null** —— 这是"Chat 不得隐式继承工作区"的唯一执行点。
+- Chat 的前端目标不继承 workspace；SessionStore、创建/绑定路由和生产 Native factory 同时校验无 workspace、空工具能力。
 - 侧栏（`sidebar/sidebarLists.ts`）按模式过滤：Chat 是扁平房间列表，Co-work 是工作区树，两者互不串场。搜索范围随模式收窄，不改任何持久化关系。
 - `ModeSegmented`（`sidebar/ModeSegmented.tsx`）是真正的 tablist（roving tabindex + 方向键），滑块用 transform 位移避免重排。
 - **mode 是真实状态**：跟随导航到房间时切换，但删除/归档清空选中时不弹回 chat。
@@ -155,10 +155,12 @@ NavigationTarget =
 
 ### 3.3 会话视图
 
-`ChatPage.tsx` 按当前 target 渲染三种：
-- **Chat 房间**：群聊气泡（`Bubble`/`StreamingBubble`），多成员用 `TaskComposer`。
-- **Single Agent 会话**（cowork 单成员）：`SingleAgentSession`，带工具、审批。
-- **Multi Agent 会话**（cowork 多成员）：`MultiAgentSession`，DISCUSSION SETUP 表单（发言顺序拖拽、轮数、综合者、执行者）+ 计划卡 + 审批卡 + 协作设置入口。
+`ChatPage.tsx` 按房间 kind 和显式策略渲染，不以成员数量启动团队流程：
+- 新 Chat 与 Work 均使用 sessions；旧 `/rooms` 的消息与历史入口保留。
+- 新 Chat：共享时间线、成员/默认回应者、指定成员或有界讨论；无工作区 Dock 和本地工具。
+- Work `strategy=single`：直接 Native 执行；`strategy=team`：Manager 计划、精确审批、WorkPackage 面板与成员执行。
+- `AgentEditor` 复用于角色库、建房和成员管理；`RoomComposer` 提交结构化 mentions；`RoomTimeline` 保持阅读位置；`TeamTaskPanel` 展示 owner/依赖/状态/结果。
+- `store.ts` 的 roomProjections、草稿和 mentions 按 roomId 隔离。切房只切投影，不终止后台订阅。终态与重连根据持久命令/run/task 对账；两个模式分别记住选择、搜索和展开状态。
 
 其它：Markdown 用 `MD_COMPONENTS`（`markdownLink.tsx`）安全链接——所有链接 preventDefault，http(s) 交系统浏览器，工作区相对路径不导航（防止 `[test.md](test.md)` 把 SPA 冲走）。i18n 三语（`i18n.ts`：zh-CN/zh-TW/en）。
 
@@ -178,7 +180,8 @@ NavigationTarget =
 | `/rooms` | 群聊房间（Chat，legacy 表） |
 | `/workspaces` | 工作区（本地目录）注册/归档 |
 | `/sessions` | 会话（cowork 房间：single/multi agent）+ 协作设置 |
-| `/agent` | 单 Agent Run 启动、状态、显式取消与独立 SSE 观察 |
+| `/agent` | 成员 Run 启动、状态、显式取消、预算继续与独立 SSE 观察 |
+| `/room-commands` | 带请求 ID/结构化 mentions 的统一房间分派、持久讨论与重放 |
 | `/multi` | 多 Agent 任务：讨论/计划/审批/执行（SSE 流式） |
 | `/content` | 附件/工作区文件内容 |
 | `/mcp` | MCP 服务器管理 + 工具 |
@@ -217,9 +220,9 @@ graph TD
   New["新建房间"] --> Q{"哪种？"}
   Q -->|Chat| Chat["kind=chat<br/>1..N Agent<br/>❌ 不绑工作区<br/>❌ 无工具<br/>纯讨论"]
   Q -->|Co-work| Cowork["kind=cowork<br/>1..N Agent<br/>✅ 必须绑工作区<br/>✅ 有工具/执行"]
-  Cowork --> M{"成员数？"}
-  M -->|1| Single["single_agent<br/>单执行者"]
-  M -->|"≥2"| Multi["multi_agent<br/>讨论→计划→执行"]
+  Cowork --> M{"显式协作策略"}
+  M -->|single| Single["直接处理<br/>默认或本轮指定成员"]
+  M -->|team| Multi["Manager 工作包<br/>计划→审批→依赖执行→审核"]
 ```
 
 - `validateRoomShape()`：chat 不得绑工作区、cowork 必须绑、成员唯一、至少 1 人——前端先校验，`session-store` 兜底（绕过前端也建不出坏形状）。
@@ -245,7 +248,7 @@ graph TD
 
 Co-work 房间可增/删成员（`session-store` 的 `addAgent`/`removeAgent`，路由 `POST/DELETE /sessions/:id/agents`）：
 - 仅**会话空闲**时可改（`active_session_members_locked`），**至少保留一人**。
-- 加/减人后 **mode 按人数自动重算**：1 人 → `single_agent`，≥2 人 → `multi_agent`，`position` 重排——所以给单 Agent 会话加一个成员，它会自动变成多 Agent 会话。
+- 兼容字段 mode 按人数重算，但 strategy 独立保存。增加第二位成员仍保持 single，不启动团队循环；减少到一人会降级非法团队/讨论配置。成员 snapshot 仅在显式应用模板更新时改变，历史消息从当次运行的 authorSnapshot 读取身份与模型。
 - 前端 `SessionMembersDialog`，入口在单/多 Agent 会话头部的成员按钮。
 
 **建房入口收敛**：从侧栏工作区分组的「＋」建房会**锁定为该工作区的 Co-work**（`presetWorkspaceId`），不再让重选工作区；「选工作区」只在全局「新建房间」时开放。
@@ -440,7 +443,7 @@ Run 独立的 `AbortController`。SSE/WebView 断开不能取消执行；
 
 ### 7.4 下一步（roadmap）
 
-单 Agent 可靠性 Phase 1–8 与 [演进路线](native-runtime-and-langgraph-roadmap.md) 中的旧阶段编号是两套计划。下一产品阶段仍是多 Agent 治理编排与执行者分派。当前文件修改依赖 macOS native descriptor/rename 原语，命令依赖 macOS sandbox-exec；不支持的宿主拒绝执行，不承诺跨平台隔离。未来可在现有运行时与命令适配 seam 下接入更强的执行宿主。
+单 Agent 可靠性 Phase 1–8 与 [演进路线](native-runtime-and-langgraph-roadmap.md) 中的旧阶段编号是两套计划。多 Agent 工作包分派现已实现，复杂图编排与 worktree 并行仍属后续。当前文件修改依赖 macOS native descriptor/rename 原语，命令依赖 macOS sandbox-exec；不支持的宿主拒绝执行，不承诺跨平台隔离。未来可在现有运行时与命令适配 seam 下接入更强的执行宿主。
 
 ---
 
@@ -477,7 +480,7 @@ Run 独立的 `AbortController`。SSE/WebView 断开不能取消执行；
 
 ## 10. 已知未接通 / 后续
 
-- **多执行者分派**（Boss 把 work package 分给不同 Agent 分别执行）：运行时只有单 `executionAgentId`，未实现。
+- **多执行者分派已接通**：`TeamRunner` 按依赖串行调度持久 WorkPackage，每个 child 复用 Native/ToolExecutor/审批/事件，并独立拥有共享写租约。不同 worktree 并行写仍未实现。
 - **Supervision 监督**：类型/UI 有，协调器未消费。
 - ✅ **执行层计费已解耦**（#77）：执行改走 `native_ai_sdk` + 你配的 provider key，不再依赖 codex 登录。
 - **LangGraph 编排**：`LangGraphAgentRuntime` 已在代码里但未 register 进生产（roadmap Phase 2）。
@@ -489,7 +492,9 @@ Run 独立的 `AbortController`。SSE/WebView 断开不能取消执行；
 
 - 领域：`packages/core/src/{room-kind,navigation,task-state,orchestration,plan,plan-scope,approvals}.ts`
 - 后端装配：`apps/sidecar/src/index.ts`
-- 多 Agent：`apps/sidecar/src/multi-agent/{coordinator,task-store}.ts`
+- 多 Agent：`apps/sidecar/src/multi-agent/{coordinator,task-store,team-runner,work-package-store}.ts`
+- 房间路由：`services/room-command-service.ts`、`services/room-file-context.ts`、`routes/room-commands.ts`
+- 冻结配置：`services/run-profile.ts`；迁移 020/021：命令/工作包/尝试表，旧 ID 和历史保留。
 - 执行内核 + seam：`apps/sidecar/src/runtime/{runtime-manager,execution-runner,native-agent-runtime,langgraph-agent-runtime}.ts` + `tools/{read-only-builtins,workspace-write-builtins}.ts`
 - 前端主视图：`apps/desktop/src/ChatPage.tsx`、`store.ts`、`selectors.ts`
 - 导航/侧栏：`apps/desktop/src/sidebar/`、`settings/`
