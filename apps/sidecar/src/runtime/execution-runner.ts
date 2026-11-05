@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { toolWithinPlanScope, type ApprovalDecision, type RuntimeEvent } from "@socrates/core";
+import { toolWithinPlanScope, executionEventToRuntimeEvent, type ApprovalDecision, type RuntimeEvent, type StructuredPlan, type ConversationStoredMessage, type ReasoningEffort } from "@socrates/core";
 import type { ApprovalManager, DurableApprovalDecision } from "../approvals/manager";
 import type { EventStore } from "../store/event-store";
 import { hashToolInput } from "../tools/executor";
@@ -9,8 +9,33 @@ import type { MultiTaskStore } from "../multi-agent/task-store";
 import { UsageCollector } from "../services/usage-collector";
 import type { HistoryStore } from "../store/history-store";
 import type { ExecutionEventStore } from "../store/execution-event-store";
+import { resolveRunProfile, resolveSessionRunProfile, type RunProfile } from "../services/run-profile";
+import { ConversationMemoryStore } from "../store/conversation-memory-store";
+import { buildConversationContext } from "../services/conversation-context";
+import { ToolExecutionJournal } from "../tools/execution-journal";
+import { repairToolHistory } from "../tools/repair-history";
 
-type ActiveExecution = { runtimeSessionId: string; leaseId: string; calls: Map<string, { name: string; input: unknown }>; cancelled: boolean; paused: boolean };
+type ActiveExecution = { runtimeSessionId: string; leaseId: string; calls: Map<string, { name: string; input: unknown }>; cancelled: boolean; paused: boolean;
+  package?: { sessionId: string; agentId: string; turnId: string }; controller?: AbortController;
+  approvalDeliveries?: Map<string, Promise<void>> };
+
+export interface PackageExecutionInput {
+  taskId: string;
+  packageId: string;
+  agentId: string;
+  prompt: string;
+  plan: StructuredPlan;
+  attemptNo: number;
+  signal?: AbortSignal;
+  previousRunId?: string;
+  runProfile?: Record<string, unknown>;
+}
+export interface PackageExecutionResult {
+  status: "completed" | "failed" | "cancelled" | "budget_stopped";
+  runId: string;
+  result: string;
+  reason?: string;
+}
 
 export class ExecutionRunner {
   private readonly active = new Map<string, ActiveExecution>();
@@ -27,6 +52,167 @@ export class ExecutionRunner {
     private readonly history?: HistoryStore,
   ) { this.usage = new UsageCollector(db); }
 
+  /** Member execution uses the same runtime/tool/approval pipeline as direct work. */
+  async runPackage(input: PackageExecutionInput, emit: (event: RuntimeEvent) => void | Promise<void> = () => {}): Promise<PackageExecutionResult> {
+    const task = this.tasks.get(input.taskId);
+    if (!task) throw new Error("multi_task_not_found");
+    const workspace = this.db.query<{ workspace_id: string | null; identity_hash: string }, [string]>(`
+      SELECT sessions.workspace_id, workspaces.identity_hash FROM sessions
+      JOIN workspaces ON workspaces.id = sessions.workspace_id WHERE sessions.id = ?
+    `).get(task.sessionId);
+    if (!workspace?.workspace_id) throw new Error("execution_workspace_required");
+    const eligible = this.db.query<{ execution_eligible: number }, [string, string]>(
+      "SELECT execution_eligible FROM session_agents WHERE session_id = ? AND agent_id = ?",
+    ).get(task.sessionId, input.agentId);
+    if (!eligible?.execution_eligible) throw new Error("execution_agent_not_eligible");
+    const overrides = task.config.effortByAgent?.[input.agentId]
+      ? { reasoningEffort: task.config.effortByAgent[input.agentId] as ReasoningEffort } : {};
+    const profile = input.runProfile ? resolveRunProfile(input.agentId, input.runProfile, overrides)
+      : resolveSessionRunProfile(this.db, task.sessionId, input.agentId, overrides);
+    const runId = `package:${input.packageId}:${input.attemptNo}`;
+    if (this.active.has(runId)) throw new Error("execution_already_running");
+    const previousEvents = this.executionEvents.listAfter(runId, 0, 2_000);
+    while (previousEvents.length && previousEvents.at(-1)!.seq < this.executionEvents.latestSeq(runId)) {
+      previousEvents.push(...this.executionEvents.listAfter(runId, previousEvents.at(-1)!.seq, 2_000));
+    }
+    const terminal = previousEvents.findLast((event) => ["run.completed", "run.failed", "run.cancelled", "run.interrupted"].includes(event.type));
+    if (previousEvents.length && !terminal) throw new Error("package_execution_requires_recovery");
+    if (terminal) {
+      const result = previousEvents.flatMap((event) => {
+        const projected = executionEventToRuntimeEvent(event);
+        return projected?.type === "text_delta" ? [projected.text] : [];
+      }).join("");
+      if (terminal.type === "run.completed") return { status: "completed", runId, result };
+      if (terminal.type === "run.interrupted") return { status: "budget_stopped", runId, result, reason: "budget_exhausted" };
+      return { status: terminal.type === "run.cancelled" ? "cancelled" : "failed", runId, result,
+        reason: terminal.type === "run.failed" ? (terminal.payload as { error: string }).error : "user_cancelled" };
+    }
+    const turnId = runId;
+    const controller = new AbortController();
+    const abort = () => controller.abort(input.signal?.reason);
+    input.signal?.addEventListener("abort", abort, { once: true });
+    if (input.signal?.aborted) abort();
+    const active: ActiveExecution = { runtimeSessionId: "", leaseId: "", calls: new Map(), cancelled: false, paused: false,
+      package: { sessionId: task.sessionId, agentId: input.agentId, turnId }, controller };
+    this.active.set(runId, active);
+    const memory = new ConversationMemoryStore(this.db, this.history);
+    const thread = memory.ensureDefaultThread(task.sessionId);
+    let result = "";
+    let segment = "";
+    let segmentNo = 0;
+    let budgetStopped = false;
+    let renewal: ReturnType<typeof setInterval> | undefined;
+    const coordinates = { turnId };
+    const identity = { sessionId: task.sessionId, runId, agentId: input.agentId, coordinates };
+    const persistText = async () => {
+      if (!segment) return;
+      const content = segment; segment = "";
+      await memory.appendMessage({ roomId: task.sessionId, threadId: thread.id, runId, turnId,
+        agentId: input.agentId, role: "assistant", kind: "text", content, parts: [{ type: "text", text: content }],
+        status: budgetStopped ? "interrupted" : "completed", idempotencyKey: `${runId}:segment:${segmentNo++}` });
+    };
+    try {
+      this.executionEvents.append({ ...identity, eventId: `run-created:${runId}`, type: "run.created", payload: { threadId: thread.id, attemptNo: input.attemptNo } });
+      this.executionEvents.append({ ...identity, eventId: `turn-started:${runId}`, type: "turn.started", payload: {} });
+      const lease = await this.leases.acquireQueued(workspace.workspace_id, runId, { signal: controller.signal,
+        onWaiting: () => emit({ type: "extension", name: "workspace_queued", payload: { reason: "workspace_write_lease_busy", runId } }) });
+      active.leaseId = lease.id;
+      renewal = setInterval(() => {
+        try { this.leases.renew(lease.id, new Date(Date.now() + 30 * 60_000).toISOString()); }
+        catch { controller.abort(new Error("workspace_lease_lost")); }
+      }, 5 * 60_000);
+      this.assertEvidenceCurrent(workspace.workspace_id, input.plan.evidence);
+      if (input.previousRunId) {
+        new ToolExecutionJournal(this.db, this.executionEvents).recoverInterrupted(input.previousRunId);
+        await repairToolHistory(this.db, memory, thread.id);
+      }
+      const previous = input.previousRunId ? (await memory.listThreadMessages(thread.id)).filter((message) =>
+        message.agentId === input.agentId && message.runId?.startsWith(`package:${input.packageId}:`)) : [];
+      const userContext: ConversationStoredMessage = { messageId: `${runId}:input`, sequence: (previous.at(-1)?.sequence ?? 0) + 1, role: "user",
+        roomId: task.sessionId, threadId: thread.id, runId, turnId, agentId: null, kind: "text",
+        createdAt: new Date().toISOString(), status: "completed", idempotencyKey: null,
+        content: input.prompt, parts: [{ type: "text", text: input.prompt }] };
+      const handle = await this.runtimes.open({ runtimeKind: "native_ai_sdk", agentSessionId: runId,
+        sessionId: task.sessionId, agentId: input.agentId, workspaceId: workspace.workspace_id,
+        runtimeOptions: { sandbox: "workspace-write", runProfile: profile } });
+      active.runtimeSessionId = handle.id;
+      const preamble: ConversationStoredMessage[] = previous.length ? [{ ...userContext, messageId: `${runId}:continuation`,
+        sequence: previous[0]!.sequence - 1, content: "Continue the assigned work using the following durable facts from your earlier attempt. Do not repeat completed side effects.",
+        parts: [{ type: "text", text: "Continue the assigned work using the following durable facts from your earlier attempt. Do not repeat completed side effects." }] }] : [];
+      const context = buildConversationContext([...preamble, ...previous, userContext], { contextWindowTokens: profile.contextWindowTokens,
+        instructionTokens: this.runtimes.contextOverheadTokens(handle.id) });
+      if (context.overflow) throw new Error("context_current_unit_exceeds_budget");
+      this.executionEvents.append({ ...identity, eventId: `run-started:${runId}`, type: "run.started", payload: {} });
+      let usageNo = 0;
+      await this.runtimes.run(handle.id, { taskId: runId, turnId, prompt: input.prompt,
+        messages: context.messages, signal: controller.signal,
+        onEvent: async (event) => {
+          if (event.type === "text_delta") { result += event.text; segment += event.text; }
+          if (event.type === "status" && event.status === "interrupted" && event.message === "budget_exhausted") budgetStopped = true;
+          if (event.type === "usage") this.usage.record({ stableKey: `${runId}:usage:${usageNo++}`, sessionId: task.sessionId, taskId: runId, agentId: input.agentId, usage: event.usage });
+          if (event.type === "tool_call") {
+            await persistText();
+            active.calls.set(event.callId, { name: event.name, input: event.input });
+            await memory.appendMessage({ roomId: task.sessionId, threadId: thread.id, runId, turnId, agentId: input.agentId,
+              role: "assistant", kind: "tool_call", content: "", parts: [{ type: "tool_call", callId: event.callId, name: event.name, input: event.input }], status: "completed", idempotencyKey: `${runId}:call:${event.callId}` });
+          }
+          if (event.type === "tool_result") await memory.appendMessage({ roomId: task.sessionId, threadId: thread.id, runId, turnId, agentId: input.agentId,
+            role: "tool", kind: "tool_result", content: event.output.preview,
+            parts: [{ type: "tool_result", callId: event.callId, output: event.output, isError: event.isError }],
+            status: event.isError ? "failed" : "completed", idempotencyKey: `${runId}:result:${event.callId}` });
+          if (event.type === "approval_required") {
+            const call = active.calls.get(event.callId);
+            if (!call) throw new Error("approval_without_tool_call");
+            const inScope = toolWithinPlanScope(input.plan, call);
+            const approval = this.approvals.request({ taskId: runId, kind: inScope ? call.name : "plan_scope_expansion",
+              subjectId: `${runId}:${event.requestId}`, inputHash: hashToolInput(call.input), workspaceIdentity: workspace.identity_hash,
+              attemptId: runId, policyVersion: event.policyVersion ?? 1, risk: event.risk ?? "high",
+              freshHumanRequired: !inScope || event.freshHumanRequired === true });
+            this.executionEvents.append({ ...identity, eventId: `approval:${approval.id}`, type: "approval.requested", payload: {
+              requestId: approval.id, subjectId: approval.subjectId, callId: event.callId, kind: approval.kind,
+              risk: approval.risk, policyVersion: approval.policyVersion, freshHumanRequired: approval.freshHumanRequired } });
+            await emit({ ...event, requestId: approval.id });
+            return;
+          }
+          await emit(event);
+        } });
+      controller.signal.throwIfAborted();
+      await persistText();
+      if (budgetStopped) {
+        this.executionEvents.append({ ...identity, eventId: `turn-budget:${runId}`, type: "turn.failed", payload: { error: "budget_exhausted" } });
+        this.executionEvents.append({ ...identity, eventId: `run-budget:${runId}`, type: "run.interrupted", payload: { reason: "budget_exhausted" } });
+        return { status: "budget_stopped", runId, result, reason: "budget_exhausted" };
+      }
+      this.executionEvents.append({ ...identity, eventId: `turn-completed:${runId}`, type: "turn.completed", payload: {} });
+      this.executionEvents.append({ ...identity, eventId: `run-completed:${runId}`, type: "run.completed", payload: {} });
+      return { status: "completed", runId, result };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const cancelled = controller.signal.aborted || active.cancelled;
+      await persistText();
+      this.executionEvents.append({ ...identity, eventId: `turn-${cancelled ? "cancelled" : "failed"}:${runId}`,
+        type: cancelled ? "turn.cancelled" : "turn.failed", payload: cancelled ? { reason } : { error: reason } });
+      this.executionEvents.append({ ...identity, eventId: `run-${cancelled ? "cancelled" : "failed"}:${runId}`,
+        type: cancelled ? "run.cancelled" : "run.failed", payload: cancelled ? { reason } : { error: reason } });
+      return { status: cancelled ? "cancelled" : "failed", runId, result, reason };
+    } finally {
+      input.signal?.removeEventListener("abort", abort);
+      if (renewal) clearInterval(renewal);
+      if (active.runtimeSessionId) await this.runtimes.close(active.runtimeSessionId);
+      if (active.leaseId) this.leases.release(active.leaseId);
+      this.approvals.expireForTask(runId);
+      this.active.delete(runId);
+    }
+  }
+
+  async cancelPackage(runId: string): Promise<void> {
+    const active = this.active.get(runId);
+    if (!active?.package) return;
+    active.cancelled = true;
+    active.controller?.abort(new Error("user_cancelled"));
+    if (active.runtimeSessionId) await this.runtimes.interrupt(active.runtimeSessionId).catch(() => {});
+  }
+
   async run(taskId: string, emit: (event: RuntimeEvent) => void | Promise<void> = () => {}): Promise<void> {
     if (this.active.has(taskId)) throw new Error("execution_already_running");
     const task = this.tasks.get(taskId);
@@ -40,7 +226,20 @@ export class ExecutionRunner {
     let assistantText = "";
     let usageIndex = 0;
     let turnStarted = false;
+    let budgetStopped = false;
+    const controller = new AbortController();
+    const active: ActiveExecution = { runtimeSessionId: "", leaseId: "", calls: new Map(), cancelled: false, paused: false, controller };
     const turnId = this.tasks.currentAttemptId(taskId);
+    const memory = new ConversationMemoryStore(this.db, this.history);
+    const thread = memory.ensureDefaultThread(task.sessionId);
+    let segmentNo = 0;
+    const persistSegment = async (status = "completed") => {
+      if (!assistantText.trim()) return;
+      const content = assistantText; assistantText = "";
+      await memory.appendMessage({ roomId: task.sessionId, threadId: thread.id, runId: taskId, turnId,
+        agentId: task.executionAgentId!, role: "assistant", kind: "text", content, parts: [{ type: "text", text: content }],
+        status, idempotencyKey: `multi-execution:${taskId}:${turnId}:segment:${segmentNo++}` });
+    };
     try {
       this.executionEvents.append({
         eventId: `multi-turn-started:${taskId}:${turnId}`,
@@ -53,32 +252,66 @@ export class ExecutionRunner {
       });
       turnStarted = true;
       this.assertEvidenceCurrent(session.workspace_id, plan.content.evidence);
-      lease = this.leases.acquire(session.workspace_id, taskId, "write", new Date(Date.now() + 30 * 60_000).toISOString());
+      this.active.set(taskId, active);
+      lease = await this.leases.acquireQueued(session.workspace_id, taskId, { signal: controller.signal,
+        onWaiting: () => emit({ type: "extension", name: "workspace_queued", payload: { reason: "workspace_write_lease_busy", workspaceId: session.workspace_id } }) });
+      active.leaseId = lease.id;
       renewal = setInterval(() => {
         try { this.leases.renew(lease!.id, new Date(Date.now() + 30 * 60_000).toISOString()); }
         catch { void this.cancelForLostLease(taskId); }
       }, 5 * 60_000);
       const snapshot = this.db.query<{ snapshot_json: string; execution_eligible: number }, [string, string]>("SELECT snapshot_json, execution_eligible FROM session_agents WHERE session_id = ? AND agent_id = ?").get(task.sessionId, task.executionAgentId!);
       if (!snapshot || snapshot.execution_eligible !== 1) throw new Error("execution_agent_not_eligible");
-      const profile = JSON.parse(snapshot.snapshot_json) as Record<string, unknown>;
+      const effort = task.config.effortByAgent?.[task.executionAgentId!];
+      let profile = resolveRunProfile(task.executionAgentId!, JSON.parse(snapshot.snapshot_json),
+        effort ? { reasoningEffort: effort as ReasoningEffort } : {});
+      const frozen = this.db.query<{ checkpoint_json: string }, [string]>(
+        "SELECT checkpoint_json FROM multi_task_attempts WHERE task_id = ? AND checkpoint_json IS NOT NULL ORDER BY attempt_no LIMIT 1",
+      ).get(taskId);
+      if (frozen) profile = (JSON.parse(frozen.checkpoint_json) as { runProfile?: RunProfile }).runProfile ?? profile;
+      this.db.query("UPDATE multi_task_attempts SET checkpoint_json = ? WHERE id = ?").run(JSON.stringify({ runProfile: profile }), turnId);
       const handle = await this.runtimes.open({
         runtimeKind: "native_ai_sdk", agentSessionId: `${taskId}:${task.attemptNo}:execution`,
         sessionId: task.sessionId, agentId: task.executionAgentId!, workspaceId: session.workspace_id,
-        runtimeOptions: { sandbox: "workspace-write", model: typeof profile.modelId === "string" ? profile.modelId : undefined },
+        runtimeOptions: { sandbox: "workspace-write", runProfile: profile },
       });
       runtimeSessionId = handle.id;
-      const active: ActiveExecution = { runtimeSessionId, leaseId: lease.id, calls: new Map(), cancelled: false, paused: false };
-      this.active.set(taskId, active);
+      active.runtimeSessionId = runtimeSessionId;
+      new ToolExecutionJournal(this.db, this.executionEvents).recoverInterrupted(taskId);
+      await repairToolHistory(this.db, memory, thread.id);
+      const previous = (await memory.listThreadMessages(thread.id)).filter((message) => message.runId === taskId && message.agentId === task.executionAgentId);
+      const prompt = `Execute only this user-approved plan. Plan approval is not blanket tool approval; request approval for every concrete side effect. Use your previous tool facts and do not repeat completed side effects.\n\n${JSON.stringify(plan.content)}`;
+      const instruction: ConversationStoredMessage = { messageId: `${taskId}:${turnId}:input`, sequence: (previous.at(-1)?.sequence ?? 0) + 1,
+        roomId: task.sessionId, threadId: thread.id, runId: taskId, turnId, agentId: null, role: "user", kind: "text",
+        content: prompt, parts: [{ type: "text", text: prompt }], status: "completed", createdAt: new Date().toISOString(), idempotencyKey: null };
+      const preamble: ConversationStoredMessage[] = previous.length ? [{ ...instruction, messageId: `${taskId}:${turnId}:continuation`,
+        sequence: previous[0]!.sequence - 1, content: "Continue the approved plan using your own durable work history. Do not repeat completed side effects.",
+        parts: [{ type: "text", text: "Continue the approved plan using your own durable work history. Do not repeat completed side effects." }] }] : [];
+      const context = buildConversationContext([...preamble, ...previous, instruction], { contextWindowTokens: profile.contextWindowTokens,
+        instructionTokens: this.runtimes.contextOverheadTokens(handle.id) });
+      if (context.overflow) throw new Error("context_current_unit_exceeds_budget");
       await this.runtimes.run(runtimeSessionId, {
         taskId,
         turnId,
-        prompt: `Execute only this user-approved plan. Plan approval is not blanket tool approval; request approval for every concrete side effect.\n\n${JSON.stringify(plan.content)}`,
+        signal: controller.signal,
+        prompt,
+        messages: context.messages,
         onEvent: async (event) => {
+          if (event.type === "status" && event.status === "interrupted" && event.message === "budget_exhausted") budgetStopped = true;
           if (event.type === "text_delta") assistantText += event.text;
           if (event.type === "usage") {
             this.usage.record({ stableKey: `multi-execution:${taskId}:${task.attemptNo}:${usageIndex++}`, sessionId: task.sessionId, taskId, agentId: task.executionAgentId, usage: event.usage });
           }
-          if (event.type === "tool_call") active.calls.set(event.callId, { name: event.name, input: event.input });
+          if (event.type === "tool_call") {
+            await persistSegment();
+            active.calls.set(event.callId, { name: event.name, input: event.input });
+            await memory.appendMessage({ roomId: task.sessionId, threadId: thread.id, runId: taskId, turnId, agentId: task.executionAgentId!,
+              role: "assistant", kind: "tool_call", content: "", parts: [{ type: "tool_call", callId: event.callId, name: event.name, input: event.input }],
+              status: "completed", idempotencyKey: `multi-execution:${taskId}:${turnId}:call:${event.callId}` });
+          }
+          if (event.type === "tool_result") await memory.appendMessage({ roomId: task.sessionId, threadId: thread.id, runId: taskId, turnId, agentId: task.executionAgentId!,
+            role: "tool", kind: "tool_result", content: event.output.preview, parts: [{ type: "tool_result", callId: event.callId, output: event.output, isError: event.isError }],
+            status: event.isError ? "failed" : "completed", idempotencyKey: `multi-execution:${taskId}:${turnId}:result:${event.callId}` });
           if (event.type === "approval_required") {
             const call = active.calls.get(event.callId);
             if (!call) throw new Error("approval_without_tool_call");
@@ -88,8 +321,9 @@ export class ExecutionRunner {
             const approval = this.approvals.request({
               taskId, kind: inScope ? call.name : "plan_scope_expansion", subjectId: `${taskId}:${event.requestId}`,
               inputHash: hashToolInput(call.input), workspaceIdentity: workspace.identity_hash,
-              attemptId: this.tasks.currentAttemptId(taskId), policyVersion: 1,
-              risk: inScope && call.name !== "file_change" ? "medium" : "high", freshHumanRequired: !inScope || call.name === "file_change",
+              attemptId: this.tasks.currentAttemptId(taskId), policyVersion: event.policyVersion ?? 1,
+              risk: inScope && call.name !== "file_change" ? event.risk ?? "medium" : "high",
+              freshHumanRequired: !inScope || call.name === "file_change" || event.freshHumanRequired === true,
             });
             this.tasks.transition(taskId, { type: "tool_approval_required" });
             this.events.append({ eventId: `multi-tool-approval:${approval.id}`, sessionId: task.sessionId, taskId, type: "approval.requested", payload: approval });
@@ -99,8 +333,15 @@ export class ExecutionRunner {
           await emit(event);
         },
       });
+      if (budgetStopped && !active.cancelled && !active.paused) {
+        await persistSegment("interrupted");
+        this.tasks.transition(taskId, { type: "pause", reason: "budget_exhausted" });
+        this.executionEvents.append({ eventId: `multi-turn-budget:${taskId}:${turnId}`, sessionId: task.sessionId,
+          runId: taskId, agentId: task.executionAgentId!, type: "turn.failed", coordinates: { turnId }, payload: { error: "budget_exhausted" } });
+        return;
+      }
       if (!active.cancelled && !active.paused) {
-        if (assistantText.trim()) await this.persistAssistantMessage(task.sessionId, task.executionAgentId!, assistantText);
+        await persistSegment();
         this.tasks.transition(taskId, { type: "complete" });
         this.executionEvents.append({
           eventId: `multi-turn-completed:${taskId}:${turnId}`,
@@ -206,14 +447,33 @@ export class ExecutionRunner {
   async decide(requestId: string, input: { clientDecisionKey: string; decision: ApprovalDecision; reason?: string }): Promise<DurableApprovalDecision> {
     const request = this.approvals.getRequest(requestId);
     if (!request) throw new Error("approval_request_not_found");
-    const separator = request.subjectId.indexOf(":");
-    const taskId = separator > 0 ? request.subjectId.slice(0, separator) : "";
-    const runtimeRequestId = separator > 0 ? request.subjectId.slice(separator + 1) : "";
+    const taskId = request.taskId;
+    if (!request.subjectId.startsWith(`${taskId}:`)) throw new Error("approval_subject_invalid");
+    const runtimeRequestId = request.subjectId.slice(taskId.length + 1);
     const active = this.active.get(taskId);
     if (!active) throw new Error("execution_not_active");
-    const decision = this.approvals.decide(requestId, input);
-    await this.runtimes.answerApproval(active.runtimeSessionId, runtimeRequestId, input.decision);
-    this.tasks.transition(taskId, { type: "tool_approval_settled" });
+    let decision: DurableApprovalDecision;
+    try { decision = this.approvals.decide(requestId, input); }
+    catch (error) {
+      // The decision may already be committed while its journal checkpoint or
+      // local delivery failed. A repeated identical choice delivers that fact.
+      const previous = this.approvals.getDecision(requestId);
+      if (!(error instanceof Error) || error.message !== "approval_already_decided" || previous?.decision !== input.decision) throw error;
+      decision = previous;
+    }
+    const deliveries = active.approvalDeliveries ??= new Map();
+    let delivery = deliveries.get(decision.id);
+    if (!delivery) {
+      delivery = (async () => {
+        if (active.package) this.executionEvents.append({ eventId: `approval-decided:${decision.id}`, sessionId: active.package.sessionId,
+          runId: taskId, agentId: active.package.agentId, coordinates: { turnId: active.package.turnId },
+          type: "approval.decided", payload: { requestId, decision: input.decision } });
+        await this.runtimes.answerApproval(active.runtimeSessionId, runtimeRequestId, input.decision);
+        if (!active.package) this.tasks.transition(taskId, { type: "tool_approval_settled" });
+      })();
+      deliveries.set(decision.id, delivery);
+    }
+    try { await delivery; } catch (error) { deliveries.delete(decision.id); throw error; }
     return decision;
   }
 
@@ -221,7 +481,8 @@ export class ExecutionRunner {
     const active = this.active.get(taskId);
     if (!active) throw new Error("execution_not_active");
     active.cancelled = true;
-    await this.runtimes.interrupt(active.runtimeSessionId);
+    active.controller?.abort(new Error("user_cancelled"));
+    if (active.runtimeSessionId) await this.runtimes.interrupt(active.runtimeSessionId);
     const task = this.tasks.get(taskId);
     if (task && !["cancelled", "completed", "failed"].includes(task.state)) this.tasks.transition(taskId, { type: "cancel", reason: "user_cancelled" });
   }
@@ -260,18 +521,4 @@ export class ExecutionRunner {
     }
   }
 
-  private async persistAssistantMessage(sessionId: string, agentId: string, content: string): Promise<void> {
-    const messageId = crypto.randomUUID();
-    const now = new Date().toISOString();
-    if (this.history) {
-      await this.history.appendMessage({ messageId, roomId: sessionId, threadId: `thread:${sessionId}`,
-        runId: null, turnId: null, agentId, role: "assistant", kind: "text", content,
-        parts: [{ type: "text", text: content }], status: "completed", idempotencyKey: `execution-assistant:${messageId}`, createdAt: now });
-      return;
-    }
-    this.db.transaction(() => {
-      this.db.query("INSERT INTO session_messages (id, session_id, role, author_id, content, status, created_at) VALUES (?, ?, 'assistant', ?, ?, 'completed', ?)").run(messageId, sessionId, agentId, content, now);
-      this.db.query("INSERT INTO message_parts (id, message_id, ordinal, type, text) VALUES (?, ?, 0, 'text', ?)").run(crypto.randomUUID(), messageId, content);
-    })();
-  }
 }

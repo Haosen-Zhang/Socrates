@@ -161,24 +161,22 @@ export function encodeSseEvent(e: StreamEvent): string {
 /** 增量解析 SSE 字节流：返回完整事件（含可选 _sseId）与未完的余量 */
 export function parseSseChunk(buffer: string): { events: (StreamEvent & { _sseId?: string })[]; rest: string } {
   const events: (StreamEvent & { _sseId?: string })[] = [];
-  const blocks = buffer.split("\n\n");
+  const blocks = buffer.split(/\r?\n\r?\n/u);
   const rest = blocks.pop() ?? "";
   for (const block of blocks) {
     let sseId: string | undefined;
-    for (const line of block.split("\n")) {
-      if (line.startsWith("id: ")) {
-        sseId = line.slice(4).trim();
-        continue;
-      }
-      if (!line.startsWith("data: ")) continue;
-      try {
-        const event = JSON.parse(line.slice(6)) as StreamEvent & { _sseId?: string };
-        event._sseId = sseId;
-        events.push(event);
-        sseId = undefined; // consume once per data line
-      } catch {
-        // 非本协议的杂音行，忽略
-      }
+    const data: string[] = [];
+    for (const line of block.split(/\r?\n/u)) {
+      if (line.startsWith("id:")) sseId = line.slice(3).replace(/^ /u, "");
+      if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /u, ""));
+    }
+    try {
+      const event = JSON.parse(data.join("\n")) as StreamEvent & { _sseId?: string };
+      if (!event || typeof event !== "object") continue;
+      if (sseId !== undefined) event._sseId = sseId;
+      events.push(event);
+    } catch {
+      // 非本协议的杂音块，忽略。字段必须收齐后解析：Hono 在 data 后写 id。
     }
   }
   return { events, rest };

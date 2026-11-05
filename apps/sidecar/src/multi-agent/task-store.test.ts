@@ -16,6 +16,20 @@ function setup() {
 }
 
 describe("MultiTaskStore", () => {
+  it("deduplicates a client command and freezes member snapshots and the public history cursor", async () => {
+    const { db, store } = setup();
+    db.query("INSERT INTO session_messages (id,session_id,role,author_id,content,status,created_at) VALUES ('old','s','assistant','b','old context','completed','now')").run();
+    const input = { sessionId: "s", prompt: "once", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a", clientRequestId: "stable-command" } };
+    const first = await store.create(input);
+    db.query("UPDATE session_agents SET snapshot_json = '{\"nickname\":\"changed\"}' WHERE agent_id = 'a'").run();
+    const duplicate = await store.create(input);
+    expect(duplicate.id).toBe(first.id);
+    expect(duplicate.config.memberProfiles?.a?.nickname).toBe("a");
+    expect(duplicate.config.contextMessageCursor).toBe(1);
+    expect(db.query("SELECT COUNT(*) AS count FROM session_messages WHERE role = 'user'").get()).toEqual({ count: 1 });
+    await expect(store.create({ ...input, prompt: "changed" })).rejects.toThrow("client_request_id_conflict");
+  });
+
   it("updates state only through the reducer and deduplicates stable turns", async () => {
     const { store } = setup();
     const task = await store.create({ sessionId: "s", prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });

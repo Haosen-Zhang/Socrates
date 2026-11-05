@@ -198,15 +198,15 @@ describe("SessionStore", () => {
       .toThrow("workspace_archived");
   });
 
-  it("binds a workspace only while the session is inactive", () => {
+  it("binds a Work workspace only while the session is inactive", () => {
     const db = openDb(":memory:");
     const store = new SessionStore(db);
-    const session = store.create({ title: "Chat", mode: "chat", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: false }] });
     db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("w", "/tmp/w", "/tmp/w", "hash", "w", "now", "now");
+    const session = store.create({ title: "Work", mode: "single_agent", workspaceId: "w", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: { nickname: "A" }, executionEligible: true }] });
     expect(store.bindWorkspace(session.id, "w").workspaceId).toBe("w");
     db.query("UPDATE sessions SET status = 'running' WHERE id = ?").run(session.id);
-    expect(() => store.bindWorkspace(session.id, null)).toThrow("active_session_workspace_locked");
+    expect(() => store.bindWorkspace(session.id, "w")).toThrow("active_session_workspace_locked");
   });
 
   it("renames and archives an inactive conversation", () => {

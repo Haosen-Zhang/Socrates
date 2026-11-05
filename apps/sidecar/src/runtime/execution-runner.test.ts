@@ -7,7 +7,11 @@ import { EventStore } from "../store/event-store";
 import { ExecutionEventStore } from "../store/execution-event-store";
 import { WorkspaceLeaseManager } from "../workspace/leases";
 import { ExecutionRunner } from "./execution-runner";
-import { RuntimeManager } from "./runtime-manager";
+import { RuntimeManager, type RuntimeOpenInput } from "./runtime-manager";
+import { SingleAgentRunner } from "./single-agent-runner";
+import { SessionStore } from "../store/session-store";
+import { AttachmentResolver } from "../attachments/resolver";
+import { tmpdir } from "node:os";
 
 class ApprovalRuntime implements AgentRuntime {
   readonly kind = "fake";
@@ -30,7 +34,7 @@ class ApprovalRuntime implements AgentRuntime {
   async close() {}
 }
 
-async function setup() {
+async function setup(factory: (input: RuntimeOpenInput) => AgentRuntime = () => new ApprovalRuntime()) {
   const db = openDb(":memory:");
   const now = new Date().toISOString();
   db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w', '/tmp', '/tmp', 'hash', 'tmp', ?, ?)").run(now, now);
@@ -46,13 +50,147 @@ async function setup() {
   const events = new EventStore(db);
   const executionEvents = new ExecutionEventStore(db);
   const runtimes = new RuntimeManager(db, executionEvents);
-  runtimes.register("native_ai_sdk", () => new ApprovalRuntime());
+  runtimes.register("native_ai_sdk", factory);
   const approvals = new ApprovalManager(db);
-  const runner = new ExecutionRunner(db, tasks, runtimes, new WorkspaceLeaseManager(db, "test-instance"), approvals, events, executionEvents);
-  return { db, tasks, task, approvals, runner, executionEvents };
+  const leases = new WorkspaceLeaseManager(db, "test-instance");
+  const runner = new ExecutionRunner(db, tasks, runtimes, leases, approvals, events, executionEvents);
+  return { db, tasks, task, approvals, runner, executionEvents, leases, runtimes };
 }
 
 describe("ExecutionRunner", () => {
+  it("keeps a package approval undelivered when the durable decision checkpoint fails", async () => {
+    const { tasks, task, runner, approvals, executionEvents, runtimes } = await setup();
+    const plan = tasks.getPlan(task.id, tasks.get(task.id)!.approvedPlanVersion!)!.content;
+    let ready!: () => void;
+    const requested = new Promise<void>((resolve) => { ready = resolve; });
+    const running = runner.runPackage({ taskId: task.id, packageId: "approval-fault", agentId: "a", prompt: "work", plan, attemptNo: 1 },
+      (event) => { if (event.type === "approval_required") ready(); });
+    await requested;
+    const request = approvals.recoverPending().pending[0]!;
+    let deliveries = 0;
+    const answer = runtimes.answerApproval.bind(runtimes);
+    runtimes.answerApproval = async (...args) => { deliveries += 1; await answer(...args); };
+    const append = executionEvents.append.bind(executionEvents);
+    executionEvents.append = ((event, project) => {
+      if (event.type === "approval.decided") throw new Error("approval_checkpoint_unavailable");
+      return append(event, project);
+    }) as typeof executionEvents.append;
+    await expect(runner.decide(request.id, { clientDecisionKey: "same-decision", decision: "allow_once" })).rejects.toThrow("approval_checkpoint_unavailable");
+    expect(deliveries).toBe(0);
+    executionEvents.append = append;
+    await runner.decide(request.id, { clientDecisionKey: "retry-with-new-ui-key", decision: "allow_once" });
+    expect((await running).status).toBe("completed");
+    expect(deliveries).toBe(1);
+  });
+
+  it("pauses a legacy execution at budget and resumes from the same configuration and tool history", async () => {
+    let attempts = 0;
+    const seen: import("@socrates/core").RuntimeConversationMessage[][] = [];
+    const profiles: unknown[] = [];
+    const { db, tasks, task, runner } = await setup((opened) => {
+      profiles.push(opened.runtimeOptions?.runProfile);
+      return { kind: "budget", capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: true, toolCalling: true },
+        async open() {}, async close() {}, async answerApproval() {}, async interrupt() {},
+        async *start(input) {
+          seen.push(input.messages ?? []);
+          if (++attempts === 1) {
+            yield { type: "tool_call", callId: "read", name: "read_file", input: { path: "note" } };
+            yield { type: "tool_result", callId: "read", name: "read_file", output: { preview: "already read", byteSize: 12, truncated: false }, isError: false };
+            yield { type: "status", status: "interrupted", message: "budget_exhausted" };
+          } else yield { type: "text_delta", text: "finished" };
+        } };
+    });
+    await runner.run(task.id);
+    expect(tasks.get(task.id)).toMatchObject({ state: "paused", terminalReason: "budget_exhausted" });
+    db.query("UPDATE session_agents SET snapshot_json = ? WHERE session_id = 's' AND agent_id = 'a'").run(JSON.stringify({ modelId: "changed" }));
+    await runner.resumeAfterReview(task.id);
+    expect(tasks.get(task.id)?.state).toBe("completed");
+    expect(profiles[1]).toEqual(profiles[0]);
+    expect(seen[1]?.some((message) => message.role === "tool" && message.content === "already read")).toBe(true);
+  });
+
+  it("queues direct work behind a member package and lets the queued run cancel", async () => {
+    const { db, tasks, task, runner, approvals, runtimes, executionEvents, leases } = await setup();
+    const other = new SessionStore(db).create({ title: "other", mode: "single_agent", workspaceId: "w", primaryAgentId: "a",
+      agents: [{ agentId: "a", snapshot: { nickname: "a" }, executionEligible: true }] });
+    const direct = new SingleAgentRunner(db, runtimes, approvals, executionEvents,
+      new AttachmentResolver(db, `${tmpdir()}/socrates-lease-test-${crypto.randomUUID()}`), undefined, leases);
+    const plan = tasks.getPlan(task.id, tasks.get(task.id)!.approvedPlanVersion!)!.content;
+    let approvedReady!: () => void;
+    const ready = new Promise<void>((resolve) => { approvedReady = resolve; });
+    const child = runner.runPackage({ taskId: task.id, packageId: "holder", agentId: "b", prompt: "hold", plan, attemptNo: 1 },
+      (event) => { if (event.type === "approval_required") approvedReady(); });
+    await ready;
+    let queuedReady!: () => void;
+    const queued = new Promise<void>((resolve) => { queuedReady = resolve; });
+    const abort = new AbortController();
+    const solo = direct.run({ sessionId: other.id, runtimeKind: "native_ai_sdk", prompt: "wait", signal: abort.signal },
+      (event) => { if (event.type === "extension" && event.name === "workspace_queued") queuedReady(); });
+    await queued;
+    expect(db.query("SELECT COUNT(*) AS count FROM runtime_sessions").get()).toEqual({ count: 1 });
+    abort.abort(new Error("user_cancelled"));
+    expect((await solo).status).toBe("cancelled");
+    const request = approvals.recoverPending().pending[0]!;
+    await runner.decide(request.id, { clientDecisionKey: "release-holder", decision: "allow_once" });
+    expect((await child).status).toBe("completed");
+    expect(db.query("SELECT COUNT(*) AS count FROM workspace_leases").get()).toEqual({ count: 0 });
+  });
+
+  it("continues a budget-stopped member using its persisted tool facts and frozen profile", async () => {
+    let attempts = 0;
+    const messages: import("@socrates/core").RuntimeConversationMessage[][] = [];
+    const profiles: unknown[] = [];
+    const { db, tasks, task, runner } = await setup((opened) => {
+      profiles.push(opened.runtimeOptions?.runProfile);
+      return { kind: "budget", capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: true, toolCalling: true },
+        async open() {}, async close() {}, async answerApproval() {}, async interrupt() {},
+        async *start(input) {
+          messages.push(input.messages ?? []);
+          if (++attempts === 1) {
+            yield { type: "tool_call", callId: "read", name: "read_file", input: { path: "note" } };
+            yield { type: "tool_result", callId: "read", name: "read_file", output: { preview: "verified old fact", byteSize: 17, truncated: false }, isError: false };
+            yield { type: "text_delta", text: "partial" };
+            yield { type: "status", status: "interrupted", message: "budget_exhausted" };
+          } else yield { type: "text_delta", text: "finished" };
+        } };
+    });
+    const plan = tasks.getPlan(task.id, tasks.get(task.id)!.approvedPlanVersion!)!.content;
+    const frozen = { providerId: "p", modelId: "fixed", reasoningEffort: "auto", modelCapabilities: { contextWindowTokens: 32000 } };
+    const stopped = await runner.runPackage({ taskId: task.id, packageId: "budget", agentId: "a", prompt: "first",
+      plan, attemptNo: 1, runProfile: frozen });
+    expect(stopped.status).toBe("budget_stopped");
+    db.query("UPDATE session_agents SET snapshot_json = ? WHERE session_id = 's' AND agent_id = 'a'").run(JSON.stringify({ modelId: "changed" }));
+    const resumed = await runner.runPackage({ taskId: task.id, packageId: "budget", agentId: "a", prompt: "continue",
+      plan, attemptNo: 2, previousRunId: stopped.runId, runProfile: frozen });
+    expect(resumed.status).toBe("completed");
+    expect(messages[1]?.at(-1)?.content).toBe("continue");
+    expect(messages[1]?.some((message) => message.role === "tool" && message.content === "verified old fact")).toBe(true);
+    expect(profiles[1]).toEqual(profiles[0]);
+    expect(tasks.get(task.id)?.state).toBe("executing");
+    const replayed = await runner.runPackage({ taskId: task.id, packageId: "budget", agentId: "a", prompt: "continue",
+      plan, attemptNo: 2, previousRunId: stopped.runId, runProfile: frozen });
+    expect(replayed).toMatchObject({ status: "completed", result: "finished" });
+    expect(attempts).toBe(2);
+  });
+
+  it("executes a member package without completing its parent and keeps a child lease", async () => {
+    const { db, tasks, task, runner, approvals } = await setup();
+    const plan = tasks.getPlan(task.id, tasks.get(task.id)!.approvedPlanVersion!)!;
+    let requested!: () => void;
+    const ready = new Promise<void>((resolve) => { requested = resolve; });
+    const work = runner.runPackage({ taskId: task.id, packageId: "one", agentId: "b", prompt: "run tests",
+      plan: plan.content, attemptNo: 1 }, (event) => { if (event.type === "approval_required") requested(); });
+    await ready;
+    expect(db.query("SELECT task_id FROM workspace_leases").get()).toEqual({ task_id: "package:one:1" });
+    expect(tasks.get(task.id)?.state).toBe("executing");
+    const request = approvals.recoverPending().pending[0]!;
+    expect(request.taskId).toBe("package:one:1");
+    await runner.decide(request.id, { clientDecisionKey: "package-approval", decision: "allow_once" });
+    expect((await work).status).toBe("completed");
+    expect(tasks.get(task.id)?.state).toBe("executing");
+    expect(db.query("SELECT COUNT(*) AS count FROM workspace_leases").get()).toEqual({ count: 0 });
+  });
+
   it("fails before Runtime open when the durable Turn start checkpoint is unavailable", async () => {
     const { db, task, runner, executionEvents } = await setup();
     const append = executionEvents.append.bind(executionEvents);

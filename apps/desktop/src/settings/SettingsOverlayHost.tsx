@@ -1,3 +1,4 @@
+import type { SettingsSection } from "./settingsOverlay";
 import { useEffect, useRef } from "react";
 import { useT } from "../store";
 import Settings from "../Settings";
@@ -12,10 +13,12 @@ import { hasOpenNestedDialog } from "../dialog/dialogLayer";
  */
 export default function SettingsOverlayHost({
   open,
+  section,
   focusNonce,
   onClose,
 }: {
   open: boolean;
+  section?:SettingsSection;
   focusNonce: number;
   onClose: () => void;
 }) {
@@ -96,7 +99,7 @@ export default function SettingsOverlayHost({
         </header>
         {/* 独立滚动区：设置内容不影响底下房间的滚动位置 */}
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <Settings />
+          <Settings initialSection={section} />
         </div>
       </div>
     </div>

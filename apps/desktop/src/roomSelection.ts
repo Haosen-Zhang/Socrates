@@ -17,9 +17,10 @@ export type WorkspaceSelection =
   | { kind: "managed" }
   | { kind: "existing"; workspaceId: string | null };
 
-/** New rooms have one working-room shape. Runtime mode is derived from members. */
+/** Kind controls workspace authority; members do not choose collaboration policy. */
 export type RoomDraft = {
   title: string;
+  kind?: RoomKind;
   agentIds: string[];
   /** Chosen once during creation and persisted; never re-derived from member order. */
   primaryAgentId: string | null;
@@ -32,7 +33,7 @@ export function roomDraftBlocker(draft: RoomDraft): string | null {
   if (!draft.primaryAgentId || !draft.agentIds.includes(draft.primaryAgentId)) {
     return "room_requires_primary_agent";
   }
-  if (draft.workspaceSelection.kind === "existing" && !draft.workspaceSelection.workspaceId) {
+  if (draft.kind !== "chat" && draft.workspaceSelection.kind === "existing" && !draft.workspaceSelection.workspaceId) {
     return "room_requires_workspace";
   }
   return null;
@@ -42,15 +43,15 @@ export function roomDraftBlocker(draft: RoomDraft): string | null {
 export function roomCreatePayload(draft: RoomDraft): {
   kind: RoomKind;
   mode: ConversationMode;
-  workspaceSelection: WorkspaceSelection;
+  workspaceSelection?: WorkspaceSelection;
   agentIds: string[];
   primaryAgentId: string;
 } {
   if (!draft.primaryAgentId) throw new Error("room_requires_primary_agent");
   return {
-    kind: "cowork",
-    mode: draft.agentIds.length > 1 ? "multi_agent" : "single_agent",
-    workspaceSelection: draft.workspaceSelection,
+    kind: draft.kind ?? "cowork",
+    mode: draft.kind === "chat" ? "chat" : draft.agentIds.length > 1 ? "multi_agent" : "single_agent",
+    workspaceSelection: draft.kind === "chat" ? undefined : draft.workspaceSelection,
     agentIds: draft.agentIds,
     primaryAgentId: draft.primaryAgentId,
   };

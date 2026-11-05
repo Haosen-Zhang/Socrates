@@ -1,3 +1,19 @@
+# Implementation evidence
+
+- User acceptance source: attached Pasted text.txt, all 22 criteria + engineering verification.
+- Existing rooms.ts is legacy Chat; sessionRoutes hard-codes cowork/workspace creation.
+- Existing native production factory reads global agents rather than session snapshot.
+- Existing core resolveRoomRuntime already respects explicit strategy for Work; UI entry needs reconnection.
+- Existing durable execution events, supervisor and tool journal retained.
+- No dependencies/framework migration planned; avoid duplicating tool execution paths.
+
+
+Final evidence: doc/chat-work-collaboration-acceptance.md; /tmp/socrates-tests-delivery.log (828 pass, no skips/failures); output/playwright/{ui-checks,team-checks}.json. Shared Native tools, persisted facts, review semantics and original source history retained. No new production dependencies.
+
+---
+
+## Prior development record (preserved)
+
 # Notes: Socrates proxy and product polish
 
 ## Sources

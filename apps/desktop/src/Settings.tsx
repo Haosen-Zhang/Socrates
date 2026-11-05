@@ -382,9 +382,10 @@ function Placeholder({ titleKey }: { titleKey: string }) {
   );
 }
 
-export default function Settings() {
+export default function Settings({initialSection="general"}:{initialSection?:SectionId}) {
   const t = useT();
-  const [section, setSection] = useState<SectionId>("general");
+  const [section, setSection] = useState<SectionId>(initialSection);
+  useEffect(()=>setSection(initialSection),[initialSection]);
 
   return (
     <div className="flex h-[calc(100vh-53px)]">

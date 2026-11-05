@@ -124,7 +124,7 @@ export async function observeDurableRun(input: {
       }
     } catch (error) {
       if (error instanceof ProjectionFailure) throw error.cause;
-      if (error instanceof Error && error.message === "execution_event_run_mismatch") throw error;
+      if (error instanceof Error && ["execution_event_run_mismatch", "invalid_execution_event"].includes(error.message)) throw error;
       if (!input.shouldContinue()) return { lastSeq, terminal: false };
     }
     if (!input.shouldContinue()) return { lastSeq, terminal: false };

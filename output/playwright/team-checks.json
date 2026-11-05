@@ -1,0 +1,14 @@
+{
+  "checks": [
+    {
+      "check": "Manager creates two assigned packages before approval",
+      "ok": true
+    },
+    {
+      "check": "Approved UI task executes distinct members with dependency",
+      "ok": true
+    }
+  ],
+  "errors": [],
+  "taskId": "team-4154a693e2a645c5e78f2039f24d0327"
+}

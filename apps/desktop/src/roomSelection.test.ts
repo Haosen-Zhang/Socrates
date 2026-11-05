@@ -83,3 +83,10 @@ describe("managed workspace ownership", () => {
       .toBe(false);
   });
 });
+
+it("creates Chat without inheriting any workspace", () => {
+  const payload = roomCreatePayload(draft({kind: "chat", workspaceSelection: {kind:"existing",workspaceId:"w"}}));
+  expect(payload.kind).toBe("chat");
+  expect(payload.mode).toBe("chat");
+  expect(payload.workspaceSelection).toBeUndefined();
+});

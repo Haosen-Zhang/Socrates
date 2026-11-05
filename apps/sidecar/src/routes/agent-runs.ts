@@ -120,5 +120,9 @@ export function agentRunRoutes(
       return c.json({ error: error instanceof Error ? error.message : "cancel_failed" }, 409);
     }
   });
+  app.post("/runs/:id/continue", async (c) => {
+    try { return c.json(await supervisor.start(runner.continuationInput(c.req.param("id"))), 202); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : "continue_failed" }, 409); }
+  });
   return app;
 }

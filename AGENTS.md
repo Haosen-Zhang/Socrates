@@ -2,7 +2,7 @@
 
 Socrates 是一个多模型群聊 + 本地协作的桌面 Agent 工作台：把不同厂商的 LLM 拉进同一个房间，按可控的编排策略讨论同一个任务，并能在本地工作区里真正改代码/跑命令。
 
-顶层只有两种房间：**Chat**（1..N Agent 纯讨论，不绑工作区、无工具）与 **Co-work**（1..N Agent 在工作区协作，有工具/执行）。Co-work 多 Agent 走「讨论 → 综合计划 → 审批 → 执行」，支持 Boss 统筹与 Agent 审核（真实生效）。执行内核是自研的 `native_ai_sdk` 运行时，用你在设置里配的 provider key 跑（**Codex 依赖已移除，#77**）。
+顶层只有两种房间：**Chat**（1..N Agent 纯讨论，不绑工作区、无工具）与 **Work**（内部 kind=`cowork`，1..N Agent 在工作区协作，有工具/执行）。Work 通过显式策略选择直接处理、讨论或团队协作；团队走「可选讨论 → Manager 工作包 → 审批 → 成员执行 → 可选审核」，支持 Boss 统筹与 Agent 审核（真实生效）。执行内核是自研的 `native_ai_sdk` 运行时，用你在设置里配的 provider key 跑（**Codex 依赖已移除，#77**）。
 
 > **架构文档（务必先读）**：`doc/architecture.md`（当前真实架构，含图）、`doc/native-runtime-and-langgraph-roadmap.md`（演进路线：Native Runtime + LangGraph.js）。注意仓库同时有 `doc/`（架构/设计）与 `docs/`（adr、agents 流程）两个目录。
 
@@ -17,6 +17,8 @@ TypeScript 单栈，Bun workspaces，三个包：
 | `apps/desktop` | Tauri + React + Zustand + Tailwind。Rust 侧（`src-tauri`）启动时拉起 sidecar，经 stdout 握手把随机端口+token 交给前端；前端 `store.ts` 消费 SSE。 |
 
 关键设计与取舍见 `docs/adr/`（自建、Bun sidecar、MVP 无黑板）；架构/领域/编排细节见 `docs/02`–`docs/04`。
+
+最新 Chat / Work 命令、成员快照和工作包协议见 `doc/chat-work-collaboration-acceptance.md`。成员数量不得代替显式 strategy，普通 @ 文本不得触发调度。
 
 ## 开发流程
 

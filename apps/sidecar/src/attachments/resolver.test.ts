@@ -9,6 +9,27 @@ const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
 describe("AttachmentResolver", () => {
+  it("freezes bounded directory listings without reading descendants and keeps file reference hashes", () => {
+    const root = `${tmpdir()}/socrates-directory-${crypto.randomUUID()}`;
+    const data = `${tmpdir()}/socrates-directory-data-${crypto.randomUUID()}`;
+    roots.push(root, data);
+    mkdirSync(`${root}/src`, { recursive: true });
+    writeFileSync(`${root}/src/code.ts`, "file contents are not directory context");
+    const db = openDb(":memory:");
+    const workspace = new WorkspaceManager(db).select(root);
+    const resolver = new AttachmentResolver(db, data);
+    const directory = resolver.importWorkspaceReference(workspace, "src");
+    expect(directory.kind).toBe("directory");
+    const snapshot = resolver.read(directory.record.id).bytes.toString();
+    expect(snapshot).toContain("code.ts");
+    expect(snapshot).not.toContain("file contents");
+    expect(resolver.importWorkspaceReference(workspace, "src").record.sha256).toBe(directory.record.sha256);
+    writeFileSync(`${root}/src/new.ts`, "new");
+    expect(resolver.importWorkspaceReference(workspace, "src").record.sha256).not.toBe(directory.record.sha256);
+    expect(resolver.importWorkspaceReference(workspace, "src/code.ts").kind).toBe("file");
+    expect(resolver.read(resolver.importWorkspaceReference(workspace, "src/code.ts").record.id).bytes.toString()).toBe("file contents are not directory context");
+    db.close();
+  });
   it("hashes, stores and deduplicates workspace files without persisting their source path", () => {
     const root = `${tmpdir()}/socrates-attachment-workspace-${crypto.randomUUID()}`;
     const data = `${tmpdir()}/socrates-attachment-data-${crypto.randomUUID()}`;

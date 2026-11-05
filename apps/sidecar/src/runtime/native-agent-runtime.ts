@@ -11,6 +11,8 @@ import {
   type ToolContext,
   type ToolDefinition,
   type ToolOutputRef,
+  type ProviderType,
+  type ReasoningEffort,
   truncateToolOutput,
   isStructuredExecutionError,
   StructuredExecutionError,
@@ -21,6 +23,7 @@ import type { ToolRegistry } from "../tools/registry";
 import { deniedToolOutcome } from "../tools/recovery-outcome";
 import { classifyProviderError } from "../provider-errors";
 import { executeProviderWithRetry, type ProviderRetryLifecycleEvent } from "../provider-retry";
+import { reasoningProviderOptions } from "../gateway-aisdk";
 
 type NativeTool = {
   definition: ToolDefinition;
@@ -49,6 +52,7 @@ type NativeStreamPart =
   | { type: "usage"; usage: NormalizedUsage }
   | { type: "error"; error: unknown }
   | { type: "provider_step_completed" }
+  | { type: "budget_exhausted"; steps: number }
   | ProviderRetryLifecycleEvent;
 
 export type NativeStreamFactory = (input: {
@@ -113,6 +117,7 @@ export function validateNativeToolInput(definition: ToolDefinition, input: unkno
 export function createAiSdkNativeStream(
   model: LanguageModel,
   invokeStreamText: typeof streamText = streamText,
+  profile: { temperature?: number; providerType?: ProviderType; modelId?: string; reasoningEffort?: ReasoningEffort } = {},
 ): NativeStreamFactory {
   return async function* (input) {
     let messages: ModelMessage[] = input.messages.length
@@ -176,6 +181,9 @@ export function createAiSdkNativeStream(
           const result = invokeStreamText({
             model,
             system: input.system,
+            temperature: profile.temperature,
+            providerOptions: profile.providerType && profile.modelId
+              ? reasoningProviderOptions(profile.providerType, profile.modelId, profile.reasoningEffort) : undefined,
             messages,
             tools,
             toolApproval,
@@ -283,6 +291,9 @@ export function createAiSdkNativeStream(
         messages.push({ role: "tool", content: responses });
       }
       yield { type: "provider_step_completed" };
+      if (remainingSteps <= 0 && (pending.length > 0 || hadToolActivity)) {
+        yield { type: "budget_exhausted", steps: input.maxSteps };
+      }
       if (!shouldContinueNativeSampling({ pendingApprovals: pending.length, hadToolActivity, remainingSteps })) break;
     }
   };
@@ -475,6 +486,7 @@ export class NativeAgentRuntime implements AgentRuntime {
     const turnId = input.execution?.turnId ?? this.input.taskId;
     let stepNo = 0;
     let fatalToolError: unknown;
+    let budgetExhausted = false;
     const tools = Object.fromEntries(definitions.map((definition) => [definition.name, {
       definition,
       permission: () => {
@@ -607,6 +619,10 @@ export class NativeAgentRuntime implements AgentRuntime {
         };
         else if (event.type === "usage") yield event;
         else if (event.type === "error") throw event.error;
+        else if (event.type === "budget_exhausted") {
+          budgetExhausted = true;
+          yield { type: "extension", name: "budget_exhausted", payload: { steps: event.steps } };
+        }
         else yield {
           type: "extension",
           name: event.type,
@@ -615,7 +631,9 @@ export class NativeAgentRuntime implements AgentRuntime {
       }
       if (fatalToolError) throw fatalToolError;
       if (this.interrupted || abortController.signal.aborted) throw new Error("native_agent_cancelled");
-      yield { type: "status", status: "completed" };
+      yield budgetExhausted
+        ? { type: "status", status: "interrupted", message: "budget_exhausted" }
+        : { type: "status", status: "completed" };
     } finally {
       input.signal?.removeEventListener("abort", abortFromRequest);
       if (this.activeAbortController === abortController) this.activeAbortController = null;

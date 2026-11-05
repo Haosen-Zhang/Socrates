@@ -22,6 +22,35 @@ const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
 describe("NativeAgentRuntime", () => {
+  it("passes the frozen sampling parameters and exposes a last-step tool budget stop", async () => {
+    let observed: Record<string, unknown> | undefined;
+    const stream = createAiSdkNativeStream({} as never, ((options) => {
+      observed = options as unknown as Record<string, unknown>;
+      return { fullStream: (async function* () {
+        yield { type: "tool-result", toolCallId: "read", toolName: "read_file", output: "done" };
+      })(), responseMessages: Promise.resolve([]), steps: Promise.resolve([{}]) } as never;
+    }) as typeof import("ai").streamText, { providerType: "openai_compatible", modelId: "gpt-5", temperature: 0.2, reasoningEffort: "high" });
+    const events = [];
+    for await (const event of stream({ prompt: "work", messages: [], tools: {}, maxSteps: 1,
+      requestApproval: async () => ({ approved: false }) })) events.push(event);
+    expect(observed).toMatchObject({ temperature: 0.2, providerOptions: { openaiCompatible: { reasoningEffort: "high" } } });
+    expect(events.at(-1)).toEqual({ type: "budget_exhausted", steps: 1 });
+  });
+
+  it("reports an exhausted tool loop without completing the task", async () => {
+    const db = openDb(":memory:");
+    const registry = new ToolRegistry([]);
+    const runtime = new NativeAgentRuntime({ sessionId: "s", taskId: "t", agentId: "a",
+      workspaceId: "w", workspaceIdentity: "h", registry,
+      executor: new ToolExecutor(db, registry, new ApprovalManager(db)),
+      stream: async function* () { yield { type: "budget_exhausted", steps: 8 }; } });
+    await runtime.open();
+    const events = [];
+    for await (const event of runtime.start({ prompt: "work" })) events.push(event);
+    expect(events.at(-1)).toEqual({ type: "status", status: "interrupted", message: "budget_exhausted" });
+    expect(events.some((event) => event.type === "status" && event.status === "completed")).toBe(false);
+  });
+
   it("persists SDK denial events as explicit tool results", async () => {
     const stream = createAiSdkNativeStream({} as never, (() => ({
       fullStream: (async function* () {

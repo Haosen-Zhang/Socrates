@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
+import { WorkPackageStore } from "./work-package-store";
+import { validateWorkPackages } from "@socrates/core";
 import { hashStructuredPlan, reduceTaskState, type ReasoningEffort, type StructuredPlan, type TaskState, type TaskStateEvent, type TokenUsage } from "@socrates/core";
 import { UsageCollector, normalizeTokenUsage } from "../services/usage-collector";
 import type { HistoryStore } from "../store/history-store";
@@ -18,6 +21,12 @@ export interface MultiTaskRecord {
 }
 
 export interface MultiTaskConfig {
+  clientRequestId?: string;
+  teamExecution?: boolean;
+  targetAgentIds?: string[];
+  contextMessageCursor?: number;
+  inputContext?: string;
+  memberProfiles?: Record<string, Record<string, unknown>>;
   speakingOrder: string[];
   maxRounds: number;
   synthesizerId: string;
@@ -77,12 +86,21 @@ export class MultiTaskStore {
     for (const [agentId, fallback] of Object.entries(input.config.fallbackOrderByAgent ?? {})) {
       if (!ids.has(agentId) || !Array.isArray(fallback) || new Set(fallback).size !== fallback.length || fallback.some((id) => id === agentId || !ids.has(id))) throw new Error("multi_agent_fallback_invalid");
     }
-    const id = crypto.randomUUID();
+    if (input.config.targetAgentIds?.some((id) => !ids.has(id))) throw new Error("multi_agent_target_invalid");
+    const id = input.config.clientRequestId
+      ? `team-${createHash("sha256").update(`${input.sessionId}:${input.config.clientRequestId}`).digest("hex").slice(0, 32)}`
+      : crypto.randomUUID();
+    const previous = this.get(id);
+    if (previous) {
+      if (previous.prompt !== input.prompt.trim() || JSON.stringify({ ...previous.config, contextMessageCursor: undefined, memberProfiles: undefined }) !== JSON.stringify({ ...input.config, contextMessageCursor: undefined, memberProfiles: undefined })) throw new Error("client_request_id_conflict");
+      return previous;
+    }
     const attemptId = crypto.randomUUID();
     const messageId = crypto.randomUUID();
     const now = new Date().toISOString();
+    const frozenConfig = { ...input.config, memberProfiles: Object.fromEntries(snapshots.map((s) => [s.agent_id, JSON.parse(s.snapshot_json)])), contextMessageCursor: this.db.query<{ cursor: number }, [string]>("SELECT COALESCE(MAX(rowid), 0) AS cursor FROM session_messages WHERE session_id = ?").get(input.sessionId)?.cursor ?? 0 };
     const projection: MultiTaskCreateProjection = {
-      id, attemptId, sessionId: input.sessionId, prompt: input.prompt.trim(), config: input.config, createdAt: now,
+      id, attemptId, sessionId: input.sessionId, prompt: input.prompt.trim(), config: frozenConfig, createdAt: now,
     };
     const projectTask = () => this.projectCreate(projection);
     if (this.history) {
@@ -96,7 +114,7 @@ export class MultiTaskStore {
     } else {
       this.db.transaction(() => {
         projectTask();
-        this.db.query("INSERT INTO session_messages (id, session_id, role, content, status, created_at) VALUES (?, ?, 'user', ?, 'completed', ?)").run(messageId, input.sessionId, input.prompt.trim(), now);
+        this.db.query("INSERT INTO session_messages (id, session_id, run_id, role, content, status, created_at) VALUES (?, ?, ?, 'user', ?, 'completed', ?)").run(messageId, input.sessionId, id, input.prompt.trim(), now);
         this.db.query("INSERT INTO message_parts (id, message_id, ordinal, type, text) VALUES (?, ?, 0, 'text', ?)").run(crypto.randomUUID(), messageId, input.prompt.trim());
       })();
     }
@@ -266,15 +284,30 @@ export class MultiTaskStore {
   }
 
   async addPlan(input: { taskId: string; content: StructuredPlan; createdBy: string; parentVersion?: number | null }): Promise<PlanVersionRecord> {
+    const ownerTask = this.get(input.taskId);
+    if (ownerTask?.config.teamExecution && !input.content.workPackages) throw new Error("team_work_packages_required");
+    if (input.content.workPackages) {
+      const task = ownerTask;
+      if (!task) throw new Error("multi_task_not_found");
+      const ids = this.db.query<{ agent_id: string }, [string]>("SELECT agent_id FROM session_agents WHERE session_id = ?").all(task.sessionId).map((m) => m.agent_id);
+      const errors = validateWorkPackages(input.content.workPackages, ids);
+      if (task.config.targetAgentIds?.length && input.content.workPackages.some((p) => !task.config.targetAgentIds!.includes(p.executorAgentId))) errors.push("work_package_executor_outside_targets");
+      if (errors.length) throw new Error(errors[0]);
+      new WorkPackageStore(this.db).validateDefinitions(input.taskId, input.content.workPackages);
+    }
     const version = (this.db.query<{ next: number }, [string]>("SELECT COALESCE(MAX(version), 0) + 1 AS next FROM plan_versions WHERE task_id = ?").get(input.taskId)?.next ?? 1);
     const contentHash = await hashStructuredPlan(input.content);
     const evidenceHash = await hashStructuredPlan({ ...input.content, objective: "evidence", summary: "evidence", steps: [] });
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    this.db.query(`INSERT INTO plan_versions
-      (id, task_id, version, parent_version, content_json, content_hash, evidence_hash, created_by, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`)
-      .run(id, input.taskId, version, input.parentVersion ?? null, JSON.stringify(input.content), contentHash, evidenceHash, input.createdBy, now);
+    this.db.transaction(() => {
+      this.db.query("UPDATE plan_versions SET status = 'superseded' WHERE task_id = ? AND status = 'pending'").run(input.taskId);
+      this.db.query(`INSERT INTO plan_versions
+        (id, task_id, version, parent_version, content_json, content_hash, evidence_hash, created_by, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`)
+        .run(id, input.taskId, version, input.parentVersion ?? null, JSON.stringify(input.content), contentHash, evidenceHash, input.createdBy, now);
+      if (input.content.workPackages) new WorkPackageStore(this.db).replacePlan(input.taskId, version, input.content.workPackages);
+    })();
     return this.getPlan(input.taskId, version)!;
   }
 

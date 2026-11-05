@@ -1,3 +1,5 @@
+import type { WorkPackageView, TeamSummaryView } from "./roomModels";
+import { initialRoomNavigation, navigateRoom, switchRoomMode, type RoomNavigation, type RoomMention, type SelectedMention } from "./roomNavigation";
 import { roomCreatePayload, roomDraftBlocker, type RoomDraft } from "./roomSelection";
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
@@ -40,19 +42,15 @@ import { deriveRoomTaskConfig } from "./taskSurface";
 import { canCommitMultiTaskLoad } from "./multiTaskSelection";
 import {
   type ActiveAgentRunObserver,
-  captureActiveAgentRun,
   RetryableAgentRunProjectionError,
-  agentRunStateAfterObservation,
   observeDurableRun,
   pollAgentRunUntilTerminal,
-  stopAgentObservers,
   type AgentRunStatusView,
 } from "./agentRunTransport";
 import {
   advanceActiveAgentRunCursor,
   clearActiveAgentRunCursor,
   readActiveAgentRunCursor,
-  selectActiveAgentRunCursor,
   writeActiveAgentRunCursor,
 } from "./agentRunCursor";
 
@@ -95,6 +93,7 @@ export type PendingApproval = {
   id: string;
   kind: string;
   subjectId: string;
+  taskId?: string;
   risk: ToolRisk;
   freshHumanRequired: boolean;
   status: "pending" | "allowed" | "denied" | "expired";
@@ -110,6 +109,8 @@ export type MultiPlan = {
   content: { objective: string; summary: string; steps: Array<{ id: string; title: string; description: string; files: string[]; commands: string[]; risks: string[]; verification: string[] }>; evidence: Array<{ refId: string; snapshotHash: string }> };
 };
 export type MultiTaskView = {
+  workPackages?: WorkPackageView[];
+  summary?: string | TeamSummaryView;
   id: string; sessionId: string; prompt: string; state: TaskState; resumeFrom: string | null; terminalReason: string | null; outcomeUnknown: boolean; requiresExecutionReview: boolean;
   config: { speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string; effortByAgent?: Record<string, ReasoningEffort>; fallbackOrderByAgent?: Record<string, string[]> };
   plan: MultiPlan | null;
@@ -134,7 +135,43 @@ export type TaskForm = {
   debate?: DebateRoleForm;
 };
 
+export function mergeSessionMessages(current:SessionMessage[], incoming:SessionMessage[]):SessionMessage[] {
+  const messages=new Map(current.map(message=>[message.id,message]));
+  for(const message of incoming) messages.set(message.id,message);
+  return [...messages.values()].sort((a,b)=>a.sequence-b.sequence);
+}
+
+export type RoomCommandIntent = "respond" | "discuss" | "execute";
+export type RoomProjection = Pick<Store,
+  "sessionMessages" | "agentEvents" | "agentStreamText" | "pendingApprovals" | "agentRunning" | "agentError" | "activeAgentRunId" |
+  "multiTasks" | "currentMultiTask" | "multiRunning" | "multiError" | "multiStreamAgentId" | "multiStreamText" |
+  "messages" | "streaming" | "roomSending" | "chatError" | "tasks" | "activeTaskId" | "failedTurn" | "usageSummaries" |
+  "draftAttachments" | "draftWorkspaceRefs" | "workspacePathResults" | "lastStoppedRunId" | "activeRoomCommandId">;
+const emptyRoomProjection = (): RoomProjection => ({
+  activeRoomCommandId:null, lastStoppedRunId: null, sessionMessages: [], agentEvents: [], agentStreamText: "", pendingApprovals: [], agentRunning: false, agentError: null, activeAgentRunId: null,
+  multiTasks: [], currentMultiTask: null, multiRunning: false, multiError: null, multiStreamAgentId: null, multiStreamText: "",
+  messages: [], streaming: null, roomSending: false, chatError: null, tasks: [], activeTaskId: null, failedTurn: null, usageSummaries: [],
+  draftAttachments: [], draftWorkspaceRefs: [], workspacePathResults: [],
+});
+const projectionOf = (state: Store): RoomProjection => Object.fromEntries(Object.keys(emptyRoomProjection()).map(key => [key, state[key as keyof RoomProjection]])) as RoomProjection;
+
 export type Store = {
+  activeRoomCommandId:string | null;
+  lastStoppedRunId: string | null;
+  roomNavigation: RoomNavigation;
+  roomProjections: Record<string, RoomProjection>;
+  pendingRoomRequests:Record<string,{fingerprint:string;clientRequestId:string}>;
+  approvalDecisionKeys:Record<string,{decision:ApprovalDecision;key:string}>;
+  composerDrafts: Record<string, string>;
+  composerMentions: Record<string, SelectedMention[]>;
+  setComposerMentions: (roomId:string,mentions:SelectedMention[]) => void;
+  setComposerDraft: (roomId: string, text: string) => void;
+  setAppMode: (mode: "chat" | "cowork") => Promise<void>;
+  sendRoomCommand: (content: string, mentions: RoomMention[], intent: RoomCommandIntent, clientRequestId?: string) => Promise<boolean>;
+  continueAgentRun: () => Promise<void>;
+  applyMemberTemplate: (sessionId: string, agentId: string) => Promise<void>;
+  retryWorkPackage: (taskId: string, packageId: string, confirmOutcomeUnknown?:boolean) => Promise<void>;
+  assignWorkPackage: (taskId: string, packageId: string, executorAgentId: string) => Promise<void>;
   status: ConnStatus;
   handshake: Handshake | null;
   view: "chat" | "settings";
@@ -213,7 +250,7 @@ export type Store = {
   removeDraftAttachment: (id: string) => void;
   searchWorkspacePaths: (query: string) => Promise<void>;
   draftWorkspaceRefs: WorkspaceRef[];
-  addWorkspaceRef: (relativePath: string) => Promise<void>;
+  addWorkspaceRef: (relativePath: string) => Promise<WorkspaceRef>;
   removeDraftWorkspaceRef: (id: string) => void;
 
   mcpServers: McpServerRecord[];
@@ -235,13 +272,15 @@ export type Store = {
 
   /** providerId → 该供应商的可用模型型号（拉取失败为 []，前端退化为手输） */
   modelLists: Record<string, string[]>;
+  modelLoading:Record<string,boolean>;
+  modelListErrors:Record<string,string|null>;
   loadModels: (providerId: string, force?: boolean) => Promise<void>;
   modelContextWindows: Record<string, import("@socrates/core").ContextWindowResolution>;
   loadModelContextWindow: (providerId: string, modelId: string) => Promise<void>;
 
   agents: Agent[];
   loadAgents: () => Promise<void>;
-  saveAgent: (form: AgentForm, editingId: string | null) => Promise<void>;
+  saveAgent: (form: AgentForm, editingId: string | null) => Promise<Agent>;
   removeAgent: (id: string) => Promise<void>;
 
   rooms: Room[];
@@ -304,8 +343,25 @@ function persistActiveWorkspaceId(workspaceId: string | null): void {
 
 
 export const useStore = create<Store>((set, get) => {
+  const updateRoom = (roomId: string, patch: Partial<RoomProjection> | ((view: RoomProjection) => Partial<RoomProjection>)) => {
+    set(state => {
+      const visible = (state.currentSessionId ?? state.currentRoomId) === roomId;
+      const view = visible ? projectionOf(state) : state.roomProjections[roomId] ?? emptyRoomProjection();
+      const next = { ...view, ...(typeof patch === "function" ? patch(view) : patch) };
+      return { roomProjections: { ...state.roomProjections, [roomId]: next }, ...(visible ? next : {}) };
+    });
+  };
+  const currentRun = (roomId: string) => (get().currentSessionId === roomId ? get().activeAgentRunId : get().roomProjections[roomId]?.activeAgentRunId);
+  const selectProjection = (id: string, source: "session" | "room", mode: "chat" | "cowork") => {
+    set(state => {
+      const oldId = state.currentSessionId ?? state.currentRoomId;
+      const roomProjections = oldId ? {...state.roomProjections, [oldId]:projectionOf(state)} : state.roomProjections;
+      return {...(roomProjections[id] ?? emptyRoomProjection()), roomProjections,
+        currentSessionId: source === "session" ? id : null, currentRoomId: source === "room" ? id : null,
+        roomNavigation: navigateRoom(state.roomNavigation, mode, id)};
+    });
+  };
   const activeAgentObservers = new Map<string, ActiveAgentRunObserver>();
-  const backgroundAgentRunMonitors = new Map<string, ActiveAgentRunObserver>();
   const hs = () => {
     const h = get().handshake;
     if (!h) throw new Error("sidecar 未连接");
@@ -318,38 +374,50 @@ export const useStore = create<Store>((set, get) => {
       return null;
     }
   };
-  const monitorAgentRunInBackground = (sessionId: string, runId: string) => {
-    const existing = backgroundAgentRunMonitors.get(runId);
-    if (existing) return existing.promise;
-    const controller = new AbortController();
-    const promise = (async () => {
-      const terminal = await pollAgentRunUntilTerminal(
-        async () => requireOk<AgentRunStatusView>(
-          await sidecarFetch(hs(), `/agent/runs/${runId}`, { signal: controller.signal }),
-        ),
-        () => !controller.signal.aborted && get().activeAgentRunId === runId,
-        (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
-      );
-      if (!terminal || get().activeAgentRunId !== runId) return false;
-      const storage = cursorStorage();
-      if (storage) clearActiveAgentRunCursor(storage, runId);
-      const state = agentRunStateAfterObservation(runId, terminal, null);
-      set({
-        ...state,
-        pendingApprovals: [],
-        agentError: get().currentSessionId === sessionId ? state.agentError : null,
-      });
-      await Promise.allSettled([get().loadSessions()]);
-      return terminal.status === "completed";
-    })();
-    const monitor = { sessionId, controller, promise };
-    backgroundAgentRunMonitors.set(runId, monitor);
-    void promise.finally(() => {
-      if (backgroundAgentRunMonitors.get(runId) === monitor) {
-        backgroundAgentRunMonitors.delete(runId);
+  const submitApprovalDecision = async (scope:"agent"|"multi",requestId:string,decision:ApprovalDecision) => {
+    const prior=get().approvalDecisionKeys[requestId];
+    const key=prior?.decision === decision ? prior.key : crypto.randomUUID();
+    set(state=>({approvalDecisionKeys:{...state.approvalDecisionKeys,[requestId]:{decision,key}}}));
+    await requireOk(await sidecarFetch(hs(),`/${scope}/approvals/${requestId}/decision`,{method:"POST",body:JSON.stringify({decision,clientDecisionKey:key})}));
+    set(state=>{const approvalDecisionKeys={...state.approvalDecisionKeys};if(approvalDecisionKeys[requestId]?.key === key) delete approvalDecisionKeys[requestId];return {approvalDecisionKeys};});
+  };
+
+  const commandObservers = new Map<string, Promise<void>>();
+  const observeCommand = (roomId:string, commandId:string) => {
+    const existing=commandObservers.get(commandId);if(existing) return existing;
+    const observation=(async()=>{
+      let cursor=0,terminal=false;
+      updateRoom(roomId,{agentRunning:true,activeRoomCommandId:commandId});
+      while(!terminal) {
+        try {
+          const response=await sidecarFetch(hs(),`/room-commands/${commandId}/events?afterSeq=${cursor}`);
+          if(!response.ok || !response.body) await requireOk(response);
+          for await(const raw of streamSseEvents(response)) {
+            const event=raw as {type?:string;seq?:number;agentId?:string;text?:string;error?:string;message?:SessionMessage};
+            if(typeof event.seq === "number" && event.seq<=cursor) continue;
+            if(event.type === "delta" && event.text) updateRoom(roomId,view=>({agentStreamText:view.agentStreamText+event.text}));
+            if(event.type === "turn_started") updateRoom(roomId,{agentStreamText:"",multiStreamAgentId:event.agentId ?? null});
+            if(event.type === "message" && event.message) updateRoom(roomId,view=>({sessionMessages:view.sessionMessages.some(message=>message.id===event.message!.id) ? view.sessionMessages : [...view.sessionMessages,event.message!],agentStreamText:""}));
+            if(["completed","failed","cancelled"].includes(event.type ?? "")) {
+              terminal=true;
+              updateRoom(roomId,{agentRunning:false,activeRoomCommandId:null,multiStreamAgentId:null,agentStreamText:"",agentError:event.type === "completed" ? null : event.error ?? event.type!});
+            }
+            if(typeof event.seq === "number") cursor=event.seq;
+          }
+          if(!terminal) {
+            const command=await requireOk<{status:string;error?:string}>(await sidecarFetch(hs(),`/room-commands/${commandId}`));
+            if(!["dispatching","running"].includes(command.status)) {terminal=true;updateRoom(roomId,{agentRunning:false,activeRoomCommandId:null,agentStreamText:"",agentError:command.error ?? null});}
+          }
+        } catch(error) { updateRoom(roomId,{agentError:error instanceof Error ? error.message : String(error)}); }
+        if(!terminal) await new Promise(resolve=>setTimeout(resolve,500));
       }
-    });
-    return promise;
+      const sessionMessages=await requireOk<SessionMessage[]>(await sidecarFetch(hs(),`/sessions/${roomId}/messages`));
+      updateRoom(roomId,view=>({sessionMessages:mergeSessionMessages(view.sessionMessages,sessionMessages)}));
+      await get().loadSessions();
+    })();
+    commandObservers.set(commandId,observation);
+    void observation.finally(()=>commandObservers.delete(commandId));
+    return observation;
   };
 
   /** POST 到当前房间的流式端点并消费 SSE，把事件映射进 store。
@@ -361,6 +429,7 @@ export const useStore = create<Store>((set, get) => {
   const streamPost = async (suffix: string, body: unknown, optimisticMessage?: StoredMessage) => {
     const roomId = get().currentRoomId;
     if (!roomId || get().streaming || get().activeTaskId || get().roomSending) return;
+    const set: (patch: Partial<RoomProjection> | ((view: RoomProjection) => Partial<RoomProjection>)) => void = patch => updateRoom(roomId, patch);
     set({ chatError: null, roomSending: true });
     let pendingDelta = "";
     let deltaFrame: number | null = null;
@@ -448,6 +517,75 @@ export const useStore = create<Store>((set, get) => {
   };
 
   return {
+    activeRoomCommandId:null, lastStoppedRunId:null, roomNavigation: initialRoomNavigation(), pendingRoomRequests:{}, approvalDecisionKeys:{}, roomProjections: {}, composerDrafts: {}, composerMentions: {},
+    setComposerMentions: (roomId, mentions) => set(state => ({composerMentions:{...state.composerMentions,[roomId]:mentions}})),
+    setComposerDraft: (roomId, text) => set(state => ({composerDrafts: {...state.composerDrafts, [roomId]: text}})),
+    setAppMode: async mode => {
+      const nav = switchRoomMode(get().roomNavigation, mode);
+      set({roomNavigation:nav});
+      const id = nav.selected[mode];
+      if (id && get().sessions.some(session => session.id === id)) await get().selectAgentSession(id);
+      else if (id && get().rooms.some(room => room.id === id)) await get().selectRoom(id);
+      else set(state => {
+        const oldId = state.currentSessionId ?? state.currentRoomId;
+        return {...emptyRoomProjection(), currentSessionId:null, currentRoomId:null, roomProjections:oldId ? {...state.roomProjections,[oldId]:projectionOf(state)} : state.roomProjections};
+      });
+    },
+    applyMemberTemplate: async (sessionId, agentId) => {
+      await requireOk(await sidecarFetch(hs(), `/sessions/${sessionId}/agents/${agentId}/template`, {method:"PUT"}));
+      await get().loadSessions();
+    },
+    assignWorkPackage: async (taskId, packageId, executorAgentId) => {
+      await requireOk(await sidecarFetch(hs(), `/multi/tasks/${taskId}/packages/${encodeURIComponent(packageId)}`, {method:"PATCH",body:JSON.stringify({executorAgentId})}));
+      await get().loadMultiTask(taskId);
+    },
+    retryWorkPackage: async (taskId, packageId, confirmOutcomeUnknown) => {
+      await requireOk(await sidecarFetch(hs(), `/multi/tasks/${taskId}/packages/${encodeURIComponent(packageId)}/retry`, {method:"POST",body:JSON.stringify(confirmOutcomeUnknown === true ? {confirmOutcomeUnknown:true} : {})}));
+      await get().loadMultiTask(taskId);
+    },
+    continueAgentRun: async () => {
+      const sessionId = get().currentSessionId;
+      const lastRunId = get().lastStoppedRunId;
+      if (!sessionId || !lastRunId || get().agentRunning) return;
+      updateRoom(sessionId,{agentRunning:true,agentError:null});
+      try {
+        const started = await requireOk<{runId:string}>(await sidecarFetch(hs(), `/agent/runs/${lastRunId}/continue`, {method:"POST"}));
+        updateRoom(sessionId,{agentRunning:true,activeAgentRunId:started.runId,lastStoppedRunId:null,agentError:null,agentStreamText:""});
+        const storage=cursorStorage();if(storage) writeActiveAgentRunCursor(storage,{sessionId,runId:started.runId,afterSeq:0});
+        void get().resumeAgentRun(sessionId,started.runId);
+      } catch(error) {updateRoom(sessionId,{agentRunning:false,agentError:error instanceof Error ? error.message : String(error)});}
+    },
+    sendRoomCommand: async (content, mentions, intent, clientRequestId) => {
+      const roomId = get().currentSessionId;
+      if (!roomId || get().agentRunning || get().multiRunning) return false;
+      const attachments = get().draftAttachments.map(item=>item.id);
+      const workspaceRefs = get().draftWorkspaceRefs.map(item=>item.id);
+      const fingerprint=JSON.stringify({content,mentions,intent,attachments,workspaceRefs});
+      const pending=get().pendingRoomRequests[roomId];
+      clientRequestId ??= pending?.fingerprint === fingerprint ? pending.clientRequestId : crypto.randomUUID();
+      set(state=>({pendingRoomRequests:{...state.pendingRoomRequests,[roomId]:{fingerprint,clientRequestId:clientRequestId!}}}));
+      updateRoom(roomId,{agentRunning:true,lastStoppedRunId:null,agentError:null,agentEvents:[],agentStreamText:"",multiStreamAgentId:mentions.find(mention=>mention.type==="agent")?.type === "agent" ? (mentions.find(mention=>mention.type==="agent") as {agentId:string}).agentId : get().sessions.find(session=>session.id===roomId)?.primaryAgentId ?? null});
+      try {
+        const started = await requireOk<{kind:"direct"|"discussion"|"team";runId?:string;taskId?:string;commandId:string}>(await sidecarFetch(hs(),"/room-commands",{method:"POST",body:JSON.stringify({roomId,clientRequestId,content,mentions,intent,attachmentIds:attachments,workspaceRefIds:workspaceRefs})}));
+        set(state=>{const pendingRoomRequests={...state.pendingRoomRequests};delete pendingRoomRequests[roomId];return {pendingRoomRequests};});
+        updateRoom(roomId,{activeRoomCommandId:started.commandId});
+        if (started.kind === "direct" && started.runId) {
+          updateRoom(roomId,{activeAgentRunId:started.runId});
+          const storage=cursorStorage(); if(storage) writeActiveAgentRunCursor(storage,{sessionId:roomId,runId:started.runId,afterSeq:0});
+          void get().resumeAgentRun(roomId, started.runId, 0);
+        } else if (started.kind === "team" && started.taskId) {
+          updateRoom(roomId,{agentRunning:false,multiRunning:true});
+          void get().loadMultiTask(started.taskId).catch(error=>updateRoom(roomId,{multiError:error instanceof Error ? error.message : String(error)}));
+        } else {
+          void observeCommand(roomId,started.commandId);
+        }
+        void sidecarFetch(hs(),`/sessions/${roomId}/messages`).then(requireOk<SessionMessage[]>).then(sessionMessages=>updateRoom(roomId,{sessionMessages})).catch(()=>{});
+        return true;
+      } catch(error) {
+        updateRoom(roomId,{agentRunning:false,agentError:error instanceof Error ? error.message : String(error)});
+        return false;
+      }
+    },
     status: "connecting",
     handshake: null,
     view: "chat",
@@ -672,118 +810,39 @@ export const useStore = create<Store>((set, get) => {
       await get().selectAgentSession(sessionId);
     },
     selectAgentSession: async (id) => {
-      // Selecting a Session clears its transient projection. Detach the observer
-      // first so a later replay from seq 0 cannot race a background cursor.
-      const inMemoryRun = captureActiveAgentRun(
-        get().activeAgentRunId,
-        activeAgentObservers,
-        backgroundAgentRunMonitors,
-      );
-      await Promise.all([
-        stopAgentObservers(activeAgentObservers),
-        stopAgentObservers(backgroundAgentRunMonitors),
-      ]);
-      const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${id}/messages`));
-      set({ currentSessionId: id, currentRoomId: null, messages: [], sessionMessages, agentEvents: [], agentStreamText: "", pendingApprovals: [], agentError: null, multiTasks: [], currentMultiTask: null, multiError: null, usageSummaries: [] });
+      const session=get().sessions.find(item=>item.id === id);
+      selectProjection(id,"session",session?.kind === "chat" ? "chat" : "cowork");
+      const sessionMessages=await requireOk<SessionMessage[]>(await sidecarFetch(hs(),`/sessions/${id}/messages`));
+      updateRoom(id,{sessionMessages});
+      if(get().currentSessionId !== id) return;
       await get().loadCurrentUsage();
-      if (get().sessions.find((session) => session.id === id)?.collaboration.strategy === "team") {
-        await get().loadMultiTasks();
-      }
-      const storage = cursorStorage();
-      const resumable = selectActiveAgentRunCursor(
-        storage ? readActiveAgentRunCursor(storage) : null,
-        inMemoryRun,
-      );
-      if (resumable) {
-        const response = await sidecarFetch(hs(), `/agent/runs/${resumable.runId}`).catch(() => null);
-        if (response?.status === 404) {
-          clearActiveAgentRunCursor(storage!, resumable.runId);
-          if (get().activeAgentRunId === resumable.runId) {
-            set({ agentRunning: false, activeAgentRunId: null, pendingApprovals: [] });
+      await get().loadMultiTasks();
+      const commands=await requireOk<Array<{commandId:string;kind:string;status:string;runId?:string;taskId?:string;error?:string}>>(await sidecarFetch(hs(),`/room-commands/rooms/${id}`));
+      const latest=commands[0];
+      if(latest?.kind === "direct" && latest.runId) {
+        if(["running","dispatching","preparing","awaiting_approval"].includes(latest.status)) {
+          if(!activeAgentObservers.has(latest.runId)) {
+            updateRoom(id,{activeAgentRunId:latest.runId,activeRoomCommandId:latest.commandId,agentRunning:true,agentEvents:[],agentStreamText:""});
+            void get().resumeAgentRun(id,latest.runId,0);
           }
           return;
         }
-        const run = response
-          ? await requireOk<AgentRunStatusView>(response).catch(() => null)
-          : null;
-        const state = agentRunStateAfterObservation(resumable.runId, run, null);
-        set({
-          ...state,
-          agentError: resumable.sessionId === id ? state.agentError : null,
-        });
-        if (state.agentRunning) {
-          if (resumable.sessionId === id) {
-            // A fresh WebView has no live projection, so rebuild it from seq 0.
-            void get().resumeAgentRun(id, resumable.runId, 0);
-          } else {
-            // Keep global Run ownership accurate while another Session is viewed.
-            void monitorAgentRunInBackground(resumable.sessionId, resumable.runId);
-          }
-        } else {
-          clearActiveAgentRunCursor(storage!, resumable.runId);
-        }
+        updateRoom(id,{agentRunning:false,activeAgentRunId:null,activeRoomCommandId:null,agentStreamText:"",pendingApprovals:[],agentError:latest.error ?? null,lastStoppedRunId:latest.error === "budget_exhausted" ? latest.runId : null});
+        activeAgentObservers.get(latest.runId)?.controller.abort();
+        const storage=cursorStorage();if(storage) clearActiveAgentRunCursor(storage,latest.runId);
+        return;
+      }
+      if(latest?.kind === "discussion" && ["running","dispatching"].includes(latest.status)) {void observeCommand(id,latest.commandId);return;}
+      const storage=cursorStorage();
+      const saved=storage ? readActiveAgentRunCursor(storage) : null;
+      if(saved?.sessionId === id && !activeAgentObservers.has(saved.runId)) {
+        updateRoom(id,{activeAgentRunId:saved.runId,agentRunning:true,agentEvents:[],agentStreamText:""});
+        void get().resumeAgentRun(id,saved.runId,0);
       }
     },
-    sendAgentPrompt: async (prompt) => {
-      const sessionId = get().currentSessionId;
-      if (!sessionId || get().agentRunning) return false;
-      const clientTurnKey = crypto.randomUUID();
-      const optimisticMessage: SessionMessage = {
-        id: `local:${clientTurnKey}`,
-        sessionId,
-        role: "user",
-        authorId: null,
-        kind: "text",
-        content: prompt,
-        sequence: Number.MAX_SAFE_INTEGER,
-        runId: null,
-        turnId: null,
-        turnStatus: null,
-        status: "sending",
-        createdAt: new Date().toISOString(),
-        parts: [],
-      };
-      set((state) => ({
-        agentRunning: true,
-        activeAgentRunId: null,
-        agentEvents: [], agentStreamText: "",
-        pendingApprovals: [],
-        agentError: null,
-        sessionMessages: [...state.sessionMessages, optimisticMessage],
-      }));
-      try {
-        const started = await requireOk<{
-          runId: string;
-          turnId: string;
-          threadId: string;
-          replayed: boolean;
-        }>(await sidecarFetch(hs(), `/agent/sessions/${sessionId}/runs`, {
-          method: "POST",
-          body: JSON.stringify({
-            prompt,
-            clientTurnKey,
-            attachmentIds: get().draftAttachments.map((attachment) => attachment.id),
-            workspaceRefIds: get().draftWorkspaceRefs.map((reference) => reference.id),
-            runtimeKind: "native_ai_sdk",
-          }),
-        }));
-        set({ activeAgentRunId: started.runId });
-        const storage = cursorStorage();
-        if (storage) {
-          writeActiveAgentRunCursor(storage, {
-            sessionId,
-            runId: started.runId,
-            afterSeq: 0,
-          });
-        }
-        return await get().resumeAgentRun(sessionId, started.runId, 0);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        set({ agentRunning: false, activeAgentRunId: null, agentError: message });
-        return false;
-      }
-    },
+    sendAgentPrompt: async prompt => get().sendRoomCommand(prompt,[],"execute"),
     resumeAgentRun: async (sessionId, runId, afterSeq = 0) => {
+      const set: (patch: Partial<RoomProjection> | ((view: RoomProjection) => Partial<RoomProjection>)) => void = patch => updateRoom(sessionId, patch);
       const existing = activeAgentObservers.get(runId);
       if (existing) return existing.promise;
       const controller = new AbortController();
@@ -796,7 +855,6 @@ export const useStore = create<Store>((set, get) => {
           if (!pendingText) return;
           const chunk = pendingText;
           pendingText = "";
-          if (get().currentSessionId !== sessionId) return;
           set((state) => ({ agentStreamText: state.agentStreamText + chunk }));
         };
         const flushNow = () => {
@@ -820,12 +878,12 @@ export const useStore = create<Store>((set, get) => {
                 yield event;
               }
             })(),
-            shouldContinue: () => !controller.signal.aborted && get().activeAgentRunId === runId,
+            shouldContinue: () => !controller.signal.aborted && currentRun(sessionId) === runId,
             onEvent: async (executionEvent) => {
-              if (controller.signal.aborted || get().activeAgentRunId !== runId) return;
+              if (controller.signal.aborted || currentRun(sessionId) !== runId) return;
               const event = executionEventToRuntimeEvent(executionEvent);
               let pendingApprovals: PendingApproval[] | null = null;
-              if (event && get().currentSessionId === sessionId) {
+              if (event) {
                 if (event.type === "text_delta") {
                   pendingText += event.text;
                   if (rafHandle === null) rafHandle = requestAnimationFrame(flushText);
@@ -835,12 +893,13 @@ export const useStore = create<Store>((set, get) => {
                       pendingApprovals = await requireOk<PendingApproval[]>(
                         await sidecarFetch(hs(), "/agent/approvals", { signal: controller.signal }),
                       );
+                      pendingApprovals=pendingApprovals.filter(approval=>approval.taskId === runId);
                     } catch (error) {
-                      if (controller.signal.aborted || get().activeAgentRunId !== runId) return;
+                      if (controller.signal.aborted || currentRun(sessionId) !== runId) return;
                       throw new RetryableAgentRunProjectionError(error);
                     }
                   }
-                  if (controller.signal.aborted || get().activeAgentRunId !== runId) return;
+                  if (controller.signal.aborted || currentRun(sessionId) !== runId) return;
                   flushNow();
                   set((state) => ({
                     agentEvents: [...state.agentEvents, event],
@@ -850,8 +909,8 @@ export const useStore = create<Store>((set, get) => {
                     runError = event.message ?? "agent_run_failed";
                     set({ agentError: runError });
                   } else if (event.type === "status" && event.status === "interrupted") {
-                    runError = tr(get().lang, "task_cancelled_notice");
-                    set({ agentError: runError });
+                    runError = event.message === "budget_exhausted" ? "budget_exhausted" : tr(get().lang, "task_cancelled_notice");
+                    set({ agentError: runError, lastStoppedRunId:runId });
                   }
                 }
               }
@@ -866,18 +925,18 @@ export const useStore = create<Store>((set, get) => {
             },
             wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
           });
-          if (!result.terminal || get().activeAgentRunId !== runId) return false;
+          if (!result.terminal || currentRun(sessionId) !== runId) return false;
         } catch (error) {
           runError = error instanceof Error ? error.message : String(error);
-          if (get().activeAgentRunId === runId) set({ agentError: runError });
+          if (currentRun(sessionId) === runId) set({ agentError: runError });
           const run = await pollAgentRunUntilTerminal(
             async () => requireOk<AgentRunStatusView>(
               await sidecarFetch(hs(), `/agent/runs/${runId}`),
             ),
-            () => get().activeAgentRunId === runId,
+            () => currentRun(sessionId) === runId,
             (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
           );
-          if (!run || get().activeAgentRunId !== runId) return false;
+          if (!run || currentRun(sessionId) !== runId) return false;
           if (run.status === "failed") runError = run.error ?? runError;
         } finally {
           flushNow();
@@ -885,12 +944,14 @@ export const useStore = create<Store>((set, get) => {
 
         const storage = cursorStorage();
         if (storage) clearActiveAgentRunCursor(storage, runId);
-        if (get().activeAgentRunId === runId) {
+        if (currentRun(sessionId) === runId) {
           set({
             agentRunning: false,
             activeAgentRunId: null,
+            activeRoomCommandId:null,
             pendingApprovals: [],
             agentError: runError,
+            ...(!runError ? {lastStoppedRunId:null} : {}),
           });
           if (!runError) {
             set({ draftAttachments: [], draftWorkspaceRefs: [], workspacePathResults: [] });
@@ -900,7 +961,7 @@ export const useStore = create<Store>((set, get) => {
           const sessionMessages = await requireOk<SessionMessage[]>(
             await sidecarFetch(hs(), `/sessions/${sessionId}/messages`),
           );
-          if (get().currentSessionId === sessionId) set({ sessionMessages });
+          set(view=>({sessionMessages:mergeSessionMessages(view.sessionMessages,sessionMessages)}));
         };
         await Promise.allSettled([
           refreshMessages(),
@@ -917,37 +978,28 @@ export const useStore = create<Store>((set, get) => {
       return observation;
     },
     decideAgentApproval: async (requestId, decision) => {
-      await requireOk(await sidecarFetch(hs(), `/agent/approvals/${requestId}/decision`, {
-        method: "POST",
-        body: JSON.stringify({ decision, clientDecisionKey: crypto.randomUUID() }),
-      }));
+      await submitApprovalDecision("agent",requestId,decision);
       set((state) => ({ pendingApprovals: state.pendingApprovals.filter((approval) => approval.id !== requestId) }));
     },
     cancelAgentRun: async () => {
-      const runId = get().activeAgentRunId;
-      if (!runId) return;
-      await requireOk(await sidecarFetch(hs(), `/agent/runs/${runId}/cancel`, { method: "POST" }));
-      const storage = cursorStorage();
-      if (storage) clearActiveAgentRunCursor(storage, runId);
-      set({
-        agentRunning: false,
-        activeAgentRunId: null,
-        pendingApprovals: [],
-        agentError: tr(get().lang, "task_cancelled_notice"),
-      });
+      const {activeAgentRunId:runId,activeRoomCommandId:commandId}=get();
+      if(commandId) await requireOk(await sidecarFetch(hs(),`/room-commands/${commandId}/cancel`,{method:"POST"}));
+      else if(runId) await requireOk(await sidecarFetch(hs(),`/agent/runs/${runId}/cancel`,{method:"POST"}));
     },
     loadCurrentUsage: async () => {
       const state = get();
       const path = state.currentSessionId ? `/sessions/${state.currentSessionId}/usage` : state.currentRoomId ? `/rooms/${state.currentRoomId}/usage` : null;
       if (!path) { set({ usageSummaries: [] }); return; }
-      set({ usageSummaries: await requireOk<UsageSummaryView[]>(await sidecarFetch(hs(), path)) });
+      const roomId=state.currentSessionId ?? state.currentRoomId;
+      const usageSummaries=await requireOk<UsageSummaryView[]>(await sidecarFetch(hs(), path));
+      if(roomId) updateRoom(roomId,{usageSummaries});
     },
     loadMultiTasks: async () => {
       const sessionId = get().currentSessionId;
       if (!sessionId) return;
       const summaries = await requireOk<Array<Omit<MultiTaskView, "plan" | "turns" | "pendingApprovals">>>(await sidecarFetch(hs(), `/multi/sessions/${sessionId}/tasks`));
-      set({ multiTasks: summaries as MultiTaskView[] });
-      if (summaries[0]) await get().loadMultiTask(summaries[0].id);
+      updateRoom(sessionId,{ multiTasks: summaries as MultiTaskView[] });
+      if (get().currentSessionId === sessionId && summaries[0]) await get().loadMultiTask(summaries[0].id);
     },
     loadMultiTask: async (id) => {
       const currentMultiTask = await requireOk<MultiTaskView>(await sidecarFetch(hs(), `/multi/tasks/${id}`));
@@ -1042,9 +1094,11 @@ export const useStore = create<Store>((set, get) => {
       await get().loadMultiTask(task.id);
     },
     decideMultiApproval: async (requestId, decision) => {
-      await requireOk(await sidecarFetch(hs(), `/multi/approvals/${requestId}/decision`, { method: "POST", body: JSON.stringify({ decision, clientDecisionKey: crypto.randomUUID() }) }));
-      const id = get().currentMultiTask?.id;
-      if (id) await get().loadMultiTask(id);
+      const task = get().currentMultiTask;
+      try {
+        await submitApprovalDecision("multi",requestId,decision);
+        if (task) await get().loadMultiTask(task.id);
+      } catch(error) { if(task) updateRoom(task.sessionId,{multiError:error instanceof Error ? error.message : String(error)}); }
     },
     cancelMultiTask: async () => {
       const id = get().currentMultiTask?.id;
@@ -1108,10 +1162,12 @@ export const useStore = create<Store>((set, get) => {
     searchWorkspacePaths: async (query) => {
       const state = get();
       const boundId = state.sessions.find((session) => session.id === state.currentSessionId)?.workspaceId;
+      if(state.sessions.find(session=>session.id === state.currentSessionId)?.kind === "chat") return set({workspacePathResults:[]});
       const workspace = (boundId ? state.workspaces.find((item) => item.id === boundId) : null) ?? state.activeWorkspace;
       if (!workspace) return set({ workspacePathResults: [] });
       const response = await sidecarFetch(hs(), `/content/workspaces/${workspace.id}/files?q=${encodeURIComponent(query)}`);
-      set({ workspacePathResults: await requireOk<WorkspacePathResult[]>(response) });
+      const workspacePathResults=await requireOk<WorkspacePathResult[]>(response);
+      if(get().currentSessionId === state.currentSessionId) set({workspacePathResults});
     },
     addWorkspaceRef: async (relativePath) => {
       const state = get();
@@ -1122,10 +1178,13 @@ export const useStore = create<Store>((set, get) => {
         method: "POST",
         body: JSON.stringify({ relativePath }),
       }));
-      set((state) => ({
+      const roomId=state.currentSessionId;
+      if(!roomId) throw new Error("room_required");
+      updateRoom(roomId,(state) => ({
         draftWorkspaceRefs: state.draftWorkspaceRefs.some((item) => item.id === reference.id) ? state.draftWorkspaceRefs : [...state.draftWorkspaceRefs, reference],
         workspacePathResults: [],
       }));
+      return reference;
     },
     removeDraftWorkspaceRef: (id) => set((state) => ({ draftWorkspaceRefs: state.draftWorkspaceRefs.filter((item) => item.id !== id) })),
     loadMcpServers: async () => {
@@ -1199,25 +1258,24 @@ export const useStore = create<Store>((set, get) => {
       set((s) => ({ testResults: { ...s.testResults, [id]: result } }));
     },
 
-    modelLists: {},
+    modelLists: {}, modelLoading:{}, modelListErrors:{},
     loadModels: async (providerId, force = false) => {
-      if (!force && get().modelLists[providerId]) return;
-      let models: string[] = [];
+      if (!force && (get().modelLists[providerId] || get().modelLoading[providerId])) return;
+      set(state=>({modelLoading:{...state.modelLoading,[providerId]:true},modelListErrors:{...state.modelListErrors,[providerId]:null}}));
       try {
-        const res = await sidecarFetch(hs(), `/providers/${providerId}/models`);
-        if (res.ok) models = await res.json();
-      } catch {
-        // 网络失败 → 空列表，UI 退化为手输
-      }
-      set((s) => ({ modelLists: { ...s.modelLists, [providerId]: models } }));
+        const models=await requireOk<string[]>(await sidecarFetch(hs(),`/providers/${providerId}/models`));
+        set(state=>({modelLists:{...state.modelLists,[providerId]:models}}));
+      } catch(error) {
+        set(state=>({modelLists:{...state.modelLists,[providerId]:[]},modelListErrors:{...state.modelListErrors,[providerId]:error instanceof Error ? error.message : String(error)}}));
+      } finally {set(state=>({modelLoading:{...state.modelLoading,[providerId]:false}}));}
     },
 
     modelContextWindows: {},
     loadModelContextWindow: async (providerId, modelId) => {
       if (!providerId || !modelId) return;
       const key = `${providerId}:${modelId}`;
-      const res = await sidecarFetch(hs(), `/agents/context-window?providerId=${encodeURIComponent(providerId)}&modelId=${encodeURIComponent(modelId)}`);
-      if (!res.ok) return;
+      const res = await sidecarFetch(hs(), `/agents/context-window?providerId=${encodeURIComponent(providerId)}&modelId=${encodeURIComponent(modelId)}`).catch(()=>null);
+      if (!res?.ok) return;
       const resolution = await res.json() as import("@socrates/core").ContextWindowResolution;
       set((s) => ({ modelContextWindows: { ...s.modelContextWindows, [key]: resolution } }));
     },
@@ -1233,7 +1291,7 @@ export const useStore = create<Store>((set, get) => {
         modelId: form.modelId,
         role: form.role,
         systemPrompt: form.systemPrompt,
-        temperature: form.temperature === "" ? undefined : Number(form.temperature),
+        temperature: form.temperature === "" ? null : Number(form.temperature),
         userOverride: form.contextWindowDirty && form.contextWindowTokens !== ""
           ? Number(form.contextWindowTokens)
           : null,
@@ -1242,8 +1300,9 @@ export const useStore = create<Store>((set, get) => {
       const res = editingId
         ? await sidecarFetch(hs(), `/agents/${editingId}`, { method: "PUT", body: JSON.stringify(payload) })
         : await sidecarFetch(hs(), "/agents", { method: "POST", body: JSON.stringify(payload) });
-      await requireOk(res);
+      const saved = await requireOk<Agent>(res);
       await get().loadAgents();
+      return saved;
     },
     removeAgent: async (id) => {
       await sidecarFetch(hs(), `/agents/${id}`, { method: "DELETE" });
@@ -1317,12 +1376,11 @@ export const useStore = create<Store>((set, get) => {
       if (archived && get().currentRoomId === id) set({ currentRoomId: null, messages: [], tasks: [] });
     },
     selectRoom: async (id) => {
-      set({ currentRoomId: id, currentSessionId: null, messages: [], sessionMessages: [], tasks: [], roomSending: false, chatError: null, usageSummaries: [] });
-      const messages = await requireOk<StoredMessage[]>(await sidecarFetch(hs(), `/rooms/${id}/messages`));
-      // 加载期间用户可能已切换房间
-      if (get().currentRoomId === id) set({ messages });
-      await get().loadCurrentUsage();
-      void get().loadTasks();
+      selectProjection(id,"room","chat");
+      const messages=await requireOk<StoredMessage[]>(await sidecarFetch(hs(),`/rooms/${id}/messages`));
+      updateRoom(id,{messages});
+      if(get().currentRoomId !== id) return;
+      await get().loadCurrentUsage(); void get().loadTasks();
     },
 
     loadTasks: async () => {

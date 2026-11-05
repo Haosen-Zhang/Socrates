@@ -111,11 +111,12 @@ export function ApprovalShelf({
 }) {
   const t = useT();
   const [decidingId, setDecidingId] = useState<string | null>(null);
+  const [decisionError,setDecisionError]=useState<string|null>(null);
   if (!approvals.length) return null;
   const decide = (requestId: string, decision: ApprovalDecision) => {
     if (busy || decidingId) return;
-    setDecidingId(requestId);
-    void onDecision(requestId, decision).finally(() => setDecidingId(null));
+    setDecidingId(requestId);setDecisionError(null);
+    void onDecision(requestId, decision).catch(error=>setDecisionError(error instanceof Error ? error.message : String(error))).finally(() => setDecidingId(null));
   };
   return (
     <section className="approval-shelf" aria-label={t("approval_shelf_title")}>
@@ -124,6 +125,7 @@ export function ApprovalShelf({
         <strong>{t("approval_shelf_title")}</strong>
         <span className="pixel-chip">{approvals.length}</span>
       </div>
+      {decisionError && <p role="alert" className="px-3 py-2 text-xs text-red-700">{decisionError}</p>}
       {approvals.map((approval) => {
         const activity = activities.find((item) => item.approvalId === approval.id);
         return (

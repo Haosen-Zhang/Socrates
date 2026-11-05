@@ -27,10 +27,13 @@ import { ConversationMemoryStore } from "../store/conversation-memory-store";
 import { buildConversationContext } from "../services/conversation-context";
 import { WorkspacePathPolicy } from "../workspace/path-policy";
 import type { HistoryStore } from "../store/history-store";
+import { WorkspaceLeaseManager } from "../workspace/leases";
+import { memberConversationHistory, resolveRunProfile, type RunProfile } from "../services/run-profile";
 
 type SessionRow = {
   id: string;
   mode: string;
+  kind: string;
   workspace_id: string | null;
   primary_agent_id: string | null;
   status: string;
@@ -66,12 +69,13 @@ export interface AgentRunResult {
   runtimeSessionId: string;
   threadId: string;
   turnId: string;
-  status: "completed" | "failed" | "cancelled";
+  status: "completed" | "failed" | "cancelled" | "interrupted";
   error?: string;
 }
 
 export interface AgentRunInput {
   sessionId: string;
+  agentId?: string;
   runtimeKind: string;
   prompt: string;
   threadId?: string;
@@ -98,6 +102,7 @@ export class SingleAgentRunner {
   private readonly active = new Map<string, ActiveRun>();
   private readonly usage: UsageCollector;
   private readonly memory: ConversationMemoryStore;
+  private readonly leases: WorkspaceLeaseManager;
 
   constructor(
     private readonly db: Database,
@@ -106,9 +111,11 @@ export class SingleAgentRunner {
     private readonly events: ExecutionEventStore,
     private readonly attachments: AttachmentResolver,
     history?: HistoryStore,
+    leases?: WorkspaceLeaseManager,
   ) {
     this.usage = new UsageCollector(db);
     this.memory = new ConversationMemoryStore(db, history);
+    this.leases = leases ?? new WorkspaceLeaseManager(db, crypto.randomUUID());
   }
 
   recoverInterrupted(): { runs: number; approvals: number } {
@@ -425,7 +432,7 @@ export class SingleAgentRunner {
    */
   private resolveLocalContext(
     history: ConversationStoredMessage[],
-    workspaceId: string,
+    workspaceId: string | null,
     currentTurnId: string,
   ): ConversationStoredMessage[] {
     let policy: WorkspacePathPolicy | null = null;
@@ -433,7 +440,7 @@ export class SingleAgentRunner {
       if (policy) return policy;
       const workspace = this.db.query<WorkspaceRow, [string]>(
         "SELECT * FROM workspaces WHERE id = ?",
-      ).get(workspaceId);
+      ).get(workspaceId ?? "");
       if (!workspace) throw new Error("workspace_not_found");
       policy = new WorkspacePathPolicy(workspace.canonical_path);
       return policy;
@@ -450,7 +457,7 @@ export class SingleAgentRunner {
       const blocks: string[] = [];
       for (const part of message.parts) {
         if (part.type === "file") {
-          if (!this.attachments.belongsToWorkspace(part.attachmentId, workspaceId)) {
+          if (!workspaceId || !this.attachments.belongsToWorkspace(part.attachmentId, workspaceId)) {
             throw new Error("attachment_not_found");
           }
           const { record, bytes } = this.attachments.read(part.attachmentId);
@@ -466,7 +473,7 @@ export class SingleAgentRunner {
           blocks.push(`[Previous image attachment ${JSON.stringify(part.attachmentId)} is unavailable to this runtime.]`);
         } else if (part.type === "workspace_ref") {
           if (part.attachmentId) {
-            if (!this.attachments.belongsToWorkspace(part.attachmentId, workspaceId)) {
+            if (!workspaceId || !this.attachments.belongsToWorkspace(part.attachmentId, workspaceId)) {
               throw new Error("workspace_ref_snapshot_not_found");
             }
             const { record, bytes } = this.attachments.read(part.attachmentId);
@@ -528,18 +535,19 @@ export class SingleAgentRunner {
     emit: (event: RuntimeEvent) => void | Promise<void> = () => {},
   ): Promise<AgentRunResult> {
     const session = this.db.query<SessionRow, [string]>(
-      "SELECT id, mode, workspace_id, primary_agent_id, status FROM sessions WHERE id = ?",
+      "SELECT id, mode, kind, workspace_id, primary_agent_id, status FROM sessions WHERE id = ?",
     ).get(input.sessionId);
     if (!session) throw new Error("session_not_found");
-    if (session.mode !== "single_agent") throw new Error("single_agent_session_required");
-    if (!session.workspace_id) throw new Error("single_agent_workspace_required");
+    if (session.kind !== "chat" && !session.workspace_id) throw new Error("single_agent_workspace_required");
+    if (session.kind === "chat" && (session.workspace_id || input.attachmentIds?.length || input.workspaceRefIds?.length)) throw new Error("chat_room_has_no_workspace_tools");
     if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) throw new Error("session_already_running");
-    if (!session.primary_agent_id) throw new Error("single_agent_missing_primary_agent");
+    const agentId = input.agentId ?? session.primary_agent_id;
+    if (!agentId) throw new Error("single_agent_missing_primary_agent");
     const agent = this.db.query<AgentRow, [string, string]>(`
       SELECT agent_id, snapshot_json
       FROM session_agents
       WHERE session_id = ? AND agent_id = ?
-    `).get(session.id, session.primary_agent_id);
+    `).get(session.id, agentId);
     if (!agent) throw new Error("single_agent_missing_agent");
     const attachmentRecords = (input.attachmentIds ?? []).map((attachmentId) => {
       const attachment = this.attachments.get(attachmentId);
@@ -553,6 +561,23 @@ export class SingleAgentRunner {
     const workspaceRefs = (input.workspaceRefIds ?? []).map((refId) => {
       const reference = this.db.query<WorkspaceRefRow, [string]>("SELECT id, workspace_id, relative_path, snapshot_hash FROM workspace_refs WHERE id = ?").get(refId);
       if (!reference || reference.workspace_id !== session.workspace_id) throw new Error("workspace_ref_not_found");
+      // A retry continues the user-selected immutable snapshot, even if a
+      // successful earlier tool changed the source file in this workspace.
+      const previousParts = input.clientTurnKey ? this.db.query<{ metadata_json: string | null }, [string, string, string]>(`
+        SELECT message_parts.metadata_json FROM message_parts
+        JOIN session_messages ON session_messages.id = message_parts.message_id
+        JOIN conversation_turns ON conversation_turns.id = session_messages.turn_id
+        WHERE conversation_turns.thread_id = ? AND conversation_turns.client_turn_key = ?
+          AND conversation_turns.room_id = ? AND session_messages.role = 'user' AND message_parts.type = 'workspace_ref'
+      `).all(input.threadId ?? `thread:${session.id}`, input.clientTurnKey, session.id) : [];
+      const previous = previousParts.flatMap((part) => part.metadata_json ? [JSON.parse(part.metadata_json) as Record<string, unknown>] : [])
+        .find((part) => part.refId === refId);
+      if (previous && typeof previous.attachmentId === "string") {
+        const snapshot = this.attachments.get(previous.attachmentId);
+        if (!snapshot || snapshot.status !== "ready" || snapshot.sha256 !== previous.snapshotHash
+          || !this.attachments.belongsToWorkspace(snapshot.id, session.workspace_id!)) throw new Error("workspace_ref_snapshot_not_found");
+        return { reference, snapshot };
+      }
       const row = this.db.query<WorkspaceRow, [string]>("SELECT * FROM workspaces WHERE id = ?")
         .get(session.workspace_id!);
       if (!row) throw new Error("workspace_not_found");
@@ -568,7 +593,7 @@ export class SingleAgentRunner {
         createdAt: row.created_at,
         lastOpenedAt: row.last_opened_at,
       };
-      const snapshot = this.attachments.importWorkspaceFile(workspace, reference.relative_path);
+      const snapshot = this.attachments.importWorkspaceReference(workspace, reference.relative_path).record;
       if (reference.snapshot_hash && reference.snapshot_hash !== snapshot.sha256) {
         throw new Error("workspace_ref_stale");
       }
@@ -713,6 +738,7 @@ export class SingleAgentRunner {
     let contextWindowTokens: number | null;
     let outputReserveTokens: number | undefined;
     let contextWindowResolution: ContextWindowResolution | null = null;
+    let profile: RunProfile;
     let omittedBeforeSequence: number | null;
     try {
       const history = await this.memory.listThreadMessages(prepared.threadId);
@@ -722,6 +748,8 @@ export class SingleAgentRunner {
         prepared.turnId,
       );
       const snapshot = JSON.parse(agent.snapshot_json) as Record<string, unknown>;
+      profile = input.runtimeOptions?.runProfile as RunProfile | undefined
+        ?? resolveRunProfile(agent.agent_id, snapshot);
       const capabilities = snapshot.modelCapabilities && typeof snapshot.modelCapabilities === "object"
         ? snapshot.modelCapabilities as Record<string, unknown>
         : {};
@@ -732,10 +760,8 @@ export class SingleAgentRunner {
         ["catalog", "user_override", "unavailable"].includes(String(resolution.source))
         ? resolution as unknown as ContextWindowResolution
         : null;
-      const configuredWindow = resolution?.effectiveValue ?? capabilities.contextWindowTokens ?? snapshot.contextWindowTokens;
-      contextWindowTokens = typeof configuredWindow === "number" && Number.isFinite(configuredWindow)
-        ? Math.min(4_000_000, Math.max(1_024, Math.floor(configuredWindow)))
-        : null;
+      contextWindowTokens = profile.contextWindowTokens;
+      contextWindowResolution = profile.modelCapabilities.contextWindow ?? contextWindowResolution;
       outputReserveTokens = contextWindowTokens === null ? undefined : Math.min(
         4_096, Math.max(256, Math.floor(contextWindowTokens * 0.2)),
       );
@@ -753,6 +779,10 @@ export class SingleAgentRunner {
     let usageIndex = 0;
     let turnCompleted = false;
     let approvalJournalFailed = false;
+    let budgetExhausted = false;
+    let leaseLost = false;
+    let lease: Awaited<ReturnType<WorkspaceLeaseManager["acquireQueued"]>> | undefined;
+    let renewal: ReturnType<typeof setInterval> | undefined;
     const finalAssistantMessage = (
       content: string,
       status: string,
@@ -798,17 +828,28 @@ export class SingleAgentRunner {
     };
     try {
       await emit(startedEvent);
+      if (session.workspace_id) {
+        lease = await this.leases.acquireQueued(session.workspace_id, prepared.runId, {
+          signal: input.signal,
+          onWaiting: () => emit({ type: "extension", name: "workspace_queued", payload: { reason: "workspace_write_lease_busy", workspaceId: session.workspace_id } }),
+        });
+        renewal = setInterval(() => {
+          try { this.leases.renew(lease!.id, new Date(Date.now() + 30 * 60_000).toISOString()); }
+          catch { leaseLost = true; if (runtimeSessionId) void this.runtimes.interrupt(runtimeSessionId); }
+        }, 5 * 60_000);
+      }
       const handle = await this.runtimes.open({
         runtimeKind: input.runtimeKind,
         agentSessionId: `${session.id}:${agent.agent_id}:${prepared.turnId}:${prepared.attemptNo}`,
         sessionId: session.id,
         agentId: agent.agent_id,
-        workspaceId: session.workspace_id,
-        runtimeOptions: contextWindowTokens === null ? {} : { contextWindowTokens, outputReserveTokens },
+        workspaceId: session.workspace_id ?? undefined,
+        runtimeOptions: { ...input.runtimeOptions, runProfile: profile,
+          ...(contextWindowTokens === null ? {} : { contextWindowTokens, outputReserveTokens }) },
       });
       runtimeSessionId = handle.id;
       const runtimeOverheadTokens = this.runtimes.contextOverheadTokens(handle.id);
-      const context = buildConversationContext(resolvedHistory, {
+      const context = buildConversationContext(memberConversationHistory(resolvedHistory, agent.agent_id), {
         contextWindowTokens,
         outputReserveTokens,
         instructionTokens: runtimeOverheadTokens,
@@ -824,6 +865,7 @@ export class SingleAgentRunner {
           droppedThroughSequence: context.droppedThroughSequence,
           overflow: context.overflow,
           contextWindow: contextWindowResolution,
+          runProfile: profile,
         },
       });
       if (contextLimited) {
@@ -881,6 +923,7 @@ export class SingleAgentRunner {
         messages: context.messages,
         signal: input.signal,
         onEvent: async (event) => {
+          if (event.type === "status" && event.status === "interrupted" && event.message === "budget_exhausted") budgetExhausted = true;
           if (event.type === "tool_call") {
             await persistAssistantSegment();
             active.calls.set(event.callId, { name: event.name, input: event.input });
@@ -981,6 +1024,8 @@ export class SingleAgentRunner {
           await emit(event);
         },
       });
+      if (leaseLost) throw new Error("workspace_lease_lost");
+      if (budgetExhausted) throw new Error("budget_exhausted");
       const completedAt = new Date().toISOString();
       const finalContent = assistantText;
       await this.memory.completeTurn({
@@ -1024,9 +1069,9 @@ export class SingleAgentRunner {
       };
     } catch (error) {
       if (turnCompleted) throw error;
-      const message = error instanceof Error ? error.message : String(error);
+      const message = leaseLost ? "workspace_lease_lost" : error instanceof Error ? error.message : String(error);
       const activeRun = this.active.get(prepared.runId);
-      const status = input.signal?.aborted || activeRun?.cancelled ? "cancelled" : "failed";
+      const status = input.signal?.aborted || activeRun?.cancelled ? "cancelled" : budgetExhausted ? "interrupted" : "failed";
       const completedAt = new Date().toISOString();
       const partialContent = assistantText;
       assistantText = "";
@@ -1062,13 +1107,13 @@ export class SingleAgentRunner {
         sessionId: session.id,
         runId: prepared.runId,
         agentId: agent.agent_id,
-        type: status === "cancelled" ? "run.cancelled" : "run.failed",
+        type: status === "cancelled" ? "run.cancelled" : status === "interrupted" ? "run.interrupted" : "run.failed",
         coordinates: { turnId: prepared.turnId },
-        payload: status === "cancelled" ? { reason: message } : { error: message },
+        payload: status === "cancelled" || status === "interrupted" ? { reason: message } : { error: message },
       });
       await emit({
         type: "status",
-        status: status === "cancelled" ? "interrupted" : "failed",
+        status: status === "cancelled" || status === "interrupted" ? "interrupted" : "failed",
         message,
       });
       return {
@@ -1081,9 +1126,40 @@ export class SingleAgentRunner {
         error: message,
       };
     } finally {
+      if (renewal) clearInterval(renewal);
       if (runtimeSessionId) await this.runtimes.close(runtimeSessionId);
+      if (lease) this.leases.release(lease.id);
       this.active.delete(prepared.runId);
     }
+  }
+
+  continuationInput(runId: string): AgentRunInput {
+    const row = this.db.query<{ session_id: string; prompt: string; status: string; error: string | null;
+      thread_id: string; turn_id: string; client_turn_key: string; agent_id: string; context_json: string | null; runtime_kind: string | null }, [string]>(`
+      SELECT agent_runs.session_id, agent_runs.prompt, agent_runs.status, agent_runs.error,
+        conversation_turns.thread_id, conversation_turns.id AS turn_id, conversation_turns.client_turn_key, conversation_turns.agent_id,
+        conversation_turns.context_json, runtime_sessions.runtime_kind
+      FROM agent_runs JOIN conversation_turns ON conversation_turns.id = agent_runs.turn_id
+      LEFT JOIN runtime_sessions ON runtime_sessions.id = agent_runs.runtime_session_id WHERE agent_runs.id = ?
+    `).get(runId);
+    if (!row) throw new Error("agent_run_not_found");
+    if (row.status !== "interrupted" || row.error !== "budget_exhausted") throw new Error("agent_run_not_budget_stopped");
+    const context = row.context_json ? JSON.parse(row.context_json) as { runProfile?: RunProfile } : {};
+    const parts = this.db.query<{ type: string; attachment_id: string | null; metadata_json: string | null }, [string]>(`
+      SELECT message_parts.type, message_parts.attachment_id, message_parts.metadata_json FROM message_parts
+      JOIN session_messages ON session_messages.id = message_parts.message_id
+      WHERE session_messages.turn_id = ? AND session_messages.role = 'user' ORDER BY message_parts.ordinal
+    `).all(row.turn_id);
+    const attachmentIds = parts.flatMap((part) => (part.type === "file" || part.type === "image") && part.attachment_id ? [part.attachment_id] : []);
+    const workspaceRefIds = parts.flatMap((part) => {
+      if (part.type !== "workspace_ref" || !part.metadata_json) return [];
+      const metadata = JSON.parse(part.metadata_json) as { refId?: unknown };
+      return typeof metadata.refId === "string" ? [metadata.refId] : [];
+    });
+    return { sessionId: row.session_id, agentId: row.agent_id, prompt: row.prompt, threadId: row.thread_id,
+      clientTurnKey: row.client_turn_key, runtimeKind: row.runtime_kind ?? "native_ai_sdk",
+      attachmentIds, workspaceRefIds,
+      runtimeOptions: context.runProfile ? { runProfile: context.runProfile } : undefined };
   }
 
   getRun(runId: string): AgentRunView | null {

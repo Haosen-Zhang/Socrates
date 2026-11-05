@@ -5,6 +5,11 @@ import { defaultDataDir, defaultDbPath, openDb } from "./db";
 import { KeychainSecrets } from "./secrets";
 import { providerRoutes } from "./providers";
 import { agentRoutes } from "./agents";
+import { toAgent, type AgentRow } from "./agents";
+import { resolveRunProfile, resolveSessionRunProfile, type RunProfile } from "./services/run-profile";
+import { RoomCommandService } from "./services/room-command-service";
+import { resolveRoomFileContext } from "./services/room-file-context";
+import { roomCommandRoutes } from "./routes/room-commands";
 import { roomRoutes } from "./rooms";
 import { createAiSdkModel, makeAiSdkGateway } from "./gateway-aisdk";
 import { ConfigStore, configRoutes } from "./config-store";
@@ -36,6 +41,8 @@ import { OfficialMcpClientAdapter } from "./mcp/adapter";
 import { mcpRoutes } from "./routes/mcp";
 import { MultiTaskStore } from "./multi-agent/task-store";
 import { MultiAgentCoordinator } from "./multi-agent/coordinator";
+import { WorkPackageStore } from "./multi-agent/work-package-store";
+import { TeamRunner } from "./multi-agent/team-runner";
 import { ExecutionRunner } from "./runtime/execution-runner";
 import { WorkspaceLeaseManager } from "./workspace/leases";
 import { multiAgentRoutes } from "./routes/multi-agent";
@@ -90,34 +97,37 @@ const attachments = new AttachmentResolver(db, defaultDataDir());
 const mcpStore = new McpStore(db, secrets);
 const mcp = new McpManager(db, mcpStore, new OfficialMcpClientAdapter(proxiedFetch));
 const runtimes = new RuntimeManager(db, executionEvents);
+const leases = new WorkspaceLeaseManager(db, crypto.randomUUID());
 runtimes.register("native_ai_sdk", (input) => {
+  const session = sessions.get(input.sessionId);
+  if (!session) throw new Error("native_session_not_found");
   const workspace = input.workspaceId ? workspaces.get(input.workspaceId) : null;
-  if (!workspace) throw new Error("native_workspace_required");
-  const agent = db.query<{
-    provider_id: string; model_id: string; system_prompt: string; role: string;
-  }, [string]>("SELECT provider_id, model_id, system_prompt, role FROM agents WHERE id = ?").get(input.agentId);
-  if (!agent) throw new Error("native_agent_not_found");
+  if (session.kind === "chat" && input.workspaceId) throw new Error("chat_room_must_not_bind_workspace");
+  if (session.kind === "cowork" && !workspace) throw new Error("native_workspace_required");
+  const profile = (input.runtimeOptions?.runProfile as RunProfile | undefined)
+    ?? resolveSessionRunProfile(db, input.sessionId, input.agentId);
+  if (profile.agentId !== input.agentId) throw new Error("run_profile_member_mismatch");
+  if (session.kind === "cowork" && profile.modelCapabilities.toolCalling === false) throw new Error("native_model_tools_unsupported");
   const provider = db.query<{
     type: ProviderType; base_url: string; api_key_ref: string; enabled: number;
-  }, [string]>("SELECT type, base_url, api_key_ref, enabled FROM providers WHERE id = ?").get(agent.provider_id);
+  }, [string]>("SELECT type, base_url, api_key_ref, enabled FROM providers WHERE id = ?").get(profile.providerId);
   if (!provider || provider.enabled !== 1) throw new Error("native_provider_unavailable");
   const apiKey = secrets.get(provider.api_key_ref);
   if (!apiKey) throw new Error("native_provider_key_missing");
-  const policy = new WorkspacePathPolicy(workspace.canonicalPath);
-  const mcpDefinitions = mcp.definitionsFor(workspace.id, { effects: ["allow", "ask"] });
-  const builtinTools = createNativeBuiltinTools(policy, toolOutputs, {
+  const mcpDefinitions = workspace && session.kind === "cowork" ? mcp.definitionsFor(workspace.id, { effects: ["allow", "ask"] }) : [];
+  const builtinTools = workspace && session.kind === "cowork" ? createNativeBuiltinTools(new WorkspacePathPolicy(workspace.canonicalPath), toolOutputs, {
     sessionId: input.sessionId, workspaceIdentity: workspace.identityHash,
-  });
+  }) : [];
   const registry = new ToolRegistry([...builtinTools, ...mcpDefinitions]);
   const executor = new ToolExecutor(db, registry, approvals, undefined, executionEvents);
   const model = createAiSdkModel({
     providerType: provider.type,
     baseUrl: provider.base_url,
     apiKey,
-    modelId: agent.model_id,
+    modelId: profile.modelId,
     fetchImpl: proxiedFetch,
   });
-  const allowedCapabilities: ToolCapability[] = ["workspace_read", "workspace_write", "shell", "mcp"];
+  const allowedCapabilities: ToolCapability[] = session.kind === "chat" ? [] : ["workspace_read", "workspace_write", "shell", "mcp"];
   if (!sessions.get(input.sessionId)) throw new Error("native_session_not_found");
   const actionFor = (definition: ToolDefinition): PermissionAction => {
     if (definition.name === "run_shell" || definition.capability === "shell") return "shell.execute";
@@ -131,12 +141,12 @@ runtimes.register("native_ai_sdk", (input) => {
     sessionId: input.sessionId,
     taskId: input.agentSessionId,
     agentId: input.agentId,
-    workspaceId: workspace.id,
-    workspaceIdentity: workspace.identityHash,
-    system: [agent.role, agent.system_prompt].filter(Boolean).join("\n\n"),
+    workspaceId: workspace?.id ?? "",
+    workspaceIdentity: workspace?.identityHash ?? `chat:${session.id}`,
+    system: [profile.role, profile.systemPrompt].filter(Boolean).join("\n\n"),
     registry,
     executor,
-    stream: createAiSdkNativeStream(model),
+    stream: createAiSdkNativeStream(model, undefined, { providerType: provider.type, modelId: profile.modelId, temperature: profile.temperature, reasoningEffort: profile.reasoningEffort }),
     allowedCapabilities,
     permissionForTool: (definition) => {
       const currentSession = sessions.get(input.sessionId);
@@ -145,7 +155,7 @@ runtimes.register("native_ai_sdk", (input) => {
         action: actionFor(definition),
         resource: definition.name,
         risk: definition.risk,
-        mode: "single_agent",
+        mode: session.kind === "chat" ? "chat" : "single_agent",
         phase: "executing",
         capabilityAllowed: allowedCapabilities.includes(definition.capability),
         policyVersion: currentSession.approvalPolicy.version,
@@ -155,7 +165,7 @@ runtimes.register("native_ai_sdk", (input) => {
     },
   });
 });
-const agentRuns = new SingleAgentRunner(db, runtimes, approvals, executionEvents, attachments, history);
+const agentRuns = new SingleAgentRunner(db, runtimes, approvals, executionEvents, attachments, history, leases);
 const runSupervisor = new RunSupervisor(agentRuns);
 const multiTasks = new MultiTaskStore(db, history);
 await history.bootstrapAll();
@@ -163,23 +173,48 @@ runtimes.recoverInterrupted();
 runSupervisor.recoverInterrupted();
 const usage = new UsageCollector(db);
 const resolveMultiAgent = (agentId: string, snapshot: Record<string, unknown>): OrchestrationAgent => {
-  const providerId = String(snapshot.providerId ?? "");
+  const profile = resolveRunProfile(agentId, snapshot);
+  const providerId = profile.providerId;
   const provider = db.query<{ type: ProviderType; base_url: string; api_key_ref: string; enabled: number }, [string]>("SELECT type, base_url, api_key_ref, enabled FROM providers WHERE id = ?").get(providerId);
   if (!provider || provider.enabled !== 1) throw new Error("multi_provider_unavailable");
   const apiKey = secrets.get(provider.api_key_ref);
   if (!apiKey) throw new Error("multi_provider_key_missing");
   return {
     id: agentId, nickname: String(snapshot.nickname ?? agentId), avatar: typeof snapshot.avatar === "string" ? snapshot.avatar : undefined,
-    modelId: String(snapshot.modelId ?? ""), role: String(snapshot.role ?? ""), systemPrompt: String(snapshot.systemPrompt ?? ""),
-    temperature: typeof snapshot.temperature === "number" ? snapshot.temperature : undefined,
-    reasoningEffort: typeof snapshot.reasoningEffort === "string" ? snapshot.reasoningEffort as OrchestrationAgent["reasoningEffort"] : undefined,
+    modelId: profile.modelId, role: profile.role, systemPrompt: profile.systemPrompt,
+    temperature: profile.temperature,
+    reasoningEffort: profile.reasoningEffort,
+    contextWindowTokens: profile.contextWindowTokens,
     providerType: provider.type, baseUrl: provider.base_url, apiKey,
   };
 };
 const multiCoordinator = new MultiAgentCoordinator(db, multiTasks, events, gateway, resolveMultiAgent, history);
-const executionRunner = new ExecutionRunner(db, multiTasks, runtimes, new WorkspaceLeaseManager(db, crypto.randomUUID()), approvals, events, executionEvents, history);
+const executionRunner = new ExecutionRunner(db, multiTasks, runtimes, leases, approvals, events, executionEvents, history);
 multiTasks.recoverInterrupted();
+const workPackages = new WorkPackageStore(db);
+workPackages.recoverInterrupted();
+const teamRunner = new TeamRunner(db, multiTasks, workPackages, executionRunner, multiCoordinator, events, history);
 executionRunner.reconcileDurableTurnEvents();
+const commands = new RoomCommandService(db, sessions, {
+  startDirect: (input) => runSupervisor.start(input),
+  getDirect: (id) => runSupervisor.get(id),
+  cancelDirect: (id) => runSupervisor.cancel(id),
+  resolveFileContext: (workspaceId, refs, ids) => resolveRoomFileContext(db, workspaces, attachments, workspaceId, refs, ids),
+  createTeam: async ({ sessionId, prompt, clientRequestId, targetAgentIds, inputContext }) => {
+    const room = sessions.get(sessionId)!;
+    const task = await multiCoordinator.create({ sessionId, prompt, config: {
+      speakingOrder: room.collaboration.discussion.speakerOrder.length ? room.collaboration.discussion.speakerOrder : room.agents.map((a) => a.agentId),
+      maxRounds: room.collaboration.discussion.maxRounds,
+      synthesizerId: room.collaboration.assignment.coordinatorAgentId ?? room.primaryAgentId,
+      executionAgentId: room.primaryAgentId,
+      teamExecution: true, clientRequestId, targetAgentIds, inputContext,
+    } });
+    void multiCoordinator.run(task.id).catch(() => {});
+    return { taskId: task.id };
+  },
+  resolveAgent: resolveMultiAgent, gateway,
+}, history);
+commands.recoverInterrupted();
 
 app.get("/health", (c) => c.json({ ok: true }));
 app.route("/config", configRoutes(config));
@@ -189,12 +224,23 @@ app.route("/rooms", roomRoutes(db, secrets, gateway, usage));
 app.route("/workspaces", workspaceRoutes(workspaces));
 app.route(
   "/sessions",
-  sessionRoutes(sessions, events, usage, workspaces, () => config.get().collaborationDefaults),
+  sessionRoutes(sessions, events, usage, workspaces, () => config.get().collaborationDefaults, (agentId) => {
+    const row = db.query<AgentRow, [string]>("SELECT * FROM agents WHERE id = ?").get(agentId);
+    if (!row) throw new Error("agent_template_not_found");
+    return { ...toAgent(row), configurationVersion: row.updated_at };
+  }, (snapshot) => {
+    const provider = db.query<{ enabled: number; api_key_ref: string }, [string]>("SELECT enabled,api_key_ref FROM providers WHERE id = ?").get(String(snapshot.providerId ?? ""));
+    if (!provider) return "provider_deleted";
+    if (!provider.enabled) return "provider_disabled";
+    try { return secrets.get(provider.api_key_ref) ? null : "multi_provider_key_missing"; }
+    catch { return "multi_provider_key_missing"; }
+  }),
 );
+app.route("/room-commands", roomCommandRoutes(commands));
 app.route("/agent", agentRunRoutes(runSupervisor, agentRuns, approvals, executionEvents));
 app.route("/content", contentRoutes(db, workspaces, attachments));
 app.route("/mcp", mcpRoutes(mcpStore, mcp));
-app.route("/multi", multiAgentRoutes(multiTasks, multiCoordinator, executionRunner, approvals));
+app.route("/multi", multiAgentRoutes(multiTasks, multiCoordinator, executionRunner, approvals, teamRunner));
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -206,6 +252,8 @@ const server = Bun.serve({
 if (server.port === undefined) throw new Error("TCP server has no port");
 
 stopManagedServices = async () => {
+  await commands.shutdown();
+  await teamRunner.shutdown();
   await runSupervisor.shutdown();
   await mcp.stopAll();
   server.stop(true);

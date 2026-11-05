@@ -8,15 +8,16 @@
 
 ---
 
-## 📌 进度更新（截至 #78）
+## 📌 进度更新（2026-11-05）
 
 - ✅ **Phase 1 基本达成**：#77 移除了整个 Codex 依赖，执行改走自研 `native_ai_sdk` 运行时 +
   workspace-write 内建工具（`write_file`/`run_shell`），用**你配的 provider key**，不再依赖 codex 登录/额度。
   `execution-runner` 的 `runtimeKind` 现在是 `native_ai_sdk`。
 - 🚧 **Phase 2 起步**：`LangGraphAgentRuntime` 已在代码里（`runtime/langgraph-agent-runtime.ts`），
   但**尚未 register 进生产**，也还没接治理编排（多 Agent 仍由手写 `MultiAgentCoordinator` 驱动）。
-- ⏳ 待办：多执行者分派、supervision 运行时、LangGraph 治理图、Rust 执行辅助进程（Phase 3–6）。
-- ⚠️ §13 的安全点（`parseVerdict()` 无法解析时默认 approve）**尚未修**，将来 Reviewer 代替人工审批前必须处理。
+- ✅ Manager–Worker v1：持久工作包、真实不同成员执行、依赖、精确审批、独立审核/有界返工、预算停止和恢复已在现有 Native seam 上实现；见 [验收](chat-work-collaboration-acceptance.md)。
+- ⏳ 待办：supervision 运行时、LangGraph 治理图、worktree 并行、Rust 执行辅助进程。
+- ✅ §13 已修复：无法解析的计划审核保持人工审批并记录失败，工作包审核失败不会批准或放行依赖；重试只重跑审核。
 
 下面是原始决策记录，方向不变。
 
@@ -325,7 +326,7 @@ type GovernedGraphState = {
 
 ## 十三、⚠️ 一个必须尽快改的安全点
 
-当前 `MultiAgentCoordinator` 的 `parseVerdict()`，在 **Reviewer 输出无法解析时默认 `approve`**。现在因为后面还有人工计划批准，风险受限；但**将来 Reviewer 代替用户处理操作审批时，绝不能默认批准**。
+原审查发现 `MultiAgentCoordinator.parseVerdict()` 在 Reviewer 输出无法解析时默认批准；当前实现已改为无法解析即失败，以下是保留的决策背景。现在因为后面还有人工计划批准，风险受限；但**将来 Reviewer 代替用户处理操作审批时，绝不能默认批准**。
 
 应改为：
 ```

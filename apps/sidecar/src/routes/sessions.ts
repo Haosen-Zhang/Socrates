@@ -23,9 +23,13 @@ export function sessionRoutes(
   workspaces?: WorkspaceManager,
   collaborationDefaults: () => RoomCollaborationSettings =
     () => DEFAULT_COLLABORATION_SETTINGS,
+  resolveTemplate?: (agentId: string) => Record<string, unknown>,
+  memberAvailability?: (snapshot: Record<string, unknown>) => string | null,
 ): Hono {
   const app = new Hono();
-  app.get("/", (c) => c.json(sessions.list()));
+  const view = (session: NonNullable<ReturnType<SessionStore["get"]>>) => memberAvailability
+    ? { ...session, agents: session.agents.map((member) => ({ ...member, unavailableReason: memberAvailability(member.snapshot) })) } : session;
+  app.get("/", (c) => c.json(sessions.list().map(view)));
   app.post("/", async (c) => {
     const body = await c.req.json().catch(() => null) as Record<string, unknown> | null;
     if (!body || typeof body.title !== "string" || typeof body.mode !== "string" || !MODES.has(body.mode as ConversationMode) || !Array.isArray(body.agents) || typeof body.primaryAgentId !== "string") {
@@ -34,14 +38,27 @@ export function sessionRoutes(
     const workspaceSelection = body.workspaceSelection && typeof body.workspaceSelection === "object"
       ? body.workspaceSelection as Record<string, unknown>
       : null;
-    if (!workspaceSelection) {
+    const kind = body.kind ?? (body.mode === "chat" ? "chat" : "cowork");
+    if (kind !== "chat" && kind !== "cowork") return c.json({ error: "invalid_room_kind" }, 400);
+    if (kind === "chat" && (body.mode !== "chat" || workspaceSelection || body.workspaceId)) {
+      return c.json({ error: "chat_room_must_not_bind_workspace" }, 400);
+    }
+    if (kind === "cowork" && body.mode === "chat") return c.json({ error: "room_mode_kind_mismatch" }, 400);
+    if (kind === "cowork" && !workspaceSelection) {
       return c.json({ error: "workspace_selection_required" }, 400);
     }
     const sessionId = crypto.randomUUID();
     let managedWorkspaceCreated = false;
     try {
-      let workspaceId: string;
-      if (workspaceSelection?.kind === "managed") {
+      const members = (body.agents as unknown[]).map((raw) => {
+        if (!raw || typeof raw !== "object" || typeof (raw as Record<string, unknown>).agentId !== "string") throw new Error("invalid_member_input");
+        const member = raw as { agentId: string; snapshot?: Record<string, unknown>; executionEligible?: boolean };
+        return { agentId: member.agentId, snapshot: resolveTemplate ? resolveTemplate(member.agentId) : member.snapshot ?? {}, executionEligible: member.executionEligible !== false };
+      });
+      let workspaceId: string | null = null;
+      if (kind === "chat") {
+        workspaceId = null;
+      } else if (workspaceSelection?.kind === "managed") {
         if (!workspaces) throw new Error("managed_workspace_unavailable");
         workspaceId = workspaces.createManaged(sessionId, body.title).id;
         managedWorkspaceCreated = true;
@@ -56,18 +73,18 @@ export function sessionRoutes(
       } else {
         throw new Error("invalid_workspace_selection");
       }
-      const defaults = normalizeCollaborationSettings(collaborationDefaults());
+      const defaults = normalizeCollaborationSettings(kind === "chat" || body.kind !== undefined ? DEFAULT_COLLABORATION_SETTINGS : collaborationDefaults());
       const capabilityErrors = validateCollaborationCapabilities(defaults);
       if (capabilityErrors.length) throw new Error(capabilityErrors[0]);
       return c.json(sessions.create({
         id: sessionId,
         title: body.title,
         mode: body.mode as ConversationMode,
-        kind: "cowork",
+        kind,
         workspaceId,
         primaryAgentId: body.primaryAgentId,
         collaborationDefaults: defaults,
-        agents: body.agents as Array<{ agentId: string; snapshot: Record<string, unknown>; executionEligible: boolean }>,
+        agents: members,
       }), 201);
     } catch (error) {
       if (managedWorkspaceCreated) workspaces?.discardManaged(sessionId);
@@ -76,7 +93,7 @@ export function sessionRoutes(
   });
   app.get("/:id", (c) => {
     const session = sessions.get(c.req.param("id"));
-    return session ? c.json(session) : c.json({ error: "session_not_found" }, 404);
+    return session ? c.json(view(session)) : c.json({ error: "session_not_found" }, 404);
   });
   app.get("/:id/messages", (c) => {
     const session = sessions.get(c.req.param("id"));
@@ -100,12 +117,20 @@ export function sessionRoutes(
   });
   app.post("/:id/agents", async (c) => {
     const body = await c.req.json().catch(() => null) as { agentId?: unknown; snapshot?: unknown } | null;
-    if (!body || typeof body.agentId !== "string" || typeof body.snapshot !== "object" || body.snapshot === null) return c.json({ error: "invalid_member_input" }, 400);
+    if (!body || typeof body.agentId !== "string" || (!resolveTemplate && (typeof body.snapshot !== "object" || body.snapshot === null))) return c.json({ error: "invalid_member_input" }, 400);
     try {
-      return c.json(sessions.addAgent(c.req.param("id"), body.agentId, body.snapshot as Record<string, unknown>));
+      return c.json(sessions.addAgent(c.req.param("id"), body.agentId, resolveTemplate ? resolveTemplate(body.agentId) : body.snapshot as Record<string, unknown>));
     } catch (error) {
       const message = error instanceof Error ? error.message : "session_add_member_failed";
       return c.json({ error: message }, message === "session_not_found" ? 404 : 409);
+    }
+  });
+  app.put("/:id/agents/:agentId/template", (c) => {
+    try {
+      if (!resolveTemplate) throw new Error("template_resolver_unavailable");
+      return c.json(sessions.updateAgentSnapshot(c.req.param("id"), c.req.param("agentId"), resolveTemplate(c.req.param("agentId"))));
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "template_update_failed" }, 409);
     }
   });
   app.delete("/:id/agents/:agentId", (c) => {

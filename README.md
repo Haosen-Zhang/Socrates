@@ -6,7 +6,7 @@ Socrates 是一个多模型群聊式 Agent 工作台。它允许用户把不同�
 
 ## 当前阶段
 
-MVP 已完成，当前按独立分支与 PR 推进运行可靠性建设。产品与工程设计见 `docs/`。
+Chat / Work 分离入口、房间内创建角色、结构化成员 mention 和 Manager 工作包协作已接通。Work 成员共用 Native Runtime、审批、持久事件与工作区写队列。实现与验证范围见 [本轮验收](doc/chat-work-collaboration-acceptance.md)；产品与工程设计见 `doc/` 和 `docs/`。
 
 ## 开发
 

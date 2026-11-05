@@ -205,7 +205,7 @@ function setup() {
   const runtimes = new RuntimeManager(db, events);
   runtimes.register("fake", () => new ApprovalRuntime());
   runtimes.register("public-summary", () => new PublicSummaryRuntime());
-  return { db, session, approvals, runner: new SingleAgentRunner(db, runtimes, approvals, events, new AttachmentResolver(db, `${tmpdir()}/unused-${crypto.randomUUID()}`)) };
+  return { db, session, approvals, runtimes, runner: new SingleAgentRunner(db, runtimes, approvals, events, new AttachmentResolver(db, `${tmpdir()}/unused-${crypto.randomUUID()}`)) };
 }
 
 function setupRecording(
@@ -284,6 +284,49 @@ function setContextWindow(db: ReturnType<typeof openDb>, sessionId: string, toke
 }
 
 describe("SingleAgentRunner", () => {
+  it("persists a budget stop and continues its durable turn without duplicating the user", async () => {
+    const { db, session, runner, runtimes } = setup();
+    const seen: RuntimeConversationMessage[][] = [];
+    const profiles: unknown[] = [];
+    let attempt = 0;
+    runtimes.register("budget", (input) => {
+      profiles.push(input.runtimeOptions?.runProfile);
+      return {
+        kind: "budget", capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: true },
+        async open() {}, async close() {}, async answerApproval() {}, async interrupt() {},
+        async *start(input: { messages?: RuntimeConversationMessage[] }) {
+          seen.push(input.messages ?? []);
+          yield { type: "text_delta" as const, text: ++attempt === 1 ? "partial" : "finished" };
+          yield attempt === 1 ? { type: "status" as const, status: "interrupted" as const, message: "budget_exhausted" }
+            : { type: "status" as const, status: "completed" as const };
+        },
+      };
+    });
+    const stopped = await runner.run({ sessionId: session.id, runtimeKind: "budget", prompt: "build", clientTurnKey: "budget" });
+    expect(stopped.status).toBe("interrupted");
+    expect(runner.getRun(stopped.id)).toMatchObject({ status: "interrupted", error: "budget_exhausted" });
+    const resumed = await runner.run(runner.continuationInput(stopped.id));
+    expect(resumed.status).toBe("completed");
+    expect(profiles[1]).toEqual(profiles[0]);
+    expect(seen[1]?.some((message) => message.content === "partial")).toBe(true);
+    expect(db.query("SELECT COUNT(*) AS count FROM session_messages WHERE role = 'user'").get()).toEqual({ count: 1 });
+    expect(db.query("SELECT COUNT(*) AS count FROM workspace_leases").get()).toEqual({ count: 0 });
+  });
+
+  it("selects a room member for this turn without changing the default", async () => {
+    const { db, session, runner, runtimes } = setup();
+    new SessionStore(db).addAgent(session.id, "b", { nickname: "B", providerId: "p", modelId: "model-b" });
+    let selected: unknown;
+    runtimes.register("target", (input) => {
+      selected = input.runtimeOptions?.runProfile;
+      return new RecordingRuntime([], "member B");
+    });
+    const result = await runner.run({ sessionId: session.id, agentId: "b", runtimeKind: "target", prompt: "check" });
+    expect(result.status).toBe("completed");
+    expect(selected).toMatchObject({ agentId: "b", modelId: "model-b" });
+    expect(new SessionStore(db).get(session.id)?.primaryAgentId).toBe("a");
+  });
+
   it("repairs pre-Phase-4 Native tools using their legacy agent-session identity", async () => {
     const { db, session, runner, seen } = setupRecording();
     const first = await runner.run({ sessionId: session.id, runtimeKind: "recording", prompt: "first" });
@@ -615,6 +658,9 @@ describe("SingleAgentRunner", () => {
       const mutated = Buffer.from("mutated-live-file");
       db.query("UPDATE workspace_refs SET snapshot_hash = ?, snapshot_size = ? WHERE id = 'ref'")
         .run(createHash("sha256").update(mutated).digest("hex"), mutated.byteLength);
+      expect((await runner.run({ sessionId: session.id, runtimeKind: "recording", clientTurnKey: "local-context",
+        prompt: "inspect local context", attachmentIds: [attachment.id], workspaceRefIds: ["ref"] })).status).toBe("completed");
+      expect(seen).toHaveLength(1);
       expect((await runner.run({
         sessionId: session.id,
         runtimeKind: "recording",

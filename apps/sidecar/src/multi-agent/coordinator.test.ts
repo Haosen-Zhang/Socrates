@@ -2,10 +2,10 @@ import { describe, expect, it } from "bun:test";
 import type { ModelGateway, OrchestrationAgent } from "@socrates/core";
 import { openDb } from "../db";
 import { EventStore } from "../store/event-store";
-import { MultiAgentCoordinator } from "./coordinator";
+import { MultiAgentCoordinator, parseVerdict } from "./coordinator";
 import { MultiTaskStore } from "./task-store";
 
-function setup(outputs: string[]) {
+function setup(outputs: string[], contextWindowTokens?: number) {
   const db = openDb(":memory:");
   const now = new Date().toISOString();
   db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w', '/tmp', '/tmp', 'hash', 'tmp', ?, ?)").run(now, now);
@@ -13,12 +13,39 @@ function setup(outputs: string[]) {
   for (const [position, id] of ["a", "b"].entries()) db.query("INSERT INTO session_agents (session_id, agent_id, snapshot_json, position, execution_eligible) VALUES ('s', ?, ?, ?, 1)").run(id, JSON.stringify({ nickname: id, modelId: `model-${id}` }), position);
   let calls = 0;
   const gateway: ModelGateway = async function* () { const value = outputs[calls++] ?? "missing"; yield { type: "delta", text: value }; yield { type: "done", usage: { inputTokens: 1, outputTokens: 2 } }; };
-  const resolve = (id: string, snapshot: Record<string, unknown>): OrchestrationAgent => ({ id, nickname: String(snapshot.nickname), modelId: String(snapshot.modelId), role: "", systemPrompt: "", providerType: "openai_compatible", baseUrl: "http://unused", apiKey: "fixture" });
+  const resolve = (id: string, snapshot: Record<string, unknown>): OrchestrationAgent => ({ id, nickname: String(snapshot.nickname), modelId: String(snapshot.modelId), role: "", systemPrompt: "", providerType: "openai_compatible", baseUrl: "http://unused", apiKey: "fixture", contextWindowTokens });
   const store = new MultiTaskStore(db);
   return { db, store, coordinator: new MultiAgentCoordinator(db, store, new EventStore(db), gateway, resolve), calls: () => calls };
 }
 
+describe("review verdict parsing", () => {
+  it("never approves missing, prose or malformed verdicts", () => {
+    for (const value of ["looks good", "{}", '{"verdict":"maybe","notes":"fine"}', '{"verdict":"approve"}']) expect(() => parseVerdict(value)).toThrow("review_output_invalid");
+    expect(parseVerdict('{"verdict":"approve","notes":"verified"}')).toEqual({ verdict: "approve", notes: "verified" });
+  });
+});
+
 describe("MultiAgentCoordinator", () => {
+  it("pauses an incomplete provider stream instead of publishing a successful discussion turn", async () => {
+    const { db, store } = setup([]);
+    const gateway: ModelGateway = async function* () { yield { type: "delta", text: "partial" }; };
+    const resolve = (id: string): OrchestrationAgent => ({ id, nickname: id, modelId: "model", role: "", systemPrompt: "", providerType: "openai_compatible", baseUrl: "http://fixture", apiKey: "fixture" });
+    const coordinator = new MultiAgentCoordinator(db, store, new EventStore(db), gateway, resolve);
+    const task = await coordinator.create({ sessionId: "s", prompt: "work", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a" } });
+    await coordinator.run(task.id);
+    expect(store.get(task.id)?.state).toBe("paused");
+    expect(store.hasOutcomeUnknown(task.id)).toBe(true);
+    expect(store.listTurns(task.id).filter((t) => t.status === "completed")).toHaveLength(0);
+  });
+
+  it("fails an oversized frozen model request before any provider call", async () => {
+    const { store, coordinator, calls } = setup([], 1024);
+    const task = await coordinator.create({ sessionId: "s", prompt: "x".repeat(3000), config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a" } });
+    await coordinator.run(task.id);
+    expect(calls()).toBe(0);
+    expect(store.get(task.id)).toMatchObject({ state: "failed", terminalReason: "context_current_unit_exceeds_budget" });
+  });
+
   it("runs discussion serially, repairs a plan once and waits for exact approval", async () => {
     const valid = JSON.stringify({ objective: "build", summary: "safe", steps: [{ id: "1", title: "edit", description: "change", files: ["src/a.ts"], commands: [], risks: [], verification: ["bun test"] }], evidence: [] });
     const { store, coordinator, calls } = setup(["A view", "B view", "not-json", valid]);
