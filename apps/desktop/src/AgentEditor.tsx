@@ -1,24 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  AGENT_AVATAR_ACCEPT,
-  AGENT_AVATARS,
-  isAgentAvatarSource,
   normalizeAgentNickname,
   randomUniqueAgentIdentity,
   resolveReasoningProfile,
   type Agent,
+  type AgentNameLanguage,
 } from "@socrates/core";
-import AgentAvatar from "./AgentAvatar";
-import { validateAvatarUpload } from "./agentAvatarUpload";
+import AgentIdentityEditor from "./AgentIdentityEditor";
 import { useT, type AgentForm } from "./store";
 import { AGENTS_SECTION_KEYS, useStorePick } from "./selectors";
 import { sfx } from "./fx";
 import NestedDialogPortal from "./dialog/NestedDialogPortal";
 import ReasoningEffortSelect from "./ReasoningEffortSelect";
 
-function newForm(agents: Agent[]): AgentForm {
+function newForm(agents: Agent[], language: AgentNameLanguage): AgentForm {
   const identity = randomUniqueAgentIdentity(
     agents.map((agent) => agent.nickname),
+    Math.random,
+    language,
   );
   return {
     nickname: identity.nickname,
@@ -31,6 +30,24 @@ function newForm(agents: Agent[]): AgentForm {
     contextWindowTokens: "",
     contextWindowDirty: false,
     reasoningEffort: "auto",
+  };
+}
+
+function formFromAgent(agent: Agent): AgentForm {
+  return {
+    nickname: agent.nickname,
+    avatar: agent.avatar,
+    providerId: agent.providerId,
+    modelId: agent.modelId,
+    role: agent.role,
+    systemPrompt: agent.systemPrompt,
+    temperature: agent.temperature?.toString() ?? "",
+    contextWindowTokens:
+      typeof agent.modelCapabilities?.contextWindowTokens === "number"
+        ? String(agent.modelCapabilities.contextWindowTokens)
+        : "",
+    contextWindowDirty: agent.contextWindow?.source === "user_override",
+    reasoningEffort: agent.reasoningEffort ?? "auto",
   };
 }
 
@@ -56,18 +73,21 @@ export default function AgentEditor({
     loadModelContextWindow,
     saveAgent,
   } = useStorePick(...AGENTS_SECTION_KEYS);
-  const { modelLoading, modelListErrors } = useStorePick(
+  const { modelLoading, modelListErrors, lang } = useStorePick(
     "modelLoading",
     "modelListErrors",
+    "lang",
   );
   const t = useT();
-  const [form, setForm] = useState<AgentForm>(() => newForm(agents));
+  const [form, setForm] = useState<AgentForm>(() =>
+    agent ? formFromAgent(agent) : newForm(agents, lang),
+  );
   const editingId = agent?.id ?? null;
   const open = true;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manualModel, setManualModel] = useState(false);
-  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
   // 选中供应商后拉取其可用型号（缓存于 store）
   useEffect(() => {
@@ -77,66 +97,17 @@ export default function AgentEditor({
 
   const close = onClose;
   useEffect(() => {
-    if (agent)
-      setForm({
-        nickname: agent.nickname,
-        avatar: agent.avatar,
-        providerId: agent.providerId,
-        modelId: agent.modelId,
-        role: agent.role,
-        systemPrompt: agent.systemPrompt,
-        temperature: agent.temperature?.toString() ?? "",
-        contextWindowTokens:
-          typeof agent.modelCapabilities?.contextWindowTokens === "number"
-            ? String(agent.modelCapabilities.contextWindowTokens)
-            : "",
-        contextWindowDirty: agent.contextWindow?.source === "user_override",
-        reasoningEffort: agent.reasoningEffort ?? "auto",
-      });
+    if (agent) setForm(formFromAgent(agent));
   }, [agent]);
-  const shuffleIdentity = () => {
-    const identity = randomUniqueAgentIdentity(
-      agents
-        .filter((agent) => agent.id !== editingId)
-        .map((agent) => agent.nickname),
-    );
-    setForm((current) => ({ ...current, ...identity }));
-    setError(null);
-  };
   const duplicateNickname = agents.some(
     (agent) =>
       agent.id !== editingId &&
       normalizeAgentNickname(agent.nickname) ===
         normalizeAgentNickname(form.nickname),
   );
-  const selectAvatarFile = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    const validation = validateAvatarUpload(file);
-    if (validation) {
-      setError(
-        t(validation === "size" ? "avatar_too_large" : "avatar_invalid_format"),
-      );
-      return;
-    }
-    const reader = new FileReader();
-    reader.onerror = () => setError(t("avatar_read_failed"));
-    reader.onload = () => {
-      if (
-        typeof reader.result !== "string" ||
-        !isAgentAvatarSource(reader.result)
-      ) {
-        setError(t("avatar_invalid_format"));
-        return;
-      }
-      setForm((current) => ({ ...current, avatar: reader.result as string }));
-      setError(null);
-    };
-    reader.readAsDataURL(file);
-  };
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (uploadingAvatar) return;
     setError(null);
     if (duplicateNickname) {
       setError(t("nickname_duplicate"));
@@ -253,65 +224,16 @@ export default function AgentEditor({
             )}
           </div>
         )}
-        <div className="pixel-identity-panel flex flex-col gap-5 p-4 sm:flex-row">
-          <AgentAvatar src={form.avatar} label={form.nickname} size={104} />
-          <div className="min-w-0 flex-1 space-y-3">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-              <label className="min-w-0 flex-1 text-sm">
-                {t("nickname")}
-                <input
-                  className={input}
-                  required
-                  aria-invalid={duplicateNickname}
-                  value={form.nickname}
-                  onChange={(event) => {
-                    setForm({ ...form, nickname: event.target.value });
-                    setError(null);
-                  }}
-                />
-              </label>
-              <button
-                type="button"
-                className="pixel-button px-3 py-2 text-sm"
-                onClick={shuffleIdentity}
-              >
-                ↻ {t("shuffle_identity")}
-              </button>
-            </div>
-            <div className="flex gap-2 overflow-x-auto pb-1">
-              {AGENT_AVATARS.map((avatar) => (
-                <button
-                  key={avatar}
-                  type="button"
-                  className={`pixel-avatar-choice ${avatar === form.avatar ? "is-selected" : ""}`}
-                  onClick={() => setForm({ ...form, avatar })}
-                >
-                  <AgentAvatar src={avatar} label="" size={42} lively={false} />
-                </button>
-              ))}
-              <button
-                type="button"
-                className={`pixel-avatar-choice px-2 text-xs ${!AGENT_AVATARS.includes(form.avatar as (typeof AGENT_AVATARS)[number]) ? "is-selected" : ""}`}
-                onClick={() => avatarInputRef.current?.click()}
-                title={t("avatar_upload_hint")}
-              >
-                ↑ {t("avatar_upload")}
-              </button>
-              <input
-                ref={avatarInputRef}
-                className="sr-only"
-                type="file"
-                tabIndex={-1}
-                aria-hidden="true"
-                accept={AGENT_AVATAR_ACCEPT}
-                onChange={selectAvatarFile}
-              />
-            </div>
-            {duplicateNickname && (
-              <p className="text-xs text-red-700">{t("nickname_duplicate")}</p>
-            )}
-          </div>
-        </div>
+        <AgentIdentityEditor
+          nickname={form.nickname}
+          avatar={form.avatar}
+          existingNicknames={agents.filter(item => item.id !== editingId).map(item => item.nickname)}
+          duplicateNickname={duplicateNickname}
+          onChange={identity => setForm(current => ({ ...current, ...identity }))}
+          onError={setError}
+          onUploadPending={setUploadingAvatar}
+        />
+        {uploadingAvatar && <p role="status" className="text-xs text-neutral-500">{t("avatar_loading")}</p>}
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <label className="text-sm">
@@ -491,7 +413,7 @@ export default function AgentEditor({
             </button>
           </p>
         )}
-        {error && <p className="text-sm text-red-700">{error}</p>}
+        {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
         <div className="flex justify-end gap-3">
           <button
             type="button"
@@ -501,7 +423,7 @@ export default function AgentEditor({
             {t("cancel")}
           </button>
           <button
-            disabled={saving || duplicateNickname || !form.providerId}
+            disabled={saving || uploadingAvatar || duplicateNickname || !form.providerId}
             type="submit"
             className="pixel-button pixel-button--primary px-5 py-2 text-sm"
           >
