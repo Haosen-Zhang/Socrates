@@ -20,4 +20,6 @@ import { toolResultArtifactsMigration } from "./019_tool_result_artifacts";
 import { roomCommandsMigration } from "./020_room_commands";
 import { teamWorkPackagesMigration } from "./021_team_work_packages";
 
-export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration, usageAndRecoveryMigration, projectConversationOrganizationMigration, roomKindMigration, phase1RuntimeMigration, conversationMemoryMigration, roomApprovalPolicyMigration, managedWorkspacesMigration, collaborationSettingsMigration, modelCatalogProvenanceMigration, historyProjectionMigration, executionEventAuthorityMigration, toolAttemptsMigration, toolResultArtifactsMigration, roomCommandsMigration, teamWorkPackagesMigration] as const;
+import { legacyRoomSessionsMigration } from "./022_legacy_room_sessions";
+
+export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration, usageAndRecoveryMigration, projectConversationOrganizationMigration, roomKindMigration, phase1RuntimeMigration, conversationMemoryMigration, roomApprovalPolicyMigration, managedWorkspacesMigration, collaborationSettingsMigration, modelCatalogProvenanceMigration, historyProjectionMigration, executionEventAuthorityMigration, toolAttemptsMigration, toolResultArtifactsMigration, roomCommandsMigration, teamWorkPackagesMigration, legacyRoomSessionsMigration] as const;

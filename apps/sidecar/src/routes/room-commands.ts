@@ -23,16 +23,27 @@ export function roomCommandRoutes(commands: RoomCommandService): Hono {
   });
   app.get("/:id/events", (c) => {
     const id = c.req.param("id");
-    if (!commands.get(id)) return c.json({ error: "command_not_found" }, 404);
+    const command = commands.get(id);
+    if (!command) return c.json({ error: "command_not_found" }, 404);
+    if (command.status === "revoked") return c.json({ error: "room_command_revoked" }, 410);
     const rawCursor = c.req.query("afterSeq") ?? "0";
     if (!/^(0|[1-9]\d*)$/.test(rawCursor) || !Number.isSafeInteger(Number(rawCursor))) return c.json({ error: "invalid_event_cursor" }, 400);
     return streamSSE(c, async (stream) => {
       let cursor = Number(rawCursor);
-      while (!c.req.raw.signal.aborted) {
-        for (const event of commands.eventsAfter(id, cursor)) {
+      while (!c.req.raw.signal.aborted && !stream.aborted) {
+        const pending = commands.eventsAfter(id, cursor);
+        for (const event of pending) {
+          if (commands.get(id)?.status === "revoked") return;
           await stream.writeSSE({ id: String(event.seq), event: event.type, data: JSON.stringify(event) }); cursor = event.seq;
         }
-        if (!["dispatching", "running"].includes(commands.get(id)?.status ?? "")) return;
+        // Drain persisted pages even when the task is already terminal.
+        if (pending.length === 500) continue;
+        const current = commands.get(id);
+        if (!current || current.status === "revoked") return;
+        const keepOpen = current.kind === "team"
+          ? commands.isSettling(id) || !["completed", "failed", "cancelled", "interrupted"].includes(current.status)
+          : ["dispatching", "running"].includes(current.status);
+        if (!keepOpen) return;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
     });

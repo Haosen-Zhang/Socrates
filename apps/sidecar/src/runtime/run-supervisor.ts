@@ -93,8 +93,9 @@ export class RunSupervisor {
   }
 
   get(runId: string): AgentRunView | AgentRunResult | null {
-    const durable = this.runner.getRun?.(runId);
-    if (durable) return durable;
+    // A rewind can remove a finished run while its short-lived cache remains.
+    // When durable lookup exists, absence is authoritative too.
+    if (this.runner.getRun) return this.runner.getRun(runId);
     const entry = this.runs.get(runId);
     return entry?.result ?? null;
   }

@@ -72,3 +72,19 @@ Ship the reported proxy, provider form, composer, agent, room sidebar, and pixel
 
 ## Status
 **Complete** - #48-#52 and #58 are delivered as independent PRs; #57 conflict was resolved and reverified.
+
+# Chat / Work reliability repair — 2026-11-05
+
+Baseline: `4c1faa536a382b70ec5d43b19907bc10973d1f64` (latest origin/main, PR #137 merged).
+Branch: `codex/fix-room-lifecycle-consistency`. Issue: https://github.com/Haosen-Zhang/Socrates/issues/138.
+Scope: all applicable items in the attached repair specification; preserve user data and unrelated local edits.
+
+- [x] Read instructions/architecture, inspect checkout and fetch current baseline.
+- [x] Frontend: room-owned attachments/drafts/actions, history ordering/rewind barriers, unified navigation/composer and realtime Team consumption.
+- [x] Runtime: queued pause/cancel/shutdown, Team settle/resume serialization, atomic plan edits, parent usage and native plan scope.
+- [x] Context/events: frozen public context across Manager/discussion/reviewer/Worker; durable Team events and replay.
+- [x] Compatibility/persistence: legacy room upgrade with history/identity/tasks, command rewind invalidation, Work defaults.
+- [x] Integrate, run focused regressions, full tests, typecheck and desktop build.
+- [x] Exercise browser user paths with isolated data and record current evidence/limitations.
+
+Status: complete. Final host verification: 879 tests passed, zero failures/skips; typecheck/build passed. Browser: 28 checks passed, zero page exceptions. Acceptance: `doc/chat-work-reliability-repair-acceptance.md`. Native Tauri window/live Provider checks are not claimed.

@@ -195,3 +195,16 @@ describe("message flow", () => {
     expect(missing.status).toBe(404);
   });
 });
+
+it("migrated legacy writes return the canonical session mapping instead of forking history", async () => {
+  const { SessionStore } = await import("./store/session-store");
+  const db = openDb(":memory:"); const sessions = new SessionStore(db);
+  db.run("INSERT INTO rooms (id,name,created_at,updated_at) VALUES ('old','Old','now','now')");
+  sessions.create({ id: "canonical", title: "Canonical", mode: "chat", legacyRoomId: "old", primaryAgentId: "a", agents: [{ agentId: "a", snapshot: {}, executionEligible: true }] });
+  const app = new Hono().route("/rooms", roomRoutes(db, new MemorySecrets(), okGateway, undefined, sessions));
+  const result = await app.request("/rooms/old/messages", { method: "POST", body: JSON.stringify({ content: "hello" }) });
+  expect(result.status).toBe(409);
+  expect(await result.json()).toEqual({ error: "room_upgraded_use_session", sessionId: "canonical" });
+  expect(db.query("SELECT id FROM messages").all()).toEqual([]);
+  db.close();
+});

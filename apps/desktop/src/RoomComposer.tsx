@@ -101,10 +101,14 @@ export default function RoomComposer({
       prompt,
       mentions,
       behavior === "team" ? "execute" : behavior,
+      undefined,
+      session.id,
     );
     if (!ok) {
-      setComposerDraft(session.id, prompt);
-      setComposerMentions(session.id, selected);
+      if (!(useStore.getState().composerDrafts[session.id] ?? "")) {
+        setComposerDraft(session.id, prompt);
+        setComposerMentions(session.id, selected);
+      }
     }
   };
   const changeBehavior = async (value: string) => {
@@ -266,7 +270,8 @@ export default function RoomComposer({
                 key={result.relativePath}
                 className="block w-full px-2 py-1 text-left text-xs hover:bg-neutral-100"
                 onClick={() => {
-                  void addWorkspaceRef(result.relativePath)
+                  const target = useStore.getState().captureRoomTarget();
+                  void addWorkspaceRef(result.relativePath, target)
                     .then((ref) =>
                       choose({
                         label: `@${result.relativePath}`,

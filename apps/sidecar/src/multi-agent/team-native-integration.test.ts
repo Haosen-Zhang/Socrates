@@ -16,6 +16,7 @@ import { createWorkspaceWriteBuiltins } from "../tools/workspace-write-builtins"
 import { WorkspaceLeaseManager } from "../workspace/leases";
 import { WorkspacePathPolicy } from "../workspace/path-policy";
 import { MultiAgentCoordinator } from "./coordinator";
+import { UsageCollector, normalizeTokenUsage } from "../services/usage-collector";
 import { MultiTaskStore } from "./task-store";
 import { TeamRunner } from "./team-runner";
 import { WorkPackageStore } from "./work-package-store";
@@ -42,7 +43,7 @@ describe("manager and native team execution", () => {
       { id: "second", title: "Second file", objective: "write two", input: "two.txt", dependencies: ["first"], executorAgentId: "b", reviewerAgentId: null, expectedFiles: ["two.txt"], acceptanceCriteria: ["two.txt contains b"] },
     ] };
     let managerCalls = 0;
-    const gateway: ModelGateway = async function* (request) { managerCalls++; expect(request.system).toContain("executionAllowed"); yield { type: "delta", text: JSON.stringify(plan) }; yield { type: "done" }; };
+    const gateway: ModelGateway = async function* (request) { managerCalls++; expect(request.system).toContain("executionAllowed"); yield { type: "delta", text: JSON.stringify(plan) }; yield { type: "done", usage: { inputTokens: 10, outputTokens: 5 } }; };
     const resolve = (id: string, snapshot: Record<string, unknown>): OrchestrationAgent => ({ id, nickname: id, modelId: String(snapshot.modelId), role: String(snapshot.role), systemPrompt: String(snapshot.systemPrompt), providerType: "openai_compatible", baseUrl: "http://fixture", apiKey: "fixture" });
     const coordinator = new MultiAgentCoordinator(db, tasks, events, gateway, resolve);
     const runtimes = new RuntimeManager(db, executionEvents);
@@ -69,6 +70,7 @@ describe("manager and native team execution", () => {
           yield { type: "tool_result", callId, name: "write_file", output, isError: false };
         } else resumedWithToolFacts = true;
         yield { type: "text_delta", text: `${agent}: file created and readback verified` };
+        yield { type: "usage", usage: normalizeTokenUsage({ inputTokens: 100, outputTokens: 25, totalTokens: 125 }) };
         yield { type: "provider_step_completed" };
         if (agent === "b" && !continuing) yield { type: "budget_exhausted", steps: 8 };
       };
@@ -86,7 +88,7 @@ describe("manager and native team execution", () => {
       let done = false;
       void promise.finally(() => { done = true; });
       while (!done) {
-        for (const request of approvals.recoverPending().pending) { approvalCount++; await execution.decide(request.id, { clientDecisionKey: `approve-${request.id}`, decision: "allow_once" }); }
+        for (const request of approvals.recoverPending().pending) { expect(request.kind).toBe("write_file"); approvalCount++; await execution.decide(request.id, { clientDecisionKey: `approve-${request.id}`, decision: "allow_once" }); }
         await Bun.sleep(0);
       }
       await promise;
@@ -95,10 +97,19 @@ describe("manager and native team execution", () => {
     await approveUntilDone(runner.run(task.id));
     expect(tasks.get(task.id)?.state).toBe("paused");
     expect(packages.list(task.id).map((p) => p.state)).toEqual(["completed", "budget_stopped"]);
+    expect(tasks.usageSummaries(task.id).find((summary) => summary.agentId === "a")).toMatchObject({ records: 1, cumulative: { inputTokens: 100, outputTokens: 25, totalTokens: 125, cost: null } });
+    expect(tasks.usageSummaries(task.id).find((summary) => summary.agentId === "b")?.cumulative.totalTokens).toBe(125);
     // Reopen projection and coordinator without rerunning the completed predecessor.
     const reopened = new TeamRunner(db, new MultiTaskStore(db), new WorkPackageStore(db), execution, coordinator, events);
     await approveUntilDone(reopened.retry(task.id, packages.list(task.id)[1]!.id));
     expect(calls).toEqual(["a", "b", "b"]);
+    expect(tasks.usageSummaries(task.id).find((summary) => summary.agentId === "b")).toMatchObject({ records: 2, cumulative: { inputTokens: 200, outputTokens: 50, totalTokens: 250, cost: null } });
+    expect(tasks.usageSummaries(task.id).find((summary) => summary.agentId === "manager")?.cumulative.totalTokens).toBe(15);
+    const child = packages.list(task.id)[1]!;
+    const beforeReplay = tasks.usageSummaries(task.id);
+    await execution.runPackage({ taskId: task.id, packageId: child.id, agentId: child.executorAgentId, prompt: "retry completed delivery", plan: approved.content, attemptNo: child.attemptNo });
+    expect(tasks.usageSummaries(task.id)).toEqual(beforeReplay);
+    expect(new UsageCollector(db).sessionSummaries("s").reduce((sum, item) => sum + (item.cumulative.totalTokens ?? 0), 0)).toBe(390);
     expect(approvalCount).toBe(2);
     expect(resumedWithToolFacts).toBe(true);
     expect(readFileSync(join(root, "one.txt"), "utf8")).toBe("a");

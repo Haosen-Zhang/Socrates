@@ -106,3 +106,36 @@ test("stopped discussion persists partial facts and restarts as interrupted with
   expect(f.sessions.get(f.room.id)?.status).toBe("interrupted");
   f.db.close();
 });
+
+test("orphaned command does not expose a recoverable run or dispatch again after restart", async () => {
+  const f = fixture();
+  const input = { roomId: f.room.id, clientRequestId: "orphan", content: "question", mentions: [], intent: "respond" as const };
+  const command = await f.service.submit(input);
+  const restarted = new RoomCommandService(f.db, f.sessions, {
+    startDirect: async () => { throw new Error("must_not_execute"); }, getDirect: () => null,
+    createTeam: async () => { throw new Error("must_not_execute"); },
+    resolveAgent: () => { throw new Error("must_not_resolve"); }, gateway: async function* () {},
+  });
+  restarted.recoverInterrupted();
+  expect(restarted.get(command.commandId)).toMatchObject({ status: "interrupted", error: "command_runtime_missing" });
+  expect(restarted.get(command.commandId)?.runId).toBeUndefined();
+  expect((await restarted.submit(input)).status).toBe("interrupted");
+  expect(restarted.list(f.room.id).some(item => item.status === "running")).toBe(false);
+  expect(f.calls()).toBe(1);
+  f.db.close();
+});
+
+test("revoked discussion retains audit but cannot list, replay or submit its original request", async () => {
+  const f = fixture();
+  const input = { roomId: f.room.id, clientRequestId: "revoke", content: "question", mentions: [{ type: "all" as const }], intent: "respond" as const };
+  const command = await f.service.submit(input);
+  await f.service.wait(command.commandId);
+  const user = f.sessions.listMessages(f.room.id).find(message => message.role === "user")!;
+  await f.sessions.rewind(f.room.id, user.id);
+  expect(f.service.get(command.commandId)?.status).toBe("revoked");
+  expect(f.service.list(f.room.id)).toHaveLength(0);
+  expect(f.service.eventsAfter(command.commandId, 0)).toHaveLength(0);
+  expect(f.sessions.listMessages(f.room.id)).toHaveLength(0);
+  await expect(f.service.submit(input)).rejects.toThrow("room_command_revoked");
+  f.db.close();
+});

@@ -35,6 +35,7 @@ describe("session routes", () => {
       method: "POST",
       body: JSON.stringify({
         title: "Defaults",
+        kind: "cowork",
         mode: "multi_agent",
         primaryAgentId: "b",
         agents: [
@@ -363,4 +364,26 @@ describe("session routes", () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "invalid_session_input" });
   });
+});
+
+it("explicit Work creation snapshots defaults and normalizes execution eligibility without affecting Chat or existing rooms", async () => {
+  const db = openDb(":memory:");
+  const root = `${tmpdir()}/socrates-default-eligibility-${crypto.randomUUID()}`; roots.push(root);
+  let defaults = { ...DEFAULT_COLLABORATION_SETTINGS };
+  const sessions = new SessionStore(db);
+  const app = new Hono().route("/sessions", sessionRoutes(sessions, new EventStore(db), undefined, new WorkspaceManager(db, root), () => defaults));
+  const create = async (kind: "chat" | "cowork", eligibility = [true, true]) => {
+    const result = await app.request("/sessions", { method: "POST", body: JSON.stringify({ title: kind, kind, mode: kind === "chat" ? "chat" : "multi_agent", primaryAgentId: "a", agents: ["a", "b"].map((agentId, i) => ({ agentId, snapshot: {}, executionEligible: eligibility[i] })), ...(kind === "cowork" ? { workspaceSelection: { kind: "managed" } } : {}) }) });
+    expect(result.status).toBe(201); return await result.json();
+  };
+  const original = await create("cowork"); expect(original.collaboration.strategy).toBe("single");
+  defaults = { ...defaults, strategy: "team" };
+  expect((await create("cowork")).collaboration.strategy).toBe("team");
+  const limited = await create("cowork", [false, true]);
+  expect(limited.collaboration.strategy).toBe("single");
+  expect(limited.collaboration.assignment.coordinatorAgentId).toBe("b");
+  expect(limited.collaboration.assignment.callableAgentIds).toEqual(["b"]);
+  expect((await create("chat")).collaboration.strategy).toBe("single");
+  expect(sessions.get(original.id)?.collaboration.strategy).toBe("single");
+  db.close();
 });

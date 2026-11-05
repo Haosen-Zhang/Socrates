@@ -73,7 +73,7 @@ export function sessionRoutes(
       } else {
         throw new Error("invalid_workspace_selection");
       }
-      const defaults = normalizeCollaborationSettings(kind === "chat" || body.kind !== undefined ? DEFAULT_COLLABORATION_SETTINGS : collaborationDefaults());
+      const defaults = normalizeCollaborationSettings(kind === "chat" ? DEFAULT_COLLABORATION_SETTINGS : collaborationDefaults());
       const capabilityErrors = validateCollaborationCapabilities(defaults);
       if (capabilityErrors.length) throw new Error(capabilityErrors[0]);
       return c.json(sessions.create({

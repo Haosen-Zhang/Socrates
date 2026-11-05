@@ -199,6 +199,7 @@ const commands = new RoomCommandService(db, sessions, {
   startDirect: (input) => runSupervisor.start(input),
   getDirect: (id) => runSupervisor.get(id),
   cancelDirect: (id) => runSupervisor.cancel(id),
+  isTeamActive: (id) => teamRunner.isActive(id),
   resolveFileContext: (workspaceId, refs, ids) => resolveRoomFileContext(db, workspaces, attachments, workspaceId, refs, ids),
   createTeam: async ({ sessionId, prompt, clientRequestId, targetAgentIds, inputContext }) => {
     const room = sessions.get(sessionId)!;
@@ -220,7 +221,7 @@ app.get("/health", (c) => c.json({ ok: true }));
 app.route("/config", configRoutes(config));
 app.route("/providers", providerRoutes(db, secrets, proxiedFetch));
 app.route("/agents", agentRoutes(db, modelCatalog));
-app.route("/rooms", roomRoutes(db, secrets, gateway, usage));
+app.route("/rooms", roomRoutes(db, secrets, gateway, usage, sessions));
 app.route("/workspaces", workspaceRoutes(workspaces));
 app.route(
   "/sessions",
@@ -254,6 +255,7 @@ if (server.port === undefined) throw new Error("TCP server has no port");
 stopManagedServices = async () => {
   await commands.shutdown();
   await teamRunner.shutdown();
+  await executionRunner.shutdown();
   await runSupervisor.shutdown();
   await mcp.stopAll();
   server.stop(true);

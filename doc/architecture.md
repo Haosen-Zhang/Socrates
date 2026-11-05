@@ -1,7 +1,7 @@
 # Socrates 软件架构总览
 
 > 事无巨细版：从进程拓扑、前端 UI 策略，到运行时骨架、房间/多 Agent 编排、执行内核与安全边界。
-> 描述当前实现。2026-11-05 更新：Chat / Work、结构化房间命令与持久工作包已接通。验收证据见 [本轮验收](chat-work-collaboration-acceptance.md)。
+> 描述当前实现。2026-11-05 更新：Chat / Work、结构化房间命令与持久工作包已接通；房间异步归属、历史版本、团队实时事件和回退生命周期修复见 [可靠性验收](chat-work-reliability-repair-acceptance.md)。初版验收见 [本轮验收](chat-work-collaboration-acceptance.md)。
 
 ---
 
@@ -156,7 +156,7 @@ NavigationTarget =
 ### 3.3 会话视图
 
 `ChatPage.tsx` 按房间 kind 和显式策略渲染，不以成员数量启动团队流程：
-- 新 Chat 与 Work 均使用 sessions；旧 `/rooms` 的消息与历史入口保留。
+- Chat 与 Work 均使用 sessions；迁移 022 将旧 rooms 连同历史、作者、成员和归档状态接入统一会话。旧 ID 保留（已有 legacyRoomId 映射则沿用），旧写接口返回 canonical session 映射。
 - 新 Chat：共享时间线、成员/默认回应者、指定成员或有界讨论；无工作区 Dock 和本地工具。
 - Work `strategy=single`：直接 Native 执行；`strategy=team`：Manager 计划、精确审批、WorkPackage 面板与成员执行。
 - `AgentEditor` 复用于角色库、建房和成员管理；`RoomComposer` 提交结构化 mentions；`RoomTimeline` 保持阅读位置；`TeamTaskPanel` 展示 owner/依赖/状态/结果。

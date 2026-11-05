@@ -1,7 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useState } from "react";
-import { useStore, useT } from "../store";
+import { useStore, useT, type RoomOperationTarget } from "../store";
 import { ATTACHMENT_TRAY_KEYS, useStorePick } from "../selectors";
 import PixelIcon from "../PixelIcon";
 
@@ -27,48 +27,48 @@ export function AttachmentImage({ id, alt, className = "h-12 w-12" }: { id: stri
 }
 
 export default function AttachmentTray() {
-  const { activeWorkspace, workspaces, sessions, currentSessionId, draftAttachments, draftWorkspaceRefs, importWorkspaceAttachment, importClipboardAttachment, removeDraftAttachment, removeDraftWorkspaceRef } = useStorePick(...ATTACHMENT_TRAY_KEYS);
+  const { activeWorkspace, workspaces, sessions, currentSessionId, draftAttachments, draftWorkspaceRefs, importWorkspaceAttachment, importClipboardAttachment, removeDraftAttachment, removeDraftWorkspaceRef, captureRoomTarget, attachmentError, attachmentImports } = useStorePick(...ATTACHMENT_TRAY_KEYS);
   const boundId = sessions.find((session) => session.id === currentSessionId)?.workspaceId;
   const workspace = (boundId ? workspaces.find((item) => item.id === boundId) : null) ?? activeWorkspace;
-  const [error, setError] = useState<string | null>(null);
   const t = useT();
 
-  const addPaths = useCallback(async (paths: string[]) => {
-    setError(null);
+  const addPaths = useCallback(async (paths: string[], target: RoomOperationTarget) => {
     for (const path of paths.slice(0, 10)) {
-      try { await importWorkspaceAttachment(path); }
-      catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+      try { await importWorkspaceAttachment(path, target); }
+      catch { /* The owning room retains the import error. */ }
     }
   }, [importWorkspaceAttachment]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let disposed = false;
     void getCurrentWebview().onDragDropEvent((event) => {
-      if (event.payload.type === "drop") void addPaths(event.payload.paths);
-    }).then((dispose) => { unlisten = dispose; }).catch(() => {});
-    return () => unlisten?.();
-  }, [addPaths]);
+      if (event.payload.type === "drop") void addPaths(event.payload.paths, captureRoomTarget());
+    }).then((dispose) => { if (disposed) dispose(); else unlisten = dispose; }).catch(() => {});
+    return () => { disposed = true; unlisten?.(); };
+  }, [addPaths, captureRoomTarget]);
 
   useEffect(() => {
     const paste = (event: ClipboardEvent) => {
       const files = [...(event.clipboardData?.files ?? [])].slice(0, 10);
       if (!files.length) return;
       event.preventDefault();
-      setError(null);
+      const target = captureRoomTarget();
       void (async () => {
         for (const file of files) {
-          try { await importClipboardAttachment(file); }
-          catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+          try { await importClipboardAttachment(file, target); }
+          catch { /* The owning room retains the import error. */ }
         }
       })();
     };
     window.addEventListener("paste", paste);
     return () => window.removeEventListener("paste", paste);
-  }, [importClipboardAttachment]);
+  }, [importClipboardAttachment, captureRoomTarget]);
 
   const choose = async () => {
+    const target = captureRoomTarget();
     const selected = await open({ multiple: true, directory: false });
-    if (selected) await addPaths(Array.isArray(selected) ? selected : [selected]);
+    if (selected) await addPaths(Array.isArray(selected) ? selected : [selected], target);
   };
 
   return (
@@ -88,7 +88,8 @@ export default function AttachmentTray() {
           </div>
         ))}
       </div>
-      {error && <div role="alert" className="mb-2 text-xs text-red-700">{error}</div>}
+      {attachmentImports > 0 && <div role="status" className="mb-2 text-xs text-neutral-500">{t("attachment_importing")}</div>}
+      {attachmentError && <div role="alert" className="mb-2 text-xs text-red-700">{t(attachmentError)}</div>}
     </div>
   );
 }

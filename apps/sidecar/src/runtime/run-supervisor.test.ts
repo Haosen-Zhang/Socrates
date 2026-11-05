@@ -43,6 +43,24 @@ describe("RunSupervisor", () => {
     expect(supervisor.get(started.runId)?.status).toBe("completed");
   });
 
+  it("does not resurrect a completed cached result after durable rewind removes it", async () => {
+    let durable = true;
+    const result: AgentRunResult = { id: "rewound", sessionId: "room", runtimeSessionId: "runtime", threadId: "thread", turnId: "turn", status: "completed" };
+    const supervisor = new RunSupervisor({
+      recoverInterrupted: () => ({ runs: 0, approvals: 0 }), cancel: async () => {},
+      getRun: () => durable ? { ...result, error: null, createdAt: "now", completedAt: "now" } : null,
+      async run(_input, emit) {
+        await emit({ type: "extension", name: "run_started", payload: { runId: result.id, turnId: result.turnId, threadId: result.threadId } });
+        return result;
+      },
+    });
+    await supervisor.start({ sessionId: "room", runtimeKind: "native_ai_sdk", prompt: "work" });
+    await Promise.resolve();
+    expect(supervisor.get("rewound")?.status).toBe("completed");
+    durable = false;
+    expect(supervisor.get("rewound")).toBeNull();
+  });
+
   it("uses the run-owned controller only for explicit cancellation", async () => {
     const cancelled = deferred<void>();
     let signal: AbortSignal | undefined;

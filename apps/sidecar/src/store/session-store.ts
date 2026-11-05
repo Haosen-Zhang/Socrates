@@ -63,6 +63,9 @@ type RewindProjectionIntent = {
   turnIds: string[];
   targetSequence: number;
   updatedAt: string;
+  /** Version 2 revokes complete logical runs, including continuation/package attempts. */
+  ownershipVersion?: 2;
+  taskIds?: string[];
 };
 
 export class SessionStore {
@@ -107,15 +110,21 @@ export class SessionStore {
     }
     const id = input.id ?? crypto.randomUUID();
     const now = new Date().toISOString();
-    // cowork 房间落一份默认协作设置：多成员默认轮流讨论，单成员默认不讨论——
-    // 这样 UI 显示的默认与运行时一致，而不是留空让两边各自推断。
-    const collaborationJson = kind === "cowork"
-      ? JSON.stringify(resolveCollaborationDefaults(
-          input.collaborationDefaults ?? DEFAULT_COLLABORATION_SETTINGS,
-          { kind, workspaceId, agentIds, primaryAgentId },
-          primaryAgentId,
-        ))
-      : null;
+    // Snapshot Work defaults once; adding members never implicitly enables teams.
+    const defaults = resolveCollaborationDefaults(
+      input.collaborationDefaults ?? DEFAULT_COLLABORATION_SETTINGS,
+      { kind, workspaceId, agentIds, primaryAgentId }, primaryAgentId,
+    );
+    const eligible = input.agents.filter(agent => agent.executionEligible).map(agent => agent.agentId);
+    if (kind === "cowork") {
+      defaults.assignment.callableAgentIds = defaults.assignment.callableAgentIds.filter(id => eligible.includes(id));
+      if (!defaults.assignment.callableAgentIds.length) defaults.assignment.callableAgentIds = [...eligible];
+      if (!eligible.includes(defaults.assignment.coordinatorAgentId ?? "")) {
+        defaults.assignment.coordinatorAgentId = eligible.includes(primaryAgentId) ? primaryAgentId : eligible[0] ?? primaryAgentId;
+      }
+      if (eligible.length < 2) defaults.strategy = "single";
+    }
+    const collaborationJson = kind === "cowork" ? JSON.stringify(defaults) : null;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.query(`
@@ -238,6 +247,15 @@ export class SessionStore {
 
   private authorSnapshot(message: MessageRow): Record<string, unknown> | undefined {
     if (!message.author_id) return undefined;
+    // Legacy rows are immutable audit records after migration, including the
+    // original display identity/model even if the Agent template later changes.
+    const legacy = this.db.query<{ agent_name: string | null; agent_avatar: string | null; model: string | null }, [string, string]>(`
+      SELECT messages.agent_name, messages.agent_avatar, messages.model FROM messages
+      JOIN sessions ON sessions.legacy_room_id = messages.room_id
+      WHERE messages.id = ? AND sessions.id = ?
+    `).get(message.id, message.session_id);
+    if (legacy) return { agentId: message.author_id, nickname: legacy.agent_name ?? message.author_id,
+      avatar: legacy.agent_avatar ?? undefined, modelId: legacy.model ?? "" };
     if (message.turn_id) {
       const turn = this.db.query<{ context_json: string | null }, [string]>("SELECT context_json FROM conversation_turns WHERE id = ?").get(message.turn_id);
       const profile = turn?.context_json ? JSON.parse(turn.context_json).runProfile : undefined;
@@ -473,6 +491,16 @@ export class SessionStore {
       this.db.query("DELETE FROM session_messages WHERE session_id = ?").run(sessionId);
       this.db.query("DELETE FROM session_agents WHERE session_id = ?").run(sessionId);
       this.db.query("DELETE FROM sessions WHERE id = ?").run(sessionId);
+      if (session.legacyRoomId) {
+        // Explicit room deletion includes its retained legacy audit source, so
+        // the old sidebar/API cannot resurrect a room the user just deleted.
+        const legacyId = session.legacyRoomId;
+        this.db.query("DELETE FROM turns WHERE task_id IN (SELECT id FROM tasks WHERE room_id = ?)").run(legacyId);
+        this.db.query("DELETE FROM tasks WHERE room_id = ?").run(legacyId);
+        this.db.query("DELETE FROM messages WHERE room_id = ?").run(legacyId);
+        this.db.query("DELETE FROM room_agents WHERE room_id = ?").run(legacyId);
+        this.db.query("DELETE FROM rooms WHERE id = ?").run(legacyId);
+      }
       withinTransaction?.();
       this.db.exec("COMMIT");
     } catch (error) {
@@ -507,12 +535,11 @@ export class SessionStore {
         `).all(target.thread_id!, target.sequence!)
       : [];
     const messageIds = affected.map((message) => message.id);
-    const runIds = [...new Set(affected.flatMap((message) => message.run_id ? [message.run_id] : []))];
-    const turnIds = [...new Set(affected.flatMap((message) => message.turn_id ? [message.turn_id] : []))];
+    const { runIds, turnIds, taskIds } = this.rewindOwnership(sessionId, affected);
     const updatedAt = new Date().toISOString();
     const rewindProjection: RewindProjectionIntent | null = sequenced ? {
       sessionId, threadId: target.thread_id!, messageIds, runIds, turnIds,
-      targetSequence: target.sequence!, updatedAt,
+      targetSequence: target.sequence!, updatedAt, ownershipVersion: 2, taskIds,
     } : null;
     const projectRewind = () => {
       if (sequenced) {
@@ -542,6 +569,35 @@ export class SessionStore {
     else this.db.transaction(projectRewind)();
   }
 
+  private rewindOwnership(sessionId: string, affected: Array<{ run_id: string | null; turn_id: string | null }>): { runIds: string[]; turnIds: string[]; taskIds: string[] } {
+    const marks = (values: string[]) => values.map(() => "?").join(",");
+    const runIds = new Set(affected.flatMap((message) => message.run_id ? [message.run_id] : []));
+    const turnIds = [...new Set(affected.flatMap((message) => message.turn_id ? [message.turn_id] : []))];
+    // The command keeps its first run ID while a continuation changes the turn's
+    // current run. Rewind revokes the whole turn's recovery eligibility.
+    if (turnIds.length) for (const run of this.db.query<{ id: string }, string[]>(`
+      SELECT id FROM agent_runs WHERE session_id = ? AND turn_id IN (${marks(turnIds)})
+    `).all(sessionId, ...turnIds)) runIds.add(run.id);
+    const selected = [...runIds];
+    const taskIds = selected.length ? this.db.query<{ id: string }, string[]>(`
+      SELECT task.id FROM multi_tasks task WHERE task.session_id = ? AND (
+        task.id IN (${marks(selected)}) OR EXISTS (
+          SELECT 1 FROM work_packages package JOIN work_package_attempts attempt ON attempt.package_id = package.id
+          WHERE package.task_id = task.id AND attempt.run_id IN (${marks(selected)})
+        )
+      )
+    `).all(sessionId, ...selected, ...selected).map((task) => task.id) : [];
+    if (taskIds.length) {
+      for (const id of taskIds) runIds.add(id);
+      for (const attempt of this.db.query<{ run_id: string }, string[]>(`
+        SELECT attempt.run_id FROM work_package_attempts attempt
+        JOIN work_packages package ON package.id = attempt.package_id
+        WHERE package.task_id IN (${marks(taskIds)})
+      `).all(...taskIds)) runIds.add(attempt.run_id);
+    }
+    return { runIds: [...runIds], turnIds, taskIds };
+  }
+
   private validateRewindProjection(record: HistoryRecord, input: RewindProjectionIntent): void {
     if (record.sessionId !== input.sessionId || record.threadId !== input.threadId
       || record.rewind?.targetSequence !== input.targetSequence) {
@@ -552,12 +608,14 @@ export class SessionStore {
       WHERE session_id = ? AND thread_id = ? AND sequence >= ? ORDER BY sequence
     `).all(input.sessionId, input.threadId, input.targetSequence);
     const expectedMessages = affected.map((item) => item.id).sort();
-    const expectedRuns = [...new Set(affected.flatMap((item) => item.run_id ? [item.run_id] : []))].sort();
-    const expectedTurns = [...new Set(affected.flatMap((item) => item.turn_id ? [item.turn_id] : []))].sort();
+    const ownership = input.ownershipVersion === 2 ? this.rewindOwnership(input.sessionId, affected) : null;
+    const expectedRuns = ownership?.runIds ?? [...new Set(affected.flatMap((item) => item.run_id ? [item.run_id] : []))];
+    const expectedTurns = ownership?.turnIds ?? [...new Set(affected.flatMap((item) => item.turn_id ? [item.turn_id] : []))];
     const exact = (left: string[], right: string[]) => JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
     if (affected.length > 0) {
       if (!exact(expectedMessages, input.messageIds) || !exact(expectedRuns, input.runIds)
-        || !exact(expectedTurns, input.turnIds)) throw new Error("history_rewind_projection_conflict");
+        || !exact(expectedTurns, input.turnIds)
+        || (ownership && !exact(ownership.taskIds, input.taskIds ?? []))) throw new Error("history_rewind_projection_conflict");
       return;
     }
     const remainingMessage = input.messageIds.length
@@ -570,6 +628,14 @@ export class SessionStore {
   private applyRewindProjection(input: RewindProjectionIntent): void {
     const marks = (values: string[]) => values.map(() => "?").join(",");
     if (input.runIds.length) {
+      // Rewind invalidates request identity as well as messages. Retain the
+      // command tombstone so an old client retry cannot execute it again.
+      const commandMatch = `room_id = ? AND (id IN (${marks(input.runIds)}) OR run_id IN (${marks(input.runIds)}) OR task_id IN (${marks(input.runIds)}))`;
+      const args = [input.sessionId, ...input.runIds, ...input.runIds, ...input.runIds];
+      this.db.query(`UPDATE room_commands SET status = 'revoked', error = 'room_command_revoked', updated_at = ? WHERE ${commandMatch}`)
+        .run(input.updatedAt, ...args);
+      // Keep event audit/profile snapshots for surviving historical messages;
+      // RoomCommandService gates every replay/list/submit on the tombstone.
       this.db.query(`DELETE FROM usage_records WHERE session_id = ? AND task_id IN (${marks(input.runIds)})`).run(input.sessionId, ...input.runIds);
       this.db.query(`DELETE FROM task_events WHERE session_id = ? AND task_id IN (${marks(input.runIds)})`).run(input.sessionId, ...input.runIds);
       this.db.query(`DELETE FROM tool_outputs WHERE tool_call_id IN (
@@ -577,6 +643,13 @@ export class SessionStore {
       )`).run(input.sessionId, ...input.runIds);
       this.db.query(`DELETE FROM tool_calls WHERE session_id = ? AND task_id IN (${marks(input.runIds)})`).run(input.sessionId, ...input.runIds);
       this.db.query(`DELETE FROM agent_runs WHERE session_id = ? AND id IN (${marks(input.runIds)})`).run(input.sessionId, ...input.runIds);
+      this.db.query(`UPDATE approval_requests SET status = 'expired' WHERE task_id IN (${marks(input.runIds)}) AND status = 'pending'`).run(...input.runIds);
+    }
+    if (input.taskIds?.length) {
+      // A completed package's result is no longer an authoritative recovery
+      // projection after its public result has been rewound. Cascades remove
+      // plans, turns, packages and attempts while the journal remains audit.
+      this.db.query(`DELETE FROM multi_tasks WHERE session_id = ? AND id IN (${marks(input.taskIds)})`).run(input.sessionId, ...input.taskIds);
     }
     if (input.messageIds.length) {
       this.db.query(`DELETE FROM message_attachments WHERE message_id IN (

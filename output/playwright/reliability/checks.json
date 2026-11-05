@@ -1,0 +1,89 @@
+{
+  "checks": [
+    {
+      "check": "startup selects an unarchived Chat in the visible sidebar",
+      "ok": true
+    },
+    {
+      "check": "abnormal saved height clamped",
+      "ok": true
+    },
+    {
+      "check": "window shrink clamps composer",
+      "ok": true
+    },
+    {
+      "check": "visible reset restores default height",
+      "ok": true
+    },
+    {
+      "check": "old messages retain historical author and model",
+      "ok": true
+    },
+    {
+      "check": "old room uses explicit response selector",
+      "ok": true
+    },
+    {
+      "check": "other room has no legacy draft",
+      "ok": true
+    },
+    {
+      "check": "legacy draft and structured mention restored",
+      "ok": true
+    },
+    {
+      "check": "archived room has explicit restore action",
+      "ok": true
+    },
+    {
+      "check": "delayed attachment stays out of B",
+      "ok": true
+    },
+    {
+      "check": "A draft and imported attachment retained",
+      "ok": true
+    },
+    {
+      "check": "B has no A file reference",
+      "ok": true
+    },
+    {
+      "check": "A reference survives navigation",
+      "ok": true
+    },
+    {
+      "check": "mode switch retains Chat draft",
+      "ok": true
+    },
+    {
+      "check": "Team command uses live SSE channel",
+      "ok": true
+    },
+    {
+      "check": "Worker text appears before completion",
+      "ok": true
+    },
+    {
+      "check": "running Team does not leak into B",
+      "ok": true
+    },
+    {
+      "check": "Team final text deduplicated",
+      "ok": true
+    },
+    {
+      "check": "reload restores the last Work room",
+      "ok": true
+    },
+    {
+      "check": "reload restores durable final messages once",
+      "ok": true
+    },
+    {
+      "check": "no page exceptions",
+      "ok": true
+    }
+  ],
+  "errors": []
+}

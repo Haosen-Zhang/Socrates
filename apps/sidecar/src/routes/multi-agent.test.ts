@@ -24,7 +24,7 @@ function setup() {
   let executions = 0;
   const execution = { run: async () => { executions += 1; }, decide: async () => { throw new Error("unused"); }, cancel: async () => {} } as unknown as ExecutionRunner;
   const app = new Hono().route("/multi", multiAgentRoutes(store, coordinator, execution, new ApprovalManager(db)));
-  return { app, executions: () => executions };
+  return { app, store, execution, executions: () => executions };
 }
 
 describe("multi-agent routes", () => {
@@ -43,6 +43,18 @@ describe("multi-agent routes", () => {
     expect((await app.request(`/multi/tasks/${tasks[0]!.id}/plan-decisions`, { method: "POST", body })).status).toBe(200);
     await Bun.sleep(1);
     expect(executions()).toBe(1);
+  });
+
+  it("records a recoverable state when approved execution fails before opening a runner", async () => {
+    const { app, store, execution } = setup();
+    execution.run = async () => { throw new Error("provider_missing"); };
+    const response = await app.request("/multi/sessions/s/tasks", { method: "POST", body: JSON.stringify({ prompt: "build", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } }) });
+    await response.text();
+    const task = store.list("s")[0]!;
+    const plan = store.getPlan(task.id)!;
+    const approved = await app.request(`/multi/tasks/${task.id}/plan-decisions`, { method: "POST", body: JSON.stringify({ version: plan.version, hash: plan.contentHash, clientDecisionKey: "start-failure", decision: "approve_exact_plan" }) });
+    expect(approved.status).toBe(200);
+    expect(store.get(task.id)).toMatchObject({ state: "paused", resumeFrom: "executing", terminalReason: "provider_missing" });
   });
 
   it("never executes a rejected plan", async () => {
@@ -73,6 +85,50 @@ describe("team package routes", () => {
     const app = new Hono().route("/multi", multiAgentRoutes(store, coordinator as unknown as MultiAgentCoordinator, execution as unknown as ExecutionRunner, approvals, team));
     return { db, store, packages, approvals, app, plan };
   }
+  it("keeps invalid edits atomic and permits a valid edit using the original version afterwards", async () => {
+    const { db, app, packages, store, plan } = await teamSetup();
+    const before = packages.list("t");
+    const invalid = { ...plan.content, workPackages: plan.content.workPackages!.map((p, i) => i ? p : { ...p, executorAgentId: "not-a-member" }) };
+    const post = (content: unknown, key: string, hash = plan.contentHash) => app.request("/multi/tasks/t/plan-decisions", { method: "POST", body: JSON.stringify({ decision: "edit_and_approve", version: plan.version, hash, clientDecisionKey: key, content }) });
+    const bad = await post(invalid, "invalid-edit");
+    expect(bad.status).toBe(400);
+    expect(store.get("t")).toMatchObject({ state: "awaiting_plan_approval", approvedPlanVersion: null, approvedPlanHash: null });
+    expect(store.getPlan("t")).toMatchObject({ version: plan.version, status: "pending" });
+    expect(packages.list("t")).toEqual(before);
+    expect((await post(plan.content, "stale-edit", "stale-hash")).status).toBe(409);
+    db.query("UPDATE session_agents SET execution_eligible = 0 WHERE agent_id = 'a'").run();
+    expect((await post(plan.content, "ineligible-edit")).status).toBe(400);
+    db.query("UPDATE session_agents SET execution_eligible = 1 WHERE agent_id = 'a'").run();
+    const config = store.get("t")!.config;
+    db.query("UPDATE multi_tasks SET config_json = ? WHERE id = 't'").run(JSON.stringify({ ...config, memberProfiles: { a: { modelCapabilities: { toolCalling: false } }, b: {} } }));
+    db.query("UPDATE session_agents SET snapshot_json = ? WHERE agent_id = 'a'").run(JSON.stringify({ modelCapabilities: { toolCalling: true } }));
+    const unavailable = await post(plan.content, "tool-ineligible-edit");
+    expect(unavailable.status).toBe(400);
+    expect(await unavailable.json()).toMatchObject({ error: "execution_agent_tools_unavailable" });
+    expect(store.get("t")?.state).toBe("awaiting_plan_approval");
+    db.query("UPDATE multi_tasks SET config_json = ? WHERE id = 't'").run(JSON.stringify(config));
+    db.query("UPDATE session_agents SET snapshot_json = '{}' WHERE agent_id = 'a'").run();
+    const cyclic = { ...plan.content, workPackages: plan.content.workPackages!.map((item, index) => index ? item : { ...item, dependencies: ["second"] }) };
+    expect((await post(cyclic, "cyclic-edit")).status).toBe(400);
+    // Failure after plan/version/package writes must roll all of them back.
+    db.exec("CREATE TEMP TRIGGER fail_plan_decision BEFORE INSERT ON plan_decisions BEGIN SELECT RAISE(ABORT, 'decision_storage_failed'); END");
+    expect((await post(plan.content, "storage-edit")).status).toBe(400);
+    expect(store.get("t")?.state).toBe("awaiting_plan_approval");
+    expect(store.getPlan("t")).toMatchObject({ version: plan.version, status: "pending" });
+    expect(packages.list("t")).toEqual(before);
+    db.exec("DROP TRIGGER fail_plan_decision");
+    const good = await post({ ...plan.content, summary: "edited valid plan" }, "valid-edit");
+    expect(good.status).toBe(200);
+    const saved = await good.json() as { plan: { version: number; contentHash: string } };
+    expect(saved.plan.version).toBe(plan.version + 1);
+    expect(store.get("t")?.approvedPlanHash).toBe(saved.plan.contentHash);
+    expect(store.getPlan("t", plan.version)?.status).toBe("superseded");
+    const replay = await post({ ...plan.content, summary: "edited valid plan" }, "valid-edit");
+    expect(replay.status).toBe(200);
+    expect((await replay.json() as { decision: { replayed: boolean } }).decision.replayed).toBe(true);
+    expect(store.getPlan("t")?.version).toBe(saved.plan.version);
+  });
+
   it("changes assignment with a new plan hash and rejects approval of the previous plan", async () => {
     const { app, packages, store, plan } = await teamSetup();
     const packageId = packages.list("t")[0]!.id;
