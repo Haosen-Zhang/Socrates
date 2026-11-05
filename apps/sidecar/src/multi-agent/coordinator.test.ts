@@ -55,7 +55,7 @@ describe("MultiAgentCoordinator", () => {
     expect(store.get(task.id)?.state).toBe("awaiting_plan_approval");
     expect(store.getPlan(task.id)?.content.objective).toBe("build");
     expect(calls()).toBe(4);
-    expect(events.filter((type) => type === "turn_completed")).toHaveLength(2);
+    expect(events.filter((type) => type === "turn_completed")).toHaveLength(4);
     expect(store.usageSummaries(task.id).find((item) => item.agentId === "a")?.current.totalTokens).toBe(3);
   });
 
@@ -101,6 +101,12 @@ describe("MultiAgentCoordinator", () => {
     await coordinator.resume(task.id);
     expect(store.get(task.id)).toMatchObject({ state: "awaiting_plan_approval", attemptNo: 2 });
     expect(calls).toBe(4);
+    // The previously completed member is replayed by the coordinator, but its
+    // durable completion event retains one stable identity for reconnects.
+    expect(db.query<{ count: number }, [string]>(`SELECT COUNT(*) AS count FROM task_events
+      WHERE task_id = ? AND type = 'multi.stream'
+        AND json_extract(payload_json, '$.type') = 'turn_completed'
+        AND json_extract(payload_json, '$.agentId') = 'a'`).get(task.id)?.count).toBe(1);
   });
 
   it("uses only the explicit fallback order and reports the real fallback identity", async () => {

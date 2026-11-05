@@ -1,0 +1,33 @@
+{
+  "checks": [
+    {
+      "check": "respond rewind stays empty after reload",
+      "ok": true
+    },
+    {
+      "check": "respond rewind has no recoverable command",
+      "ok": true
+    },
+    {
+      "check": "discuss rewind stays empty after reload",
+      "ok": true
+    },
+    {
+      "check": "discuss rewind has no recoverable command",
+      "ok": true
+    },
+    {
+      "check": "UI pause settles into recoverable paused state",
+      "ok": true
+    },
+    {
+      "check": "UI continuation completes both packages once per required attempt",
+      "ok": true
+    },
+    {
+      "check": "no lifecycle page exceptions",
+      "ok": true
+    }
+  ],
+  "errors": []
+}

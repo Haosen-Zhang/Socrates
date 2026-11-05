@@ -27,6 +27,7 @@ export function useStorePick<K extends keyof Store>(...keys: K[]): Pick<Store, K
 /** 每帧/每事件级更新的字段。受保护组件的 key 列表不得包含它们（有测试把关）。 */
 export const HIGH_FREQUENCY_KEYS = [
   "streaming",
+  "multiLiveStreams",
   "messages",
   "sessionMessages",
   "agentEvents",
@@ -66,6 +67,9 @@ export const WORKSPACE_CHIP_KEYS = [
   "agentRunning",
 ] as const;
 export const ATTACHMENT_TRAY_KEYS = [
+  "captureRoomTarget",
+  "attachmentError",
+  "attachmentImports",
   "activeWorkspace",
   "workspaces",
   "sessions",

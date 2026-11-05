@@ -43,7 +43,16 @@ export class UsageCollector {
   }
 
   summaries(taskId: string): UsageSummary[] {
-    return summarizeRows(this.db.query<any, [string]>("SELECT * FROM usage_records WHERE task_id = ? ORDER BY created_at, rowid").all(taskId));
+    // Child usage stays in its original record: join every persisted attempt,
+    // including failed/budget-stopped attempts, without duplicating room totals.
+    return summarizeRows(this.db.query<any, [string, string]>(`
+      SELECT usage.* FROM usage_records usage
+      WHERE usage.task_id = ? OR EXISTS (
+        SELECT 1 FROM work_package_attempts attempt
+        JOIN work_packages package ON package.id = attempt.package_id
+        WHERE attempt.run_id = usage.task_id AND package.task_id = ?
+      ) ORDER BY usage.created_at, usage.rowid
+    `).all(taskId, taskId));
   }
 
   sessionSummaries(sessionId: string): UsageSummary[] {
@@ -90,7 +99,8 @@ function aggregate(rows: any[]): NormalizedUsage {
     inputTokens: nullableSum(rows, "input_tokens"), outputTokens: nullableSum(rows, "output_tokens"),
     totalTokens: nullableSum(rows, "total_tokens"), cachedInputTokens: nullableSum(rows, "cached_input_tokens"),
     cacheWriteTokens: nullableSum(rows, "cache_write_tokens"), reasoningTokens: nullableSum(rows, "reasoning_tokens"),
-    cost: nullableSum(rows, "cost"), currency: rows.every((row) => row.currency === latest.currency) ? latest.currency : null,
+    cost: rows.every((row) => typeof row.cost === "number" && row.currency !== null && row.currency === latest.currency) ? nullableSum(rows, "cost") : null,
+    currency: rows.every((row) => row.currency === latest.currency) ? latest.currency : null,
     source: rows.some((row) => row.source === "estimated") ? "estimated" : rows.some((row) => row.source === "provider") ? "provider" : "unavailable",
     estimated: rows.some((row) => row.estimated === 1), effort: latest.effort,
   };

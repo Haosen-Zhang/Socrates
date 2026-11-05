@@ -65,3 +65,15 @@ Final evidence: doc/chat-work-collaboration-acceptance.md; /tmp/socrates-tests-d
 - Before the fix it showed three exact failures: provider PUT kept `openai_compatible`, draft model discovery returned 404, and the low-cost selector export did not exist.
 - Root cause of the inert type control: the edit form explicitly set `disabled={editingId !== null}` and the provider PUT route ignored type.
 - Root cause of the missing default-model picker: model loading existed for provider cards and Agent editing, but the provider modal always rendered a text input and had no draft-credential discovery endpoint.
+
+# Reliability repair notes — 2026-11-05
+
+- Current remote main is the exact supplied review baseline 4c1faa536a382b70ec5d43b19907bc10973d1f64; prior PR #137 is merged. No later fixes to reuse.
+- Existing `.reasonix/desktop-topic-auto-title-meta.json`, `.playwright-cli/` and untracked prior preview artifacts are user/local material and remain untouched.
+- Initial git fetch lacked write access to .git/FETCH_HEAD; retried with scoped host approval and succeeded.
+- Test fixtures must use temporary workspaces and test databases; production stores/runtime are the verification targets.
+
+- Final repair validation: host `bun test` 879 pass / 0 fail / 0 skip / 3303 assertions; typecheck and desktop build passed. Four macOS isolation tests ran on host, superseding nested-environment skips.
+- Final Chrome UI: 28 passing checks, zero exceptions. Production Native runtime and history used with controlled external model stream. Live Provider/native Tauri window not exercised.
+- Cross-review added fixes for continued-run and Team-child rewind ownership, cached removed run lookup, stale Continue UI, frozen tool capability during edited approval, and recoverable reviewer failure stream finality.
+- Preview/test harness issues resolved: missing MCP server endpoint, missing file-context resolver, HMR duplicate module state, asynchronous UI waits and confirmation clicks. No user data involved.

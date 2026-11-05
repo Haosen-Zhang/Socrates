@@ -11,7 +11,15 @@ const TOOL_DECISIONS = new Set<ApprovalDecision>(["allow_once", "allow_session",
 
 export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentCoordinator, execution: ExecutionRunner, approvals: ApprovalManager, team?: TeamRunner): Hono {
   const app = new Hono();
-  const executeTask = (id: string) => team?.hasPackages(id) ? team.run(id) : execution.run(id);
+  const executionFailed = (id: string, error: unknown) => {
+    // A failure before a runner acquires ownership still needs a recoverable
+    // projection. Once running, the runner records its own terminal outcome.
+    const task = store.get(id);
+    if (task && ["executing", "awaiting_tool_approval"].includes(task.state)) store.transition(id, {
+      type: "pause", reason: error instanceof Error ? error.message : "execution_start_failed",
+    });
+  };
+  const executeTask = (id: string) => (team?.hasPackages(id) ? team.run(id) : execution.run(id)).catch((error) => executionFailed(id, error));
   const taskView = (id: string) => {
     const task = store.get(id);
     if (!task) return null;
@@ -55,16 +63,15 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
     try {
       if (body.decision === "edit_and_approve") {
         if (validateStructuredPlan(body.content).length) return c.json({ error: "structured_plan_invalid" }, 400);
-        store.transition(c.req.param("id"), { type: "edit_plan" });
-        const plan = await store.addPlan({ taskId: c.req.param("id"), content: body.content as StructuredPlan, createdBy: "user", parentVersion: body.version });
-        store.transition(c.req.param("id"), { type: "edited_plan_ready" });
-        const decision = store.decidePlan({ taskId: c.req.param("id"), version: plan.version, hash: plan.contentHash, clientDecisionKey: body.clientDecisionKey, decision: "approve_exact_plan", reason: typeof body.reason === "string" ? body.reason : undefined });
-        if (!decision.replayed) void executeTask(c.req.param("id")).catch(() => {});
+        const { plan, decision } = await store.editAndApprovePlan({ taskId: c.req.param("id"),
+          version: body.version, hash: body.hash, content: body.content as StructuredPlan,
+          clientDecisionKey: body.clientDecisionKey, reason: typeof body.reason === "string" ? body.reason : undefined });
+        if (!decision.replayed) void executeTask(c.req.param("id"));
         return c.json({ decision, plan });
       }
       if (!["approve_exact_plan", "request_replan", "reject"].includes(body.decision)) return c.json({ error: "plan_decision_invalid" }, 400);
       const decision = store.decidePlan({ taskId: c.req.param("id"), version: body.version, hash: body.hash, clientDecisionKey: body.clientDecisionKey, decision: body.decision as "approve_exact_plan" | "request_replan" | "reject", reason: typeof body.reason === "string" ? body.reason : undefined });
-      if (!decision.replayed && body.decision === "approve_exact_plan") void executeTask(c.req.param("id")).catch(() => {});
+      if (!decision.replayed && body.decision === "approve_exact_plan") void executeTask(c.req.param("id"));
       if (!decision.replayed && body.decision === "request_replan") void coordinator.replan(c.req.param("id"), typeof body.reason === "string" ? body.reason : "Please revise the plan.").catch(() => {});
       return c.json(decision);
     } catch (error) {
@@ -141,7 +148,7 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
     if (task.state !== "paused" || (!store.hasOutcomeUnknown(task.id) && !executionReview)) return c.json({ error: "multi_task_retry_not_required" }, 409);
     if (body?.confirmOutcomeUnknown !== true) return c.json({ error: "outcome_unknown_confirmation_required" }, 400);
     try {
-      if (executionReview) void execution.resumeAfterReview(task.id).catch(() => {});
+      if (executionReview) execution.resumeInBackgroundAfterReview(task.id);
       else await coordinator.retryAfterReview(task.id);
       return c.json({ accepted: true }, 202);
     } catch (error) { return c.json({ error: error instanceof Error ? error.message : "multi_retry_failed" }, 409); }

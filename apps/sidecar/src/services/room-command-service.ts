@@ -19,6 +19,7 @@ interface Dependencies {
   createTeam(input: { sessionId: string; prompt: string; clientRequestId: string; targetAgentIds: string[]; inputContext: string }): Promise<{ taskId: string }>;
   resolveFileContext?(workspaceId: string | null, refs: string[], attachments: string[]): RoomFileContext;
   cancelDirect?(runId: string): Promise<void>;
+  isTeamActive?(taskId: string): boolean;
   resolveAgent(agentId: string, snapshot: Record<string, unknown>): OrchestrationAgent;
   gateway: ModelGateway;
 }
@@ -65,6 +66,7 @@ export class RoomCommandService {
     const fingerprint = createHash("sha256").update(JSON.stringify(input)).digest("hex");
     const existing = this.db.query<Row, [string, string]>("SELECT * FROM room_commands WHERE room_id = ? AND client_request_id = ?").get(input.roomId, input.clientRequestId);
     if (existing) {
+      if (existing.status === "revoked") throw new Error("room_command_revoked");
       if (existing.fingerprint !== fingerprint) throw new Error("client_request_conflict");
       return this.get(existing.id)!;
     }
@@ -122,22 +124,41 @@ export class RoomCommandService {
   get(id: string): RoomCommandView | null {
     const row = this.db.query<Row, [string]>("SELECT * FROM room_commands WHERE id = ?").get(id);
     if (!row) return null;
+    if (row.status === "revoked") return { commandId: row.id, roomId: row.room_id, kind: row.kind, status: "revoked", error: "room_command_revoked" };
     const continued = row.run_id ? this.db.query<{ id: string }, [string]>(`SELECT latest.id FROM agent_runs AS original
       JOIN agent_runs AS latest ON latest.turn_id = original.turn_id
       WHERE original.id = ? ORDER BY latest.attempt_no DESC, latest.created_at DESC LIMIT 1`).get(row.run_id) : null;
     const runId = continued?.id ?? row.run_id;
-    const run = runId ? this.deps.getDirect(runId) : null;
+    const run = runId ? this.deps.getDirect(runId) ?? this.db.query<{ status: string; error: string | null }, [string]>("SELECT status,error FROM agent_runs WHERE id = ?").get(runId) : null;
     const task = row.task_id ? this.db.query<{ state: string; terminal_reason: string | null }, [string]>("SELECT state,terminal_reason FROM multi_tasks WHERE id = ?").get(row.task_id) : null;
-    return { commandId: row.id, roomId: row.room_id, kind: row.kind, status: run?.status ?? task?.state ?? row.status,
-      ...(runId ? { runId } : {}), ...(row.task_id ? { taskId: row.task_id } : {}),
-      ...(run?.error || task?.terminal_reason || row.error ? { error: run?.error ?? task?.terminal_reason ?? row.error! } : {}) };
+    const missingChild = (row.run_id && !run) || (row.task_id && !task)
+      || row.status === "running" && (row.kind === "direct" && !run || row.kind === "team" && !task);
+    return { commandId: row.id, roomId: row.room_id, kind: row.kind, status: missingChild ? "interrupted" : run?.status ?? task?.state ?? row.status,
+      ...(runId && run ? { runId } : {}), ...(row.task_id && task ? { taskId: row.task_id } : {}),
+      ...(missingChild ? { error: "command_runtime_missing" } : run?.error || task?.terminal_reason || row.error ? { error: run?.error ?? task?.terminal_reason ?? row.error! } : {}) };
   }
   list(roomId: string): RoomCommandView[] {
-    return this.db.query<{ id: string }, [string]>("SELECT id FROM room_commands WHERE room_id = ? ORDER BY created_at DESC LIMIT 50").all(roomId).map((r) => this.get(r.id)!);
+    return this.db.query<{ id: string }, [string]>("SELECT id FROM room_commands WHERE room_id = ? AND status != 'revoked' ORDER BY created_at DESC LIMIT 50").all(roomId).map((r) => this.get(r.id)!);
   }
   eventsAfter(id: string, seq: number): Array<{ seq: number; type: string; [key: string]: unknown }> {
+    const command = this.get(id);
+    if (!command || command.status === "revoked") return [];
+    if (command.kind === "team") {
+      if (!command.taskId || command.error === "command_runtime_missing") return [];
+      return this.db.query<{ event_id: string; seq: number; type: string; payload_json: string }, [string, string, number]>(
+        "SELECT event_id, seq, type, payload_json FROM task_events WHERE session_id = ? AND task_id = ? AND seq > ? ORDER BY seq LIMIT 500",
+      ).all(command.roomId, command.taskId, seq).map((event) => {
+        const payload = JSON.parse(event.payload_json) as Record<string, unknown>;
+        return { ...payload, payload, eventId: event.event_id, commandId: id, roomId: command.roomId, taskId: command.taskId,
+          seq: event.seq, type: event.type === "multi.stream" ? String(payload.type) : event.type };
+      });
+    }
     return this.db.query<{ seq: number; type: string; payload_json: string }, [string, number]>("SELECT * FROM room_command_events WHERE command_id = ? AND seq > ? ORDER BY seq").all(id, seq)
-      .map((r) => ({ ...JSON.parse(r.payload_json), seq: r.seq, type: r.type }));
+      .map((r) => ({ ...JSON.parse(r.payload_json), commandId: id, roomId: command.roomId, seq: r.seq, type: r.type }));
+  }
+  isSettling(id: string): boolean {
+    const command = this.get(id);
+    return command?.kind === "team" && !!command.taskId && !!this.deps.isTeamActive?.(command.taskId);
   }
   async wait(id: string): Promise<void> { await this.discussions.get(id)?.completion; }
   async cancel(id: string): Promise<void> {

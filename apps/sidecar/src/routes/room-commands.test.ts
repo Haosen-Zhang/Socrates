@@ -27,5 +27,8 @@ test("command route validates mentions and replays persistent discussion after a
   expect((await app.request(`/room-commands/${command.commandId}/events?afterSeq=-1`)).status).toBe(400);
   expect((await app.request("/room-commands", { method: "POST", body: JSON.stringify({ ...body, mentions: [null] }) })).status).toBe(400);
   expect((await (await app.request(`/room-commands/rooms/${room.id}`)).json())[0].commandId).toBe(command.commandId);
+  await sessions.rewind(room.id, sessions.listMessages(room.id).find(message => message.role === "user")!.id);
+  expect((await app.request(`/room-commands/${command.commandId}/events`)).status).toBe(410);
+  expect((await (await app.request(`/room-commands/${command.commandId}`)).json()).status).toBe("revoked");
   db.close();
 });

@@ -26,7 +26,6 @@ import { searchSidebar, topLevelRooms, workspaceGroups, type SidebarRoom } from 
 import { useStore, useT, type MultiPlan, type StreamingTurn } from "./store";
 import { useStorePick } from "./selectors";
 import { sfx } from "./fx";
-import { shouldSubmitComposerEnter } from "./composerIme";
 import { prepareNewRoomWorkspace, selectableProjectWorkspaces } from "./workspace/newRoomWorkspace";
 import WorkspaceDock from "./workspace/WorkspaceDock";
 import WorkspaceDockButtons from "./workspace/WorkspaceDockButtons";
@@ -34,7 +33,6 @@ import RoomOverview, { type RoomOverviewAgent } from "./workspace/RoomOverview";
 import { toggleWorkspaceDock, type WorkspaceDockMode } from "./workspace/workspaceDockState";
 import { AttachmentImage } from "./attachments/AttachmentTray";
 import { canReviewPlan, moveAgentId } from "./multiAgentUi";
-import ResizableComposer from "./composer/ResizableComposer";
 import { roomTitleOrFallback } from "./workspace/projectSelection";
 import {
   ApprovalShelf,
@@ -339,345 +337,10 @@ function TaskControlBar() {
   );
 }
 
-/** 发言顺序条目：勾选决定是否参与本次讨论，列表顺序即发言顺序 */
-type OrderItem = { id: string; enabled: boolean };
-
-/** 多 Agent 房间的任务发起表单：需求、参与者与发言顺序（拖拽）、轮数、最终总结者 */
-/** 自适应高度的输入框：Enter 发送、Shift+Enter 换行；中文输入法组词中的 Enter 不触发发送 */
-function ComposerTextarea({
-  value,
-  placeholder,
-  disabled,
-  onChange,
-  onSubmit,
-}: {
-  value: string;
-  placeholder?: string;
-  disabled?: boolean;
-  onChange: (v: string) => void;
-  onSubmit: () => void;
-}) {
-  const ref = useRef<HTMLTextAreaElement>(null);
-  const composingRef = useRef(false);
-  const lastCompositionEndAt = useRef(Number.NEGATIVE_INFINITY);
-  return (
-    <textarea
-      ref={ref}
-      rows={1}
-      className="flex-1 px-1 py-1.5 text-sm"
-      style={{ resize: "none" }}
-      placeholder={placeholder}
-      disabled={disabled}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      onCompositionStart={() => {
-        composingRef.current = true;
-      }}
-      onCompositionEnd={() => {
-        composingRef.current = false;
-        lastCompositionEndAt.current = Date.now();
-      }}
-      onKeyDown={(e) => {
-        const native = e.nativeEvent as globalThis.KeyboardEvent & { keyCode?: number };
-        if (
-          shouldSubmitComposerEnter(
-            {
-              key: e.key,
-              shiftKey: e.shiftKey,
-              isComposing: native.isComposing,
-              keyCode: native.keyCode,
-            },
-            {
-              composing: composingRef.current,
-              lastCompositionEndAt: lastCompositionEndAt.current,
-            },
-          )
-        ) {
-          e.preventDefault();
-          onSubmit();
-        }
-      }}
-    />
-  );
-}
-
-function TaskComposer({ agents }: { agents: Agent[] }) {
-  const { streaming, roomSending, activeTaskId, sendTask } = useStorePick("streaming", "roomSending", "activeTaskId", "sendTask");
-  const t = useT();
-  const busy = !!streaming || roomSending || !!activeTaskId;
-  const [prompt, setPrompt] = useState("");
-  const [mode, setMode] = useState<"round_robin" | "debate">("round_robin");
-  const [items, setItems] = useState<OrderItem[]>(agents.map((a) => ({ id: a.id, enabled: true })));
-  const [dragId, setDragId] = useState<string | null>(null);
-  const [maxRounds, setMaxRounds] = useState(2);
-  const [summarizerId, setSummarizerId] = useState(agents[agents.length - 1]?.id ?? "");
-  const defaultRoles = () => ({
-    proposerId: agents[0]?.id ?? "",
-    skepticId: agents[1]?.id ?? agents[0]?.id ?? "",
-    synthesizerId: agents[2]?.id ?? agents[0]?.id ?? "",
-    judgeId: agents[agents.length - 1]?.id ?? "",
-  });
-  const [roles, setRoles] = useState(defaultRoles);
-  const [showConfig, setShowConfig] = useState(false);
-
-  // 房间成员变化时重置顺序、总结者与辩论角色
-  useEffect(() => {
-    setItems(agents.map((a) => ({ id: a.id, enabled: true })));
-    setSummarizerId(agents[agents.length - 1]?.id ?? "");
-    setRoles({
-      proposerId: agents[0]?.id ?? "",
-      skepticId: agents[1]?.id ?? agents[0]?.id ?? "",
-      synthesizerId: agents[2]?.id ?? agents[0]?.id ?? "",
-      judgeId: agents[agents.length - 1]?.id ?? "",
-    });
-  }, [agents]);
-
-  const agentOf = (id: string) => agents.find((a) => a.id === id);
-  const speakingOrder = items.filter((i) => i.enabled).map((i) => i.id);
-
-  const toggle = (id: string) =>
-    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, enabled: !i.enabled } : i)));
-
-  // WKWebView 不可靠支持 HTML5 DnD（同 #23 的 contextmenu），用 pointer 事件自实现拖拽
-  const listRef = useRef<HTMLUListElement>(null);
-  const moveDragOver = (clientY: number) => {
-    if (!dragId || !listRef.current) return;
-    const rows = Array.from(listRef.current.querySelectorAll<HTMLElement>("[data-order-id]"));
-    const over = rows.find((row) => {
-      const r = row.getBoundingClientRect();
-      return clientY >= r.top && clientY <= r.bottom;
-    });
-    const overId = over?.dataset.orderId;
-    if (!overId || overId === dragId) return;
-    setItems((prev) => {
-      const from = prev.findIndex((i) => i.id === dragId);
-      const to = prev.findIndex((i) => i.id === overId);
-      const next = [...prev];
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return next;
-    });
-  };
-
-  const doSubmit = async () => {
-    const p = prompt.trim();
-    if (busy || !p || (mode === "round_robin" && speakingOrder.length === 0)) return;
-    setPrompt("");
-    await sendTask({
-      prompt: p,
-      mode,
-      speakingOrder,
-      maxRounds,
-      finalSummarizerId: summarizerId,
-      debate: mode === "debate" ? roles : undefined,
-    });
-  };
-
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        void doSubmit();
-      }}
-      className="composer-dock space-y-2"
-    >
-      {showConfig && (
-        <div className="pixel-composer-config anim-panel flex gap-4 px-3 py-2 text-sm">
-          <div className="flex shrink-0 flex-col gap-1">
-            <span className="text-neutral-500">{t("mode")}</span>
-            {(
-              [
-                ["round_robin", t("mode_round_robin")],
-                ["debate", t("mode_debate")],
-              ] as const
-            ).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                className={`rounded px-2 py-1 text-xs ${
-                  mode === value ? "bg-neutral-900 text-white" : "border border-neutral-300 bg-white hover:bg-neutral-100"
-                }`}
-                onClick={() => setMode(value)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          {mode === "debate" ? (
-            <div className="grid flex-1 grid-cols-2 gap-2">
-              {(
-                [
-                  ["proposerId", t("debate_proposer")],
-                  ["skepticId", t("debate_skeptic")],
-                  ["synthesizerId", t("debate_synthesizer")],
-                  ["judgeId", t("debate_judge")],
-                ] as const
-              ).map(([key, label]) => (
-                <label key={key} className="flex items-center gap-1">
-                  <span className="w-12 shrink-0 text-neutral-500">{label}</span>
-                  <select
-                    className="min-w-0 flex-1 rounded border border-neutral-300 px-1.5 py-0.5 text-sm"
-                    value={roles[key]}
-                    onChange={(e) => setRoles({ ...roles, [key]: e.target.value })}
-                  >
-                    {agents.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {agentLabel(a)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ))}
-            </div>
-          ) : (
-            <div className="min-w-0 flex-1">
-              <div className="mb-1 text-neutral-500">{t("order_hint")}</div>
-              <ul ref={listRef} className="max-h-44 space-y-1 overflow-y-auto pr-1">
-                {items.map((item) => {
-                  const a = agentOf(item.id);
-                  if (!a) return null;
-                  const position = item.enabled ? speakingOrder.indexOf(item.id) + 1 : null;
-                  return (
-                    <li
-                      key={item.id}
-                      data-order-id={item.id}
-                      className={`flex items-center gap-2 rounded border bg-white px-2 py-1 ${
-                        dragId === item.id ? "border-neutral-400 opacity-60" : "border-neutral-200"
-                      } ${item.enabled ? "" : "text-neutral-400"}`}
-                    >
-                      <span
-                        className="cursor-grab touch-none select-none px-1 text-neutral-400 active:cursor-grabbing"
-                        onPointerDown={(e) => {
-                          e.preventDefault();
-                          e.currentTarget.setPointerCapture(e.pointerId);
-                          setDragId(item.id);
-                        }}
-                        onPointerMove={(e) => moveDragOver(e.clientY)}
-                        onPointerUp={() => setDragId(null)}
-                        onPointerCancel={() => setDragId(null)}
-                      >
-                        ⠿
-                      </span>
-                      <input type="checkbox" checked={item.enabled} onChange={() => toggle(item.id)} />
-                      <span className="w-5 text-xs text-neutral-400">{position ? `${position}.` : "—"}</span>
-                      <span className="min-w-0 flex-1 truncate">{a.nickname}</span>
-                      <span className="shrink-0 text-xs text-neutral-400">{a.modelId}</span>
-                    </li>
-                  );
-                })}
-              </ul>
-              {speakingOrder.length === 0 && <p className="mt-1 text-xs text-red-600">{t("order_need_one")}</p>}
-            </div>
-          )}
-          <div className="flex shrink-0 flex-col gap-2">
-            <label className="flex items-center justify-between gap-1">
-              <span className="text-neutral-500">{t("rounds")}</span>
-              <input
-                type="number"
-                min={1}
-                max={20}
-                className="w-14 rounded border border-neutral-300 px-1.5 py-0.5 text-sm"
-                value={maxRounds}
-                onChange={(e) => setMaxRounds(Number(e.target.value))}
-              />
-            </label>
-            {mode === "round_robin" && (
-              <label className="flex items-center justify-between gap-1">
-                <span className="text-neutral-500">{t("summarizer")}</span>
-                <select
-                  className="rounded border border-neutral-300 px-1.5 py-0.5 text-sm"
-                  value={summarizerId}
-                  onChange={(e) => setSummarizerId(e.target.value)}
-                >
-                  {agents.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {agentLabel(a)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-          </div>
-        </div>
-      )}
-      <ResizableComposer configured={showConfig} label={t("composer_resize")}>
-        <button
-          type="button"
-          className={`pixel-composer-tool shrink-0 ${showConfig ? "is-active" : ""}`}
-          title={t("config_tooltip")}
-          aria-label={t("config_tooltip")}
-          aria-pressed={showConfig}
-          onClick={() => setShowConfig((v) => !v)}
-        >
-          <PixelIcon name="gear" size={18} />
-        </button>
-        <span className="pixel-composer-chevron mt-1 shrink-0 self-start">›</span>
-        <ComposerTextarea
-          placeholder={
-            busy
-              ? t("task_running")
-              : mode === "debate"
-                ? t("debate_placeholder", { m: maxRounds })
-                : t("rr_placeholder", { n: speakingOrder.length, m: maxRounds })
-          }
-          value={prompt}
-          disabled={busy}
-          onChange={setPrompt}
-          onSubmit={() => void doSubmit()}
-        />
-        <button
-          className="pixel-send shrink-0"
-          title={mode === "debate" ? t("start_debate") : t("start_discussion")}
-          aria-label={mode === "debate" ? t("start_debate") : t("start_discussion")}
-          disabled={busy || !prompt.trim() || (mode === "round_robin" && speakingOrder.length === 0)}
-          type="submit"
-        >
-          <PixelIcon name="send" size={18} />
-        </button>
-      </ResizableComposer>
-    </form>
-  );
-}
-
-function SimpleComposer() {
-  const { streaming, roomSending, sendMessage } = useStorePick("streaming", "roomSending", "sendMessage");
-  const t = useT();
-  const [draft, setDraft] = useState("");
-  const doSubmit = async () => {
-    const content = draft.trim();
-    if (!content || streaming || roomSending) return;
-    setDraft("");
-    await sendMessage(content);
-  };
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        void doSubmit();
-      }}
-      className="composer-dock"
-    >
-      <ResizableComposer label={t("composer_resize")}>
-        <span className="pixel-composer-chevron mt-1 shrink-0 self-start">›</span>
-        <ComposerTextarea
-          placeholder={streaming || roomSending ? t("replying") : t("message_placeholder")}
-          value={draft}
-          disabled={!!streaming || roomSending}
-          onChange={setDraft}
-          onSubmit={() => void doSubmit()}
-        />
-        <button
-          className="pixel-send shrink-0"
-          title={t("send")}
-          aria-label={t("send")}
-          disabled={!!streaming || roomSending || !draft.trim()}
-          type="submit"
-        >
-          <PixelIcon name="send" size={18} />
-        </button>
-      </ResizableComposer>
-    </form>
-  );
+function ArchivedRoomNotice({session}: {session: ConversationSession}) {
+  const {archiveSession}=useStorePick("archiveSession");
+  const t=useT();
+  return <div role="status" className="mx-4 mt-3 flex items-center gap-3 text-xs text-neutral-600"><span>{t("room_archived_notice")}</span><button type="button" className="pixel-button px-2 py-1" onClick={()=>void archiveSession(session.id,false)}>{t("unarchive")}</button></div>;
 }
 
 function SingleAgentSession({ chrome }: { chrome: RoomChromeControls }) {
@@ -745,7 +408,8 @@ function SingleAgentSession({ chrome }: { chrome: RoomChromeControls }) {
           {agentRunning && <button className="pixel-button px-2 py-1 text-xs text-red-700" onClick={() => void cancelAgentRun()}>{t("cancel_task")}</button>}
         </div>
       </WindowRoomToolbar>
-      <RoomTimeline roomId={currentSessionId ?? ""} className="flex-1 space-y-3 overflow-y-auto p-4">
+      {session?.archived && <ArchivedRoomNotice session={session}/>}
+    <RoomTimeline roomId={currentSessionId ?? ""} className="flex-1 space-y-3 overflow-y-auto p-4">
         {sessionWindow.hiddenCount > 0 && (
           <button className="pixel-button mx-auto block px-3 py-1 text-xs" onClick={() => setSessionLimit((limit) => expandWindow(limit, sessionMessages.length))}>
             {t("show_earlier", { n: sessionWindow.hiddenCount })}
@@ -795,7 +459,7 @@ function SingleAgentSession({ chrome }: { chrome: RoomChromeControls }) {
       {queued && <p role="status" className="mx-4 mb-2 text-xs text-amber-700">{t("workspace_writer_queued")}</p>}
       {agentError && <div role="alert" className="mx-4 mb-2 text-xs text-red-700">{agentError === "budget_exhausted" ? t("budget_exhausted") : t(agentRunErrorKey(agentError))}{agentError === "budget_exhausted" && <button className="pixel-button ml-2 px-3 py-1" onClick={()=>void continueAgentRun()}>{t("continue_task")}</button>}</div>}
       <ApprovalShelf approvals={pendingApprovals} activities={toolActivities} workspaceLabel={workspaceLabel} busy={false} onDecision={decideAgentApproval}/>
-      {session && <RoomComposer key={session.id} session={session} running={agentRunning} onOpenSettings={()=>setShowCollab(true)}/>}
+      {session && !session.archived && <RoomComposer key={session.id} session={session} running={agentRunning} onOpenSettings={()=>setShowCollab(true)}/>}
         {session?.kind === "cowork" && (
           <div className="approval-policy-row mt-2 flex min-w-0 items-center gap-2 px-1 text-[11px] text-neutral-600">
             <span className="shrink-0">{t("approval_policy_label")}</span>
@@ -868,9 +532,9 @@ function MultiPlanCard({ plan }: { plan: MultiPlan }) {
 
 function MultiAgentSession({ chrome }: { chrome: RoomChromeControls }) {
   const {
-    sessions, currentSessionId, sessionMessages, currentMultiTask, multiRunning, multiError, multiStreamAgentId, multiStreamText, agentRunning, agentStreamText, agentError, cancelAgentRun,
+    sessions, currentSessionId, sessionMessages, currentMultiTask, multiRunning, multiError, multiStreamAgentId, multiLiveStreams, agentRunning, agentStreamText, agentError, cancelAgentRun,
     loadMultiTask, decideMultiApproval, cancelMultiTask, pauseMultiTask, resumeMultiTask, retryMultiTask, rewindSessionTo,
-  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "currentMultiTask", "multiRunning", "multiError", "multiStreamAgentId", "multiStreamText", "agentRunning", "agentStreamText", "agentError", "cancelAgentRun", "loadMultiTask", "decideMultiApproval", "cancelMultiTask", "pauseMultiTask", "resumeMultiTask", "retryMultiTask", "rewindSessionTo");
+  } = useStorePick("sessions", "currentSessionId", "sessionMessages", "currentMultiTask", "multiRunning", "multiError", "multiStreamAgentId", "multiLiveStreams", "agentRunning", "agentStreamText", "agentError", "cancelAgentRun", "loadMultiTask", "decideMultiApproval", "cancelMultiTask", "pauseMultiTask", "resumeMultiTask", "retryMultiTask", "rewindSessionTo");
   // 窗口化：长会话只渲染最近 N 条，更早的可展开
   const [sessionLimit, setSessionLimit] = useState(DEFAULT_WINDOW_SIZE);
   useEffect(() => setSessionLimit(DEFAULT_WINDOW_SIZE), [currentSessionId]);
@@ -906,6 +570,7 @@ function MultiAgentSession({ chrome }: { chrome: RoomChromeControls }) {
     <WindowRoomToolbar title={session?.title ?? "Socrates"} subtitle={strategyStatus} sidebarHidden={chrome.sidebarHidden} toolbarMode={chrome.toolbarMode} collapseLabel={t("sidebar_collapse")} expandLabel={t("sidebar_expand")} onToggleSidebar={chrome.onToggleSidebar}>
       <div className="pixel-window-toolbar__room-actions"><button className="pixel-button px-2 py-1 text-xs" onClick={()=>setShowRoster(true)}>{t("room_members_title")}</button><WorkspaceDockButtons mode={chrome.dockMode} onSelect={chrome.onSelectDock} />{session && canEditCollaboration(currentMultiTask?.state) && <button className="pixel-button pixel-toolbar-icon-action" onClick={() => setShowCollab(true)} title={t("cowork_settings_title")} aria-label={t("cowork_settings_title")}><PixelIcon name="gear" size={16} /></button>}{currentMultiTask?.state === "paused" ? <button className="pixel-button pixel-toolbar-task-action pixel-button--primary px-2 py-1 text-xs" onClick={handleResume}>{t(resumeAction === "packages" ? "view_work_packages" : resumeAction === "retry" ? "multi_retry_reviewed" : "multi_resume")}</button> : pausable && <button className="pixel-button pixel-toolbar-task-action px-2 py-1 text-xs" onClick={() => void pauseMultiTask()}>{t("multi_pause")}</button>}{agentRunning && <button className="pixel-button px-2 py-1 text-xs" onClick={()=>void cancelAgentRun()}>{t("cancel_task")}</button>}{currentMultiTask && !terminal && <button className="pixel-button pixel-toolbar-task-action px-2 py-1 text-xs text-red-700" onClick={() => void cancelMultiTask()}>{t("cancel_task")}</button>}</div>
     </WindowRoomToolbar>
+    {session?.archived && <ArchivedRoomNotice session={session}/>}
     <RoomTimeline roomId={currentSessionId ?? ""} className="flex-1 space-y-4 overflow-y-auto p-4">
       {agentError && <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{t(agentRunErrorKey(agentError))}</div>}
       {multiError && <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{multiError}</div>}
@@ -934,14 +599,9 @@ function MultiAgentSession({ chrome }: { chrome: RoomChromeControls }) {
           <div className={`md-body pixel-card p-3 text-sm ${message.role === "user" ? "bg-violet-50" : "bg-white"}`}><Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{message.content}</Markdown></div>
         </div><MsgActions m={message} align={message.role === "user" ? "right" : "left"} busy={multiRunning} onRewind={(messageId) => void rewindSessionTo(messageId)} /></div>;
       })}
-      {currentMultiTask?.turns.filter((turn) => turn.status === "running").map((turn) => {
-        const live = multiStreamAgentId === turn.agentId ? multiStreamText : "";
-        return (
-          <div key={turn.id} className={`pixel-card p-3 text-sm ${live ? "" : "animate-pulse"}`}>
-            <div className="mb-1 text-xs text-neutral-500">{String(turn.snapshot.nickname ?? turn.agentId)} {live ? "" : t("multi_thinking")}</div>
-            {live && <div className="md-body whitespace-pre-wrap">{live}<span className="animate-pulse">▋</span></div>}
-          </div>
-        );
+      {Object.entries(multiLiveStreams).map(([streamId, stream]) => {
+        const member=session?.agents.find(item=>item.agentId === stream.agentId);
+        return <div key={streamId} className="pixel-card p-3 text-sm"><AgentHeader name={String(member?.snapshot.nickname ?? stream.agentId)} model={String(member?.snapshot.modelId ?? "")}/><div className="md-body whitespace-pre-wrap">{stream.text || t("multi_thinking")}<span className="animate-pulse">▋</span></div></div>;
       })}
       {agentRunning && agentStreamText && <div className="pixel-card whitespace-pre-wrap p-3 text-sm"><AgentHeader name={String(participants.find(member=>member.id===multiStreamAgentId)?.nickname ?? "Agent")}/>{agentStreamText}</div>}
       {currentMultiTask?.plan && <MultiPlanCard plan={currentMultiTask.plan} />}
@@ -953,7 +613,7 @@ function MultiAgentSession({ chrome }: { chrome: RoomChromeControls }) {
       {currentMultiTask && session && <TeamTaskPanel task={currentMultiTask} session={session}/>}
 
     </RoomTimeline>
-    {terminal && session && <RoomComposer key={session.id} session={session} running={multiRunning || agentRunning} onOpenSettings={()=>setShowCollab(true)}/> }
+    {terminal && session && !session.archived && <RoomComposer key={session.id} session={session} running={multiRunning || agentRunning} onOpenSettings={()=>setShowCollab(true)}/> }
     {showRoster && session && <SessionMembersDialog session={session} onClose={()=>setShowRoster(false)}/>}
     {showCollab && session && <CoworkRoomSettingsDialog session={session} onClose={() => setShowCollab(false)} />}
   </div>;
@@ -1879,7 +1539,7 @@ export default function ChatPage({ onOpenSettings, settingsOpen=false }: { onOpe
   // 侧栏统一视图：历史 rooms 与 workspace sessions 折算成同一种行，
   // source 决定点击走 selectRoom 还是 selectAgentSession。
   const allEntries = useMemo<SidebarEntry[]>(() => [
-    ...rooms.map((room) => ({ id: room.id, name: room.name, kind: "chat" as const, workspaceId: null, archived: room.archived, source: "room" as const })),
+    ...rooms.filter(room=>!sessions.some(session=>session.id === room.id || session.legacyRoomId === room.id)).map((room) => ({ id: room.id, name: room.name, kind: "chat" as const, workspaceId: null, archived: room.archived, source: "room" as const })),
     ...sessions.map((session) => ({ id: session.id, name: session.title, kind: session.kind, workspaceId: session.workspaceId, archived: session.archived, source: "session" as const })),
   ], [rooms, sessions]);
 
@@ -1903,7 +1563,7 @@ export default function ChatPage({ onOpenSettings, settingsOpen=false }: { onOpe
   const topLevelEntries = useMemo(() => topLevelRooms(entries, workspaces) as SidebarEntry[], [entries, workspaces]);
   const projectGroups = useMemo(() => mode === "cowork" ? workspaceGroups(entries, workspaces) : [], [entries, workspaces,mode]);
 
-  const archivedRooms = mode === "chat" ? rooms.filter((r) => r.archived) : [];
+  const archivedRooms = mode === "chat" ? rooms.filter((r) => r.archived && !sessions.some(session=>session.id === r.id || session.legacyRoomId === r.id)) : [];
   const archivedSessions = sessions.filter((session) => session.archived && session.kind === mode);
   const archivedWorkspaces = mode === "cowork" ? workspaces.filter((workspace) => workspace.archived) : [];
 
@@ -2247,7 +1907,7 @@ export default function ChatPage({ onOpenSettings, settingsOpen=false }: { onOpe
                 </button>
               </div>
             )}
-            {roomAgents.length > 1 ? <TaskComposer agents={roomAgents} /> : <SimpleComposer />}
+            <p role="status" className="p-4 text-xs text-neutral-500">{t("room_session_unavailable")}</p>
           </>
         ) : (
           <>

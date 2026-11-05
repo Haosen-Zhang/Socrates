@@ -17,5 +17,8 @@ describe("UsageCollector", () => {
       current: { inputTokens: null, outputTokens: 4 },
       cumulative: { inputTokens: 2, outputTokens: 7, cachedInputTokens: null, cost: null },
     });
+    collector.record({ stableKey: "priced", sessionId: "s", taskId: "t", agentId: "a", usage: { ...normalizeTokenUsage({ inputTokens: 1, outputTokens: 1 }), cost: 0.1, currency: "USD" } });
+    expect(collector.summaries("t")[0]?.cumulative.cost).toBeNull();
+
   });
 });

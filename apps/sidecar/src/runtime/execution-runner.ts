@@ -17,7 +17,7 @@ import { repairToolHistory } from "../tools/repair-history";
 
 type ActiveExecution = { runtimeSessionId: string; leaseId: string; calls: Map<string, { name: string; input: unknown }>; cancelled: boolean; paused: boolean;
   package?: { sessionId: string; agentId: string; turnId: string }; controller?: AbortController;
-  approvalDeliveries?: Map<string, Promise<void>> };
+  approvalDeliveries?: Map<string, Promise<void>>; settled: Promise<void>; settle: () => void };
 
 export interface PackageExecutionInput {
   taskId: string;
@@ -92,11 +92,13 @@ export class ExecutionRunner {
     const abort = () => controller.abort(input.signal?.reason);
     input.signal?.addEventListener("abort", abort, { once: true });
     if (input.signal?.aborted) abort();
-    const active: ActiveExecution = { runtimeSessionId: "", leaseId: "", calls: new Map(), cancelled: false, paused: false,
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
+    const active: ActiveExecution = { settled, settle, runtimeSessionId: "", leaseId: "", calls: new Map(), cancelled: false, paused: false,
       package: { sessionId: task.sessionId, agentId: input.agentId, turnId }, controller };
-    this.active.set(runId, active);
     const memory = new ConversationMemoryStore(this.db, this.history);
     const thread = memory.ensureDefaultThread(task.sessionId);
+    this.active.set(runId, active);
     let result = "";
     let segment = "";
     let segmentNo = 0;
@@ -117,6 +119,7 @@ export class ExecutionRunner {
       const lease = await this.leases.acquireQueued(workspace.workspace_id, runId, { signal: controller.signal,
         onWaiting: () => emit({ type: "extension", name: "workspace_queued", payload: { reason: "workspace_write_lease_busy", runId } }) });
       active.leaseId = lease.id;
+      controller.signal.throwIfAborted();
       renewal = setInterval(() => {
         try { this.leases.renew(lease.id, new Date(Date.now() + 30 * 60_000).toISOString()); }
         catch { controller.abort(new Error("workspace_lease_lost")); }
@@ -136,6 +139,7 @@ export class ExecutionRunner {
         sessionId: task.sessionId, agentId: input.agentId, workspaceId: workspace.workspace_id,
         runtimeOptions: { sandbox: "workspace-write", runProfile: profile } });
       active.runtimeSessionId = handle.id;
+      controller.signal.throwIfAborted();
       const preamble: ConversationStoredMessage[] = previous.length ? [{ ...userContext, messageId: `${runId}:continuation`,
         sequence: previous[0]!.sequence - 1, content: "Continue the assigned work using the following durable facts from your earlier attempt. Do not repeat completed side effects.",
         parts: [{ type: "text", text: "Continue the assigned work using the following durable facts from your earlier attempt. Do not repeat completed side effects." }] }] : [];
@@ -144,6 +148,7 @@ export class ExecutionRunner {
       if (context.overflow) throw new Error("context_current_unit_exceeds_budget");
       this.executionEvents.append({ ...identity, eventId: `run-started:${runId}`, type: "run.started", payload: {} });
       let usageNo = 0;
+      controller.signal.throwIfAborted();
       await this.runtimes.run(handle.id, { taskId: runId, turnId, prompt: input.prompt,
         messages: context.messages, signal: controller.signal,
         onEvent: async (event) => {
@@ -198,10 +203,13 @@ export class ExecutionRunner {
     } finally {
       input.signal?.removeEventListener("abort", abort);
       if (renewal) clearInterval(renewal);
-      if (active.runtimeSessionId) await this.runtimes.close(active.runtimeSessionId);
-      if (active.leaseId) this.leases.release(active.leaseId);
-      this.approvals.expireForTask(runId);
-      this.active.delete(runId);
+      try { if (active.runtimeSessionId) await this.runtimes.close(active.runtimeSessionId); }
+      finally {
+        if (active.leaseId) this.leases.release(active.leaseId);
+        this.approvals.expireForTask(runId);
+        this.active.delete(runId);
+        active.settle();
+      }
     }
   }
 
@@ -210,7 +218,8 @@ export class ExecutionRunner {
     if (!active?.package) return;
     active.cancelled = true;
     active.controller?.abort(new Error("user_cancelled"));
-    if (active.runtimeSessionId) await this.runtimes.interrupt(active.runtimeSessionId).catch(() => {});
+    try { if (active.runtimeSessionId) await this.runtimes.interrupt(active.runtimeSessionId); }
+    finally { await active.settled; }
   }
 
   async run(taskId: string, emit: (event: RuntimeEvent) => void | Promise<void> = () => {}): Promise<void> {
@@ -228,7 +237,9 @@ export class ExecutionRunner {
     let turnStarted = false;
     let budgetStopped = false;
     const controller = new AbortController();
-    const active: ActiveExecution = { runtimeSessionId: "", leaseId: "", calls: new Map(), cancelled: false, paused: false, controller };
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
+    const active: ActiveExecution = { settled, settle, runtimeSessionId: "", leaseId: "", calls: new Map(), cancelled: false, paused: false, controller };
     const turnId = this.tasks.currentAttemptId(taskId);
     const memory = new ConversationMemoryStore(this.db, this.history);
     const thread = memory.ensureDefaultThread(task.sessionId);
@@ -256,6 +267,7 @@ export class ExecutionRunner {
       lease = await this.leases.acquireQueued(session.workspace_id, taskId, { signal: controller.signal,
         onWaiting: () => emit({ type: "extension", name: "workspace_queued", payload: { reason: "workspace_write_lease_busy", workspaceId: session.workspace_id } }) });
       active.leaseId = lease.id;
+      controller.signal.throwIfAborted();
       renewal = setInterval(() => {
         try { this.leases.renew(lease!.id, new Date(Date.now() + 30 * 60_000).toISOString()); }
         catch { void this.cancelForLostLease(taskId); }
@@ -277,6 +289,7 @@ export class ExecutionRunner {
       });
       runtimeSessionId = handle.id;
       active.runtimeSessionId = runtimeSessionId;
+      controller.signal.throwIfAborted();
       new ToolExecutionJournal(this.db, this.executionEvents).recoverInterrupted(taskId);
       await repairToolHistory(this.db, memory, thread.id);
       const previous = (await memory.listThreadMessages(thread.id)).filter((message) => message.runId === taskId && message.agentId === task.executionAgentId);
@@ -290,6 +303,7 @@ export class ExecutionRunner {
       const context = buildConversationContext([...preamble, ...previous, instruction], { contextWindowTokens: profile.contextWindowTokens,
         instructionTokens: this.runtimes.contextOverheadTokens(handle.id) });
       if (context.overflow) throw new Error("context_current_unit_exceeds_budget");
+      controller.signal.throwIfAborted();
       await this.runtimes.run(runtimeSessionId, {
         taskId,
         turnId,
@@ -373,9 +387,13 @@ export class ExecutionRunner {
       throw error;
     } finally {
       if (renewal) clearInterval(renewal);
-      if (runtimeSessionId) await this.runtimes.close(runtimeSessionId);
-      if (lease) this.leases.release(lease.id);
-      this.active.delete(taskId);
+      try { if (runtimeSessionId) await this.runtimes.close(runtimeSessionId); }
+      finally {
+        if (lease) this.leases.release(lease.id);
+        this.approvals.expireForTask(taskId);
+        this.active.delete(taskId);
+        active.settle();
+      }
     }
   }
 
@@ -481,10 +499,11 @@ export class ExecutionRunner {
     const active = this.active.get(taskId);
     if (!active) throw new Error("execution_not_active");
     active.cancelled = true;
-    active.controller?.abort(new Error("user_cancelled"));
-    if (active.runtimeSessionId) await this.runtimes.interrupt(active.runtimeSessionId);
     const task = this.tasks.get(taskId);
     if (task && !["cancelled", "completed", "failed"].includes(task.state)) this.tasks.transition(taskId, { type: "cancel", reason: "user_cancelled" });
+    active.controller?.abort(new Error("user_cancelled"));
+    try { if (active.runtimeSessionId) await this.runtimes.interrupt(active.runtimeSessionId); }
+    finally { await active.settled; }
   }
 
   async pause(taskId: string): Promise<void> {
@@ -495,23 +514,56 @@ export class ExecutionRunner {
     active.paused = true;
     this.tasks.transition(taskId, { type: "pause", reason: "execution_interrupted_requires_review" });
     this.approvals.expireForTask(taskId);
-    await this.runtimes.interrupt(active.runtimeSessionId);
+    active.controller?.abort(new Error("user_paused"));
+    try { if (active.runtimeSessionId) await this.runtimes.interrupt(active.runtimeSessionId); }
+    finally { await active.settled; }
+  }
+
+  async shutdown(): Promise<void> {
+    await Promise.all([...this.active].map(async ([id, active]) => {
+      if (active.package) await this.cancelPackage(id);
+      else if (["executing", "awaiting_tool_approval"].includes(this.tasks.get(id)?.state ?? "")) await this.pause(id);
+      else { active.controller?.abort(new Error("sidecar_shutdown")); await active.settled; }
+    }));
+  }
+
+  private prepareResumeAfterReview(taskId: string): void {
+    if (this.active.has(taskId)) throw new Error("execution_already_running");
+    const task = this.tasks.get(taskId);
+    if (!task || task.state !== "paused" || !["executing", "awaiting_tool_approval"].includes(task.resumeFrom ?? "")) throw new Error("multi_task_execution_resume_invalid");
+    const plan = task.approvedPlanVersion ? this.tasks.getPlan(taskId, task.approvedPlanVersion) : null;
+    if (!plan || plan.status !== "approved" || plan.contentHash !== task.approvedPlanHash) throw new Error("approved_plan_required");
+    const resumed = this.tasks.resumeNewAttempt(taskId, { allowOutcomeUnknown: true });
+    if (resumed.state === "awaiting_tool_approval") this.tasks.transition(taskId, { type: "tool_approval_settled" });
   }
 
   async resumeAfterReview(taskId: string, emit: (event: RuntimeEvent) => void | Promise<void> = () => {}): Promise<void> {
-    const resumed = this.tasks.resumeNewAttempt(taskId, { allowOutcomeUnknown: true });
-    if (resumed.state === "awaiting_tool_approval") this.tasks.transition(taskId, { type: "tool_approval_settled" });
-    if (this.tasks.get(taskId)?.state !== "executing") throw new Error("multi_task_execution_resume_invalid");
-    await this.run(taskId, emit);
+    this.prepareResumeAfterReview(taskId);
+    try { await this.run(taskId, emit); }
+    catch (error) { this.recordResumeFailure(taskId, error); throw error; }
+  }
+
+  resumeInBackgroundAfterReview(taskId: string): void {
+    // Validation and ownership reservation happen before returning HTTP 202.
+    // A concurrent retry must not turn the existing runner's state into paused.
+    this.prepareResumeAfterReview(taskId);
+    void this.run(taskId).catch((error) => this.recordResumeFailure(taskId, error));
+  }
+
+  private recordResumeFailure(taskId: string, error: unknown): void {
+    if (this.tasks.get(taskId)?.state === "executing" && !this.active.has(taskId)) this.tasks.transition(taskId, {
+      type: "pause", reason: error instanceof Error ? error.message : "execution_start_failed",
+    });
   }
 
   private async cancelForLostLease(taskId: string): Promise<void> {
     const active = this.active.get(taskId);
     if (!active) return;
     active.cancelled = true;
-    await this.runtimes.interrupt(active.runtimeSessionId).catch(() => {});
     const task = this.tasks.get(taskId);
-    if (task && !["failed", "cancelled", "completed"].includes(task.state)) this.tasks.transition(taskId, { type: "fail", reason: "workspace_lease_lost" });
+    if (task && !["failed", "cancelled", "completed", "paused"].includes(task.state)) this.tasks.transition(taskId, { type: "fail", reason: "workspace_lease_lost" });
+    active.controller?.abort(new Error("workspace_lease_lost"));
+    if (active.runtimeSessionId) await this.runtimes.interrupt(active.runtimeSessionId).catch(() => {});
   }
 
   private assertEvidenceCurrent(workspaceId: string, evidence: Array<{ refId: string; snapshotHash: string }>): void {

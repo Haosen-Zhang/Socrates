@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { ConversationSession } from "@socrates/core";
-import { mergeSessionMessages, useStore } from "./store";
+import { mergeSessionMessages, storedRoomNavigation, useStore } from "./store";
 
 const originalFetch = globalThis.fetch;
 const sessions = ["a", "b"].map((id) => ({
@@ -16,7 +16,7 @@ beforeEach(() => {
     ...useStore.getInitialState(),
     handshake: { port: 1, token: "test" },
     sessions,
-    workspaces: [{ id: "w-a" }, { id: "w-b" }] as never,
+    workspaces: [{ id: "w-a", canonicalPath: "/a" }, { id: "w-b", canonicalPath: "/b" }] as never,
   });
   route = () => json([]);
   globalThis.fetch = ((input: RequestInfo | URL) =>
@@ -28,6 +28,59 @@ afterEach(() => {
 });
 
 describe("room-scoped store projections", () => {
+  for (const source of ["workspace", "clipboard"] as const) it(`keeps late ${source} imports in the originating room`, async () => {
+    await useStore.getState().selectAgentSession("a");
+    let release!: (value: Response) => void;
+    route = url => url.includes("/content/attachments/") ? new Promise(resolve => { release = resolve; }) : json([]);
+    const importing = source === "workspace"
+      ? useStore.getState().importWorkspaceAttachment("/a/report.txt")
+      : useStore.getState().importClipboardAttachment(new File(["content"], "report.txt"));
+    await useStore.getState().selectAgentSession("b");
+    release(json({ id: "attachment-a", byteSize: 7 }));
+    await importing;
+    expect(useStore.getState().draftAttachments).toEqual([]);
+    expect(useStore.getState().roomProjections.a.draftAttachments.map(item => item.id)).toEqual(["attachment-a"]);
+    await useStore.getState().selectAgentSession("a");
+    expect(useStore.getState().draftAttachments.map(item => item.id)).toEqual(["attachment-a"]);
+  });
+  it("rejects a late history snapshot after a newer snapshot has committed", async () => {
+    let release!: (value: Response) => void;
+    let count = 0;
+    route = url => url.includes("/sessions/a/messages")
+      ? ++count === 1 ? new Promise(resolve => { release = resolve; }) : json([{id:"user",sequence:1}, {id:"answer",sequence:2}])
+      : json([]);
+    const old = useStore.getState().selectAgentSession("a");
+    await useStore.getState().selectAgentSession("a");
+    release(json([{id:"user",sequence:1}]));
+    await old;
+    expect(useStore.getState().sessionMessages.map(item => item.id)).toEqual(["user", "answer"]);
+  });
+  it("rewind rejects pre-rewind history and preserves an explicitly empty history", async () => {
+    useStore.setState({currentSessionId:"a", sessionMessages:[{id:"answer",sequence:2}] as never});
+    let release!: (value: Response) => void;
+    let count = 0;
+    route = url => url.includes("/sessions/a/messages") && ++count === 1
+      ? new Promise(resolve => { release = resolve; }) : json([]);
+    const old = useStore.getState().selectAgentSession("a");
+    await useStore.getState().rewindSessionTo("answer");
+    release(json([{id:"answer",sequence:2}]));
+    await old;
+    expect(useStore.getState().sessionMessages).toEqual([]);
+  });
+  for (const action of ["resumeMultiTask", "retryMultiTask"] as const) it(`keeps ${action} failures and final refresh in their room`, async () => {
+    const task = {id:"task-a", sessionId:"a", state:"paused", pendingApprovals:[], usageSummaries:[]};
+    useStore.setState({currentSessionId:"a",currentMultiTask:task as never});
+    let reject!: (value: Error) => void;
+    route = url => /\/(resume|retry)$/.test(url) ? new Promise((_resolve, fail) => {reject=fail;}) : url.endsWith("/multi/tasks/task-a") ? json(task) : json([]);
+    const pending = useStore.getState()[action]();
+    await useStore.getState().selectAgentSession("b");
+    useStore.setState({multiRunning:true, multiError:"B status"});
+    reject(new Error("A failed"));
+    await pending;
+    expect(useStore.getState().multiRunning).toBe(true);
+    expect(useStore.getState().multiError).toBe("B status");
+    expect(useStore.getState().roomProjections.a.multiError).toBe("A failed");
+  });
   it("late session messages cannot navigate back or overwrite another room", async () => {
     let release!: (value: Response) => void;
     route = (url) =>
@@ -256,4 +309,231 @@ it("only sends unknown-outcome confirmation when explicitly provided", async () 
   expect(requests[1].body).toEqual({ confirmOutcomeUnknown: true });
   expect(requests[2].body).toEqual({});
   expect(requests[0].url).toContain("task%2Fpackage/retry");
+});
+
+it("keeps an entire attachment batch and its failures with a captured target", async () => {
+  await useStore.getState().selectAgentSession("a");
+  const target=useStore.getState().captureRoomTarget();
+  let release!: (value: Response) => void;
+  const requested: string[]=[];
+  globalThis.fetch=(async (input: RequestInfo | URL, init?:RequestInit) => {
+    if(String(input).includes("/content/attachments/import")) {
+      const body=JSON.parse(String(init?.body)); requested.push(body.workspaceId);
+      if(requested.length === 1) return new Promise(resolve=>{release=resolve;});
+      throw new Error("second file failed");
+    }
+    return json([]);
+  }) as unknown as typeof fetch;
+  const batch=(async()=>{
+    await useStore.getState().importWorkspaceAttachment("/a/one.txt",target);
+    await useStore.getState().importWorkspaceAttachment("/a/two.txt",target).catch(()=>{});
+  })();
+  await useStore.getState().selectAgentSession("b");
+  release(json({id:"one",byteSize:1}));
+  await batch;
+  expect(requested).toEqual(["w-a","w-a"]);
+  expect(useStore.getState().attachmentError).toBeNull();
+  expect(useStore.getState().attachmentImports).toBe(0);
+  expect(useStore.getState().roomProjections.a.attachmentError).toBe("second file failed");
+  expect(useStore.getState().roomProjections.a.attachmentImports).toBe(0);
+});
+
+it("restores only live selections in the requested mode and resolves legacy aliases", async () => {
+  useStore.setState({
+    rooms:[{id:"old",name:"Archived",archived:true,agentIds:["member"]}] as never,
+    sessions:[{...sessions[0],id:"upgraded",legacyRoomId:"old",kind:"chat",archived:true},{...sessions[1],kind:"chat",archived:false}] as never,
+    roomNavigation:{mode:"chat",selected:{chat:"old",cowork:"b"}},
+  });
+  await useStore.getState().setAppMode("chat");
+  expect(useStore.getState().currentSessionId).toBe("b");
+  await useStore.getState().selectRoom("old");
+  expect(useStore.getState().currentSessionId).toBe("upgraded");
+  expect(useStore.getState().currentRoomId).toBeNull();
+  await useStore.getState().setAppMode("cowork");
+  expect(useStore.getState().currentSessionId).toBeNull();
+  expect(useStore.getState().roomNavigation.mode).toBe("cowork");
+});
+
+it("submits room, mentions and attachments from one explicit room snapshot", async () => {
+  await useStore.getState().selectAgentSession("a");
+  useStore.getState().setComposerDraft("a","@Alice draft A");
+  useStore.getState().setComposerMentions("a",[{label:"@Alice",mention:{type:"agent",agentId:"alice"}}]);
+  useStore.setState({draftAttachments:[{id:"a-file"}] as never,draftWorkspaceRefs:[{id:"a-ref"}] as never});
+  await useStore.getState().selectAgentSession("b");
+  let submitted: Record<string,unknown> | undefined;
+  globalThis.fetch=(async (_input: RequestInfo | URL, init?:RequestInit) => {submitted=JSON.parse(String(init?.body));throw new Error("offline");}) as unknown as typeof fetch;
+  await useStore.getState().sendRoomCommand("@Alice draft A",[{type:"agent",agentId:"alice"}],"execute",undefined,"a");
+  expect(submitted).toMatchObject({roomId:"a",mentions:[{type:"agent",agentId:"alice"}],attachmentIds:["a-file"],workspaceRefIds:["a-ref"]});
+  expect(useStore.getState().agentError).toBeNull();
+  expect(useStore.getState().roomProjections.a.agentError).toBe("offline");
+  expect(useStore.getState().composerDrafts.a).toBe("@Alice draft A");
+});
+
+const eventually = async (predicate:()=>boolean) => {
+  const until=Date.now()+2500;
+  while(!predicate() && Date.now()<until) await Bun.sleep(5);
+  expect(predicate()).toBe(true);
+};
+
+it("streams Team authors in their room across switching and reconnect without duplicate final messages", async () => {
+  useStore.setState({currentSessionId:"a"});
+  const streams: ReadableStreamDefaultController<Uint8Array>[]=[];
+  const cursors:string[]=[];
+  let completed=false;
+  let phase="discussing";
+  const task=()=>({id:"team-a",sessionId:"a",state:completed ? "completed" : phase,turns:[],pendingApprovals:[],usageSummaries:[]});
+  globalThis.fetch=(async (input: RequestInfo | URL, init?:RequestInit) => {
+    const url=String(input);
+    if(url.endsWith("/room-commands") && init?.method === "POST") return json({kind:"team",taskId:"team-a",commandId:"command-a"});
+    if(url.includes("/room-commands/command-a/events")) {
+      cursors.push(url);
+      return new Response(new ReadableStream({start(controller){streams.push(controller);}}),{headers:{"Content-Type":"text/event-stream"}});
+    }
+    if(url.endsWith("/room-commands/command-a")) return json({status:completed ? "completed" : "running"});
+    if(url.endsWith("/room-commands/rooms/a")) return json([{kind:"team",taskId:"team-a",commandId:"command-a",status:completed ? "completed" : "running"}]);
+    if(url.endsWith("/multi/tasks/team-a")) return json(task());
+    if(url.endsWith("/multi/sessions/a/tasks")) return json([task()]);
+    if(url.endsWith("/sessions/a/messages")) return json(completed ? [{id:"answer",sequence:2,authorId:"alice",content:"Hello world"}] : []);
+    if(url.endsWith("/sessions")) return json(sessions);
+    return json([]);
+  }) as unknown as typeof fetch;
+  const emit=(index:number,event:Record<string,unknown>)=>streams[index].enqueue(new TextEncoder().encode(`data: ${JSON.stringify({roomId:"a",taskId:"team-a",...event})}\n\n`));
+  await useStore.getState().sendRoomCommand("do work",[],"execute");
+  await eventually(()=>streams.length === 1);
+  emit(0,{seq:1,type:"turn_started",turnId:"turn-a",agentId:"alice"});
+  emit(0,{seq:2,type:"delta",turnId:"turn-a",agentId:"alice",text:"Hello"});
+  await eventually(()=>useStore.getState().multiLiveStreams["turn-a"]?.text === "Hello");
+  await useStore.getState().selectAgentSession("b");
+  emit(0,{seq:3,type:"delta",turnId:"turn-a",agentId:"alice",text:" world"});
+  await eventually(()=>useStore.getState().roomProjections.a.multiLiveStreams["turn-a"]?.text === "Hello world");
+  expect(useStore.getState().multiLiveStreams).toEqual({});
+  phase="awaiting_plan_approval";
+  // Old servers can emit task_failed for a recoverable reviewer failure.
+  emit(0,{seq:4,type:"task_failed"});
+  streams[0].close();
+  await eventually(()=>streams.length === 2);
+  expect(cursors[1]).toContain("afterSeq=4");
+  emit(1,{seq:3,type:"delta",turnId:"turn-a",agentId:"alice",text:" world"});
+  await useStore.getState().selectAgentSession("a");
+  expect(useStore.getState().multiLiveStreams["turn-a"]).toEqual({agentId:"alice",text:"Hello world"});
+  completed=true;
+  emit(1,{seq:5,type:"turn_completed",turnId:"turn-a",agentId:"alice"});
+  emit(1,{seq:6,type:"task_completed"});
+  streams[1].close();
+  await eventually(()=>!useStore.getState().multiRunning && useStore.getState().sessionMessages.length === 1);
+  expect(useStore.getState().sessionMessages.map(message=>message.id)).toEqual(["answer"]);
+  expect(useStore.getState().multiLiveStreams).toEqual({});
+});
+
+it("a completed command wins over its delayed initial history request", async () => {
+  useStore.setState({currentSessionId:"a"});
+  let release!: (value:Response)=>void;
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  let reads=0;
+  globalThis.fetch=(async (input:RequestInfo|URL,init?:RequestInit)=>{
+    const url=String(input);
+    if(url.endsWith("/room-commands") && init?.method === "POST") return json({kind:"discussion",commandId:"discussion-a"});
+    if(url.includes("/room-commands/discussion-a/events")) return new Response(new ReadableStream({start(controller){stream=controller;}}));
+    if(url.endsWith("/sessions/a/messages")) return ++reads === 1 ? new Promise(resolve=>{release=resolve;}) : json([{id:"user",sequence:1},{id:"answer",sequence:2}]);
+    if(url.endsWith("/sessions")) return json(sessions);
+    return json([]);
+  }) as unknown as typeof fetch;
+  await useStore.getState().sendRoomCommand("question",[],"discuss");
+  stream.enqueue(new TextEncoder().encode('data: {"seq":1,"type":"message","message":{"id":"answer","sequence":2}}\n\ndata: {"seq":2,"type":"completed"}\n\n'));
+  stream.close();
+  await eventually(()=>useStore.getState().sessionMessages.length === 2);
+  release(json([{id:"user",sequence:1}]));
+  await Bun.sleep(5);
+  expect(useStore.getState().sessionMessages.map(message=>message.id)).toEqual(["user","answer"]);
+});
+
+it("late command events cannot revive messages after rewind", async () => {
+  useStore.setState({currentSessionId:"a"});
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  globalThis.fetch=(async (input:RequestInfo|URL,init?:RequestInit)=>{
+    const url=String(input);
+    if(url.endsWith("/room-commands") && init?.method === "POST") return json({kind:"discussion",commandId:"rewound-command"});
+    if(url.includes("/room-commands/rewound-command/events")) return new Response(new ReadableStream({start(controller){stream=controller;}}));
+    if(url.endsWith("/sessions")) return json(sessions);
+    return json([]);
+  }) as unknown as typeof fetch;
+  await useStore.getState().sendRoomCommand("question",[],"discuss");
+  stream.enqueue(new TextEncoder().encode('data: {"seq":1,"type":"message","message":{"id":"answer","sequence":2}}\n\ndata: {"seq":2,"type":"completed"}\n\n'));
+  await eventually(()=>!useStore.getState().agentRunning && useStore.getState().sessionMessages.length === 1);
+  await useStore.getState().rewindSessionTo("answer");
+  stream.enqueue(new TextEncoder().encode('data: {"seq":3,"type":"message","message":{"id":"answer","sequence":2}}\n\n'));
+  stream.close();
+  await Bun.sleep(10);
+  expect(useStore.getState().sessionMessages).toEqual([]);
+  expect(useStore.getState().historyGeneration).toBe(1);
+  expect(useStore.getState().activeRoomCommandId).toBeNull();
+});
+
+it("rewind clears the deleted budget-stopped run's recovery and approval controls", async () => {
+  useStore.setState({currentSessionId:"a",lastStoppedRunId:"deleted-run",agentError:"budget_exhausted",agentEvents:[{type:"text_delta",text:"old"}],pendingApprovals:[{id:"old"}] as never});
+  await useStore.getState().rewindSessionTo("answer");
+  expect(useStore.getState().lastStoppedRunId).toBeNull();
+  expect(useStore.getState().agentError).toBeNull();
+  expect(useStore.getState().pendingApprovals).toEqual([]);
+  expect(useStore.getState().agentEvents).toEqual([]);
+  let requests=0;
+  route=()=>{requests++;return json([]);};
+  await useStore.getState().continueAgentRun();
+  expect(requests).toBe(0);
+});
+
+it("persists both mode selections and restores the valid selected room at startup", async () => {
+  const previousWindow=Object.getOwnPropertyDescriptor(globalThis,"window");
+  const values=new Map<string,string>();
+  Object.defineProperty(globalThis,"window",{configurable:true,value:{localStorage:{getItem:(key:string)=>values.get(key) ?? null,setItem:(key:string,value:string)=>{values.set(key,value);},removeItem:(key:string)=>{values.delete(key);}}}});
+  const rooms=[{...sessions[0],kind:"chat"},{...sessions[1],kind:"cowork"}] as ConversationSession[];
+  try {
+    useStore.setState({sessions:rooms});
+    await useStore.getState().selectAgentSession("a");
+    await useStore.getState().setAppMode("cowork");
+    expect(storedRoomNavigation()).toEqual({mode:"cowork",selected:{chat:"a",cowork:"b"}});
+    // Apply the exact initialization read used by the production Store, as on reload.
+    useStore.setState({...useStore.getInitialState(),handshake:{port:1,token:"test"},sessions:rooms,roomNavigation:storedRoomNavigation()});
+    await useStore.getState().setAppMode(useStore.getState().roomNavigation.mode);
+    expect(useStore.getState().currentSessionId).toBe("b");
+    await useStore.getState().setAppMode("chat");
+    expect(useStore.getState().currentSessionId).toBe("a");
+    expect(storedRoomNavigation()).toEqual({mode:"chat",selected:{chat:"a",cowork:"b"}});
+  } finally {
+    if(previousWindow) Object.defineProperty(globalThis,"window",previousWindow);
+    else Reflect.deleteProperty(globalThis,"window");
+  }
+});
+
+it("projects Worker text and approvals from Team SSE without a mounted polling component", async () => {
+  useStore.setState({currentSessionId:"a"});
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  let finished=false,approval=false;
+  const pending=[{id:"worker-approval",subjectId:"write",kind:"tool",risk:"low",freshHumanRequired:false,status:"pending"}];
+  globalThis.fetch=(async (input:RequestInfo|URL,init?:RequestInit)=>{
+    const url=String(input);
+    if(url.endsWith("/room-commands") && init?.method === "POST") return json({kind:"team",taskId:"worker-team",commandId:"worker-command"});
+    if(url.includes("/room-commands/worker-command/events")) return new Response(new ReadableStream({start(controller){stream=controller;}}));
+    if(url.endsWith("/room-commands/worker-command")) return json({status:finished ? "completed" : "executing"});
+    if(url.endsWith("/multi/tasks/worker-team")) return json({id:"worker-team",sessionId:"a",state:finished ? "completed" : "executing",turns:[],pendingApprovals:approval ? pending : [],usageSummaries:[]});
+    if(url.endsWith("/sessions/a/messages")) return json(finished ? [{id:"worker-answer",sequence:1,authorId:"worker",content:"Finished"}] : []);
+    if(url.endsWith("/sessions")) return json(sessions);
+    return json([]);
+  }) as unknown as typeof fetch;
+  await useStore.getState().sendRoomCommand("work",[],"execute");
+  await eventually(()=>Boolean(stream));
+  const emit=(seq:number,type:string,payload:Record<string,unknown>)=>stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({seq,type,roomId:"a",taskId:"worker-team",payload})}\n\n`));
+  emit(1,"multi.package_runtime",{runId:"worker-run",packageId:"package",agentId:"worker",event:{type:"text_delta",text:"Working"}});
+  await eventually(()=>useStore.getState().multiLiveStreams["worker-run"]?.text === "Working");
+  expect(useStore.getState().multiLiveStreams["worker-run"].agentId).toBe("worker");
+  approval=true;
+  emit(2,"multi.package_runtime",{runId:"worker-run",packageId:"package",agentId:"worker",event:{type:"approval_required",requestId:"worker-approval"}});
+  await eventually(()=>useStore.getState().pendingApprovals.length === 1);
+  finished=true;approval=false;
+  emit(3,"multi.package_finished",{id:"package",runId:"worker-run",executorAgentId:"worker"});
+  emit(4,"multi.team_completed",{});
+  stream.close();
+  await eventually(()=>useStore.getState().activeRoomCommandId === null);
+  expect(useStore.getState().multiLiveStreams).toEqual({});
+  expect(useStore.getState().sessionMessages.map(message=>message.id)).toEqual(["worker-answer"]);
 });

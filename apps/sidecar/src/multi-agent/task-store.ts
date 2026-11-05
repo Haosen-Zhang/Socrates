@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { WorkPackageStore } from "./work-package-store";
-import { validateWorkPackages } from "@socrates/core";
+import { validateStructuredPlan, validateWorkPackages } from "@socrates/core";
 import { hashStructuredPlan, reduceTaskState, type ReasoningEffort, type StructuredPlan, type TaskState, type TaskStateEvent, type TokenUsage } from "@socrates/core";
 import { UsageCollector, normalizeTokenUsage } from "../services/usage-collector";
 import type { HistoryStore } from "../store/history-store";
@@ -169,20 +169,14 @@ export class MultiTaskStore {
   }
 
   transition(id: string, event: TaskStateEvent): MultiTaskRecord {
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
+    return this.db.transaction(() => {
       this.applyTransition(id, event);
-      this.db.exec("COMMIT");
       return this.get(id)!;
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    }).immediate();
   }
 
   resumeNewAttempt(id: string, options: { allowOutcomeUnknown?: boolean } = {}): MultiTaskRecord {
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
+    return this.db.transaction(() => {
       const task = this.get(id);
       if (!task) throw new Error("multi_task_not_found");
       if (task.state !== "paused" || !task.resumeFrom) throw new Error("multi_task_not_paused");
@@ -194,12 +188,8 @@ export class MultiTaskStore {
       this.db.query("INSERT INTO multi_task_attempts (id, task_id, attempt_no, status, started_at) VALUES (?, ?, ?, 'active', ?)")
         .run(crypto.randomUUID(), id, task.attemptNo + 1, now);
       this.applyTransition(id, { type: "resume" });
-      this.db.exec("COMMIT");
       return this.get(id)!;
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    }).immediate();
   }
 
   currentAttemptId(taskId: string): string {
@@ -283,32 +273,75 @@ export class MultiTaskStore {
     return { turns, tasks };
   }
 
-  async addPlan(input: { taskId: string; content: StructuredPlan; createdBy: string; parentVersion?: number | null }): Promise<PlanVersionRecord> {
-    const ownerTask = this.get(input.taskId);
-    if (ownerTask?.config.teamExecution && !input.content.workPackages) throw new Error("team_work_packages_required");
-    if (input.content.workPackages) {
-      const task = ownerTask;
-      if (!task) throw new Error("multi_task_not_found");
-      const ids = this.db.query<{ agent_id: string }, [string]>("SELECT agent_id FROM session_agents WHERE session_id = ?").all(task.sessionId).map((m) => m.agent_id);
-      const errors = validateWorkPackages(input.content.workPackages, ids);
-      if (task.config.targetAgentIds?.length && input.content.workPackages.some((p) => !task.config.targetAgentIds!.includes(p.executorAgentId))) errors.push("work_package_executor_outside_targets");
-      if (errors.length) throw new Error(errors[0]);
-      new WorkPackageStore(this.db).validateDefinitions(input.taskId, input.content.workPackages);
+  private validatePlan(taskId: string, content: StructuredPlan): void {
+    if (validateStructuredPlan(content).length) throw new Error("structured_plan_invalid");
+    const task = this.get(taskId);
+    if (!task) throw new Error("multi_task_not_found");
+    if (task.config.teamExecution && !content.workPackages) throw new Error("team_work_packages_required");
+    const executors = content.workPackages?.map((item) => item.executorAgentId) ?? [task.executionAgentId ?? task.config.executionAgentId];
+    for (const agentId of executors) {
+      const member = this.db.query<{ snapshot_json: string }, [string, string]>("SELECT snapshot_json FROM session_agents WHERE session_id = ? AND agent_id = ?").get(task.sessionId, agentId);
+      const snapshot = task.config.memberProfiles?.[agentId] ?? (member ? JSON.parse(member.snapshot_json) as Record<string, unknown> : undefined);
+      if ((snapshot?.modelCapabilities as { toolCalling?: boolean } | undefined)?.toolCalling === false) throw new Error("execution_agent_tools_unavailable");
     }
-    const version = (this.db.query<{ next: number }, [string]>("SELECT COALESCE(MAX(version), 0) + 1 AS next FROM plan_versions WHERE task_id = ?").get(input.taskId)?.next ?? 1);
+    if (content.workPackages) {
+      const ids = this.db.query<{ agent_id: string }, [string]>("SELECT agent_id FROM session_agents WHERE session_id = ?").all(task.sessionId).map((m) => m.agent_id);
+      const errors = validateWorkPackages(content.workPackages, ids);
+      if (task.config.targetAgentIds?.length && content.workPackages.some((p) => !task.config.targetAgentIds!.includes(p.executorAgentId))) errors.push("work_package_executor_outside_targets");
+      if (errors.length) throw new Error(errors[0]);
+      new WorkPackageStore(this.db).validateDefinitions(taskId, content.workPackages);
+    } else {
+      const eligible = this.db.query<{ execution_eligible: number }, [string, string]>("SELECT execution_eligible FROM session_agents WHERE session_id = ? AND agent_id = ?").get(task.sessionId, task.executionAgentId ?? task.config.executionAgentId);
+      if (!eligible?.execution_eligible) throw new Error("execution_agent_not_eligible");
+    }
+  }
+
+  private savePlan(input: { taskId: string; content: StructuredPlan; createdBy: string; parentVersion?: number | null }, contentHash: string, evidenceHash: string): PlanVersionRecord {
+    this.validatePlan(input.taskId, input.content);
+    const version = this.db.query<{ next: number }, [string]>("SELECT COALESCE(MAX(version), 0) + 1 AS next FROM plan_versions WHERE task_id = ?").get(input.taskId)!.next;
+    const id = crypto.randomUUID();
+    this.db.query("UPDATE plan_versions SET status = 'superseded' WHERE task_id = ? AND status = 'pending'").run(input.taskId);
+    this.db.query(`INSERT INTO plan_versions
+      (id, task_id, version, parent_version, content_json, content_hash, evidence_hash, created_by, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`)
+      .run(id, input.taskId, version, input.parentVersion ?? null, JSON.stringify(input.content), contentHash, evidenceHash, input.createdBy, new Date().toISOString());
+    if (input.content.workPackages) new WorkPackageStore(this.db).replacePlan(input.taskId, version, input.content.workPackages);
+    return this.getPlan(input.taskId, version)!;
+  }
+
+  async addPlan(input: { taskId: string; content: StructuredPlan; createdBy: string; parentVersion?: number | null }): Promise<PlanVersionRecord> {
+    this.validatePlan(input.taskId, input.content);
     const contentHash = await hashStructuredPlan(input.content);
     const evidenceHash = await hashStructuredPlan({ ...input.content, objective: "evidence", summary: "evidence", steps: [] });
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
-    this.db.transaction(() => {
-      this.db.query("UPDATE plan_versions SET status = 'superseded' WHERE task_id = ? AND status = 'pending'").run(input.taskId);
-      this.db.query(`INSERT INTO plan_versions
-        (id, task_id, version, parent_version, content_json, content_hash, evidence_hash, created_by, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`)
-        .run(id, input.taskId, version, input.parentVersion ?? null, JSON.stringify(input.content), contentHash, evidenceHash, input.createdBy, now);
-      if (input.content.workPackages) new WorkPackageStore(this.db).replacePlan(input.taskId, version, input.content.workPackages);
-    })();
-    return this.getPlan(input.taskId, version)!;
+    return this.db.transaction(() => this.savePlan(input, contentHash, evidenceHash)).immediate();
+  }
+
+  async editAndApprovePlan(input: { taskId: string; version: number; hash: string; content: StructuredPlan; clientDecisionKey: string; reason?: string }): Promise<{ plan: PlanVersionRecord; decision: { id: string; decision: string; replayed: boolean } }> {
+    if (validateStructuredPlan(input.content).length) throw new Error("structured_plan_invalid");
+    // Hash outside SQLite; after awaiting, recheck both the approval revision
+    // and every member/assignment inside one synchronous transaction. These
+    // tables have no HistoryStore projection, so no journal append is split off.
+    const contentHash = await hashStructuredPlan(input.content);
+    const evidenceHash = await hashStructuredPlan({ ...input.content, objective: "evidence", summary: "evidence", steps: [] });
+    return this.db.transaction(() => {
+      const duplicate = this.db.query<{ id: string; task_id: string; plan_version: number; plan_hash: string; decision: string }, [string]>("SELECT id, task_id, plan_version, plan_hash, decision FROM plan_decisions WHERE client_decision_key = ?").get(input.clientDecisionKey);
+      if (duplicate) {
+        const plan = this.getPlan(input.taskId, duplicate.plan_version);
+        const parent = this.getPlan(input.taskId, input.version);
+        if (duplicate.task_id !== input.taskId || duplicate.decision !== "approve_exact_plan" || duplicate.plan_hash !== contentHash || plan?.parentVersion !== input.version || parent?.contentHash !== input.hash) throw new Error("plan_decision_key_conflict");
+        return { plan, decision: { id: duplicate.id, decision: duplicate.decision, replayed: true } };
+      }
+      const previous = this.getPlan(input.taskId);
+      if (!previous || previous.version !== input.version || previous.contentHash !== input.hash || previous.status !== "pending") throw new Error("plan_hash_mismatch");
+      if (this.get(input.taskId)?.state !== "awaiting_plan_approval") throw new Error("plan_not_awaiting_approval");
+      this.validatePlan(input.taskId, input.content);
+      this.applyTransition(input.taskId, { type: "edit_plan" });
+      const plan = this.savePlan({ taskId: input.taskId, content: input.content, createdBy: "user", parentVersion: input.version }, contentHash, evidenceHash);
+      this.applyTransition(input.taskId, { type: "edited_plan_ready" });
+      const decision = this.decidePlan({ taskId: input.taskId, version: plan.version, hash: plan.contentHash,
+        decision: "approve_exact_plan", clientDecisionKey: input.clientDecisionKey, reason: input.reason });
+      return { plan: this.getPlan(input.taskId, plan.version)!, decision };
+    }).immediate();
   }
 
   getPlan(taskId: string, version?: number): PlanVersionRecord | null {
@@ -319,12 +352,10 @@ export class MultiTaskStore {
   }
 
   decidePlan(input: { taskId: string; version: number; hash: string; clientDecisionKey: string; decision: "approve_exact_plan" | "request_replan" | "reject"; reason?: string }): { id: string; decision: string; replayed: boolean } {
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
+    return this.db.transaction(() => {
       const duplicate = this.db.query<{ id: string; task_id: string; plan_hash: string; decision: string }, [string]>("SELECT id, task_id, plan_hash, decision FROM plan_decisions WHERE client_decision_key = ?").get(input.clientDecisionKey);
       if (duplicate) {
         if (duplicate.task_id !== input.taskId || duplicate.plan_hash !== input.hash || duplicate.decision !== input.decision) throw new Error("plan_decision_key_conflict");
-        this.db.exec("COMMIT");
         return { id: duplicate.id, decision: duplicate.decision, replayed: true };
       }
       const plan = this.getPlan(input.taskId, input.version);
@@ -337,12 +368,8 @@ export class MultiTaskStore {
       this.db.query("UPDATE plan_versions SET status = ? WHERE id = ?").run(input.decision === "approve_exact_plan" ? "approved" : input.decision === "reject" ? "rejected" : "superseded", plan.id);
       if (input.decision === "approve_exact_plan") this.db.query("UPDATE multi_tasks SET approved_plan_version = ?, approved_plan_hash = ? WHERE id = ?").run(plan.version, plan.contentHash, input.taskId);
       this.applyTransition(input.taskId, input.decision === "approve_exact_plan" ? { type: "approve_plan" } : input.decision === "reject" ? { type: "cancel", reason: "plan_rejected" } : { type: "request_replan" });
-      this.db.exec("COMMIT");
       return { id, decision: input.decision, replayed: false };
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    }).immediate();
   }
 
   private applyTransition(id: string, event: TaskStateEvent): void {

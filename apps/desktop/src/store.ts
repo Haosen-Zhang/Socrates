@@ -38,8 +38,6 @@ import { resolveActiveWorkspace } from "./workspace/projectSelection";
 import { sidecarFetch, requireOk, streamSseEvents } from "./transport";
 import { decodeExecutionEvent } from "./protocol";
 import { commitApprovalPolicyUpdate } from "./approvalPolicyUi";
-import { deriveRoomTaskConfig } from "./taskSurface";
-import { canCommitMultiTaskLoad } from "./multiTaskSelection";
 import {
   type ActiveAgentRunObserver,
   RetryableAgentRunProjectionError,
@@ -142,12 +140,17 @@ export function mergeSessionMessages(current:SessionMessage[], incoming:SessionM
 }
 
 export type RoomCommandIntent = "respond" | "discuss" | "execute";
+export type RoomOperationTarget = { roomId: string; workspaceId: string; canonicalPath: string };
 export type RoomProjection = Pick<Store,
+  "multiLiveStreams" |
+  "historyGeneration" | "historyRequestVersion" | "historyRevision" | "taskRequestVersion" | "attachmentError" | "attachmentImports" |
   "sessionMessages" | "agentEvents" | "agentStreamText" | "pendingApprovals" | "agentRunning" | "agentError" | "activeAgentRunId" |
   "multiTasks" | "currentMultiTask" | "multiRunning" | "multiError" | "multiStreamAgentId" | "multiStreamText" |
   "messages" | "streaming" | "roomSending" | "chatError" | "tasks" | "activeTaskId" | "failedTurn" | "usageSummaries" |
   "draftAttachments" | "draftWorkspaceRefs" | "workspacePathResults" | "lastStoppedRunId" | "activeRoomCommandId">;
 const emptyRoomProjection = (): RoomProjection => ({
+  multiLiveStreams: {},
+  historyGeneration: 0, historyRequestVersion: 0, historyRevision: 0, taskRequestVersion: 0, attachmentError: null, attachmentImports: 0,
   activeRoomCommandId:null, lastStoppedRunId: null, sessionMessages: [], agentEvents: [], agentStreamText: "", pendingApprovals: [], agentRunning: false, agentError: null, activeAgentRunId: null,
   multiTasks: [], currentMultiTask: null, multiRunning: false, multiError: null, multiStreamAgentId: null, multiStreamText: "",
   messages: [], streaming: null, roomSending: false, chatError: null, tasks: [], activeTaskId: null, failedTurn: null, usageSummaries: [],
@@ -156,6 +159,13 @@ const emptyRoomProjection = (): RoomProjection => ({
 const projectionOf = (state: Store): RoomProjection => Object.fromEntries(Object.keys(emptyRoomProjection()).map(key => [key, state[key as keyof RoomProjection]])) as RoomProjection;
 
 export type Store = {
+  multiLiveStreams: Record<string, { agentId: string; text: string }>;
+  historyGeneration: number;
+  historyRequestVersion: number;
+  historyRevision: number;
+  taskRequestVersion: number;
+  attachmentError: string | null;
+  attachmentImports: number;
   activeRoomCommandId:string | null;
   lastStoppedRunId: string | null;
   roomNavigation: RoomNavigation;
@@ -167,7 +177,7 @@ export type Store = {
   setComposerMentions: (roomId:string,mentions:SelectedMention[]) => void;
   setComposerDraft: (roomId: string, text: string) => void;
   setAppMode: (mode: "chat" | "cowork") => Promise<void>;
-  sendRoomCommand: (content: string, mentions: RoomMention[], intent: RoomCommandIntent, clientRequestId?: string) => Promise<boolean>;
+  sendRoomCommand: (content: string, mentions: RoomMention[], intent: RoomCommandIntent, clientRequestId?: string, roomId?: string) => Promise<boolean>;
   continueAgentRun: () => Promise<void>;
   applyMemberTemplate: (sessionId: string, agentId: string) => Promise<void>;
   retryWorkPackage: (taskId: string, packageId: string, confirmOutcomeUnknown?:boolean) => Promise<void>;
@@ -226,7 +236,7 @@ export type Store = {
   decideAgentApproval: (requestId: string, decision: ApprovalDecision) => Promise<void>;
   cancelAgentRun: () => Promise<void>;
   usageSummaries: UsageSummaryView[];
-  loadCurrentUsage: () => Promise<void>;
+  loadCurrentUsage: (roomId?: string) => Promise<void>;
   multiTasks: MultiTaskView[];
   currentMultiTask: MultiTaskView | null;
   multiRunning: boolean;
@@ -234,8 +244,8 @@ export type Store = {
   /** 当前正在发言的 turn 的实时文本（SSE delta，rAF 批处理）；turn 完成后清空并重载 */
   multiStreamAgentId: string | null;
   multiStreamText: string;
-  loadMultiTasks: () => Promise<void>;
-  loadMultiTask: (id: string) => Promise<void>;
+  loadMultiTasks: (sessionId?: string) => Promise<void>;
+  loadMultiTask: (id: string, sessionId?: string) => Promise<void>;
   sendMultiTask: (prompt: string) => Promise<void>;
   decideMultiPlan: (input: { decision: "approve_exact_plan" | "request_replan" | "reject" | "edit_and_approve"; reason?: string; content?: MultiPlan["content"] }) => Promise<void>;
   decideMultiApproval: (requestId: string, decision: ApprovalDecision) => Promise<void>;
@@ -245,12 +255,13 @@ export type Store = {
   retryMultiTask: () => Promise<void>;
   draftAttachments: AttachmentRecord[];
   workspacePathResults: WorkspacePathResult[];
-  importWorkspaceAttachment: (absolutePath: string) => Promise<void>;
-  importClipboardAttachment: (file: File) => Promise<void>;
+  captureRoomTarget: () => RoomOperationTarget;
+  importWorkspaceAttachment: (absolutePath: string, target?: RoomOperationTarget) => Promise<void>;
+  importClipboardAttachment: (file: File, target?: RoomOperationTarget) => Promise<void>;
   removeDraftAttachment: (id: string) => void;
   searchWorkspacePaths: (query: string) => Promise<void>;
   draftWorkspaceRefs: WorkspaceRef[];
-  addWorkspaceRef: (relativePath: string) => Promise<WorkspaceRef>;
+  addWorkspaceRef: (relativePath: string, target?: RoomOperationTarget) => Promise<WorkspaceRef>;
   removeDraftWorkspaceRef: (id: string) => void;
 
   mcpServers: McpServerRecord[];
@@ -321,7 +332,19 @@ export type Store = {
 const HANDSHAKE_POLL_MS = 250;
 const HANDSHAKE_MAX_POLLS = 40;
 const ACTIVE_WORKSPACE_STORAGE_KEY = "socrates.active-workspace-id";
+const ROOM_NAVIGATION_STORAGE_KEY = "socrates.room-navigation.v1";
 let connectStarted = false; // React StrictMode 下 effect 会跑两次
+
+export function storedRoomNavigation(): RoomNavigation {
+  try {
+    const value=JSON.parse(window.localStorage.getItem(ROOM_NAVIGATION_STORAGE_KEY) ?? "null") as RoomNavigation | null;
+    if(value && ["chat","cowork"].includes(value.mode)) return {mode:value.mode,selected:{chat:typeof value.selected?.chat === "string" ? value.selected.chat : null,cowork:typeof value.selected?.cowork === "string" ? value.selected.cowork : null}};
+  } catch { /* Storage is optional. */ }
+  return initialRoomNavigation();
+}
+function persistRoomNavigation(value: RoomNavigation) {
+  try { window.localStorage.setItem(ROOM_NAVIGATION_STORAGE_KEY,JSON.stringify(value)); } catch { /* Storage is optional. */ }
+}
 
 function storedActiveWorkspaceId(): string | null {
   try {
@@ -343,6 +366,10 @@ function persistActiveWorkspaceId(workspaceId: string | null): void {
 
 
 export const useStore = create<Store>((set, get) => {
+  const roomView = (roomId: string): RoomProjection => {
+    const state = get();
+    return (state.currentSessionId ?? state.currentRoomId) === roomId ? projectionOf(state) : state.roomProjections[roomId] ?? emptyRoomProjection();
+  };
   const updateRoom = (roomId: string, patch: Partial<RoomProjection> | ((view: RoomProjection) => Partial<RoomProjection>)) => {
     set(state => {
       const visible = (state.currentSessionId ?? state.currentRoomId) === roomId;
@@ -352,6 +379,11 @@ export const useStore = create<Store>((set, get) => {
     });
   };
   const currentRun = (roomId: string) => (get().currentSessionId === roomId ? get().activeAgentRunId : get().roomProjections[roomId]?.activeAgentRunId);
+  const taskRoom = (taskId: string) => {
+    const state=get();
+    const task=[state.currentMultiTask,...state.multiTasks,...Object.values(state.roomProjections).flatMap(view=>[view.currentMultiTask,...view.multiTasks])].find(item=>item?.id === taskId);
+    return task?.sessionId ?? state.currentSessionId ?? undefined;
+  };
   const selectProjection = (id: string, source: "session" | "room", mode: "chat" | "cowork") => {
     set(state => {
       const oldId = state.currentSessionId ?? state.currentRoomId;
@@ -360,6 +392,7 @@ export const useStore = create<Store>((set, get) => {
         currentSessionId: source === "session" ? id : null, currentRoomId: source === "room" ? id : null,
         roomNavigation: navigateRoom(state.roomNavigation, mode, id)};
     });
+    persistRoomNavigation(get().roomNavigation);
   };
   const activeAgentObservers = new Map<string, ActiveAgentRunObserver>();
   const hs = () => {
@@ -367,6 +400,20 @@ export const useStore = create<Store>((set, get) => {
     if (!h) throw new Error("sidecar 未连接");
     return h;
   };
+  // A history response may replace only the generation/revision it actually read.
+  // Live events invalidate in-flight reads; rewind establishes a new generation.
+  const refreshMessages = async (roomId: string, generation = roomView(roomId).historyGeneration) => {
+    if (roomView(roomId).historyGeneration !== generation) return;
+    const version = roomView(roomId).historyRequestVersion + 1;
+    const revision = roomView(roomId).historyRevision;
+    updateRoom(roomId, { historyRequestVersion: version });
+    const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${roomId}/messages`));
+    updateRoom(roomId, view => view.historyGeneration === generation && view.historyRequestVersion === version && view.historyRevision === revision
+      ? { sessionMessages, historyRevision: revision + 1 } : {});
+  };
+  const commitMessage = (roomId: string, message: SessionMessage) => updateRoom(roomId, view => ({
+    sessionMessages: mergeSessionMessages(view.sessionMessages, [message]), historyRevision: view.historyRevision + 1,
+  }));
   const cursorStorage = () => {
     try {
       return typeof window === "undefined" ? null : window.localStorage;
@@ -382,42 +429,89 @@ export const useStore = create<Store>((set, get) => {
     set(state=>{const approvalDecisionKeys={...state.approvalDecisionKeys};if(approvalDecisionKeys[requestId]?.key === key) delete approvalDecisionKeys[requestId];return {approvalDecisionKeys};});
   };
 
-  const commandObservers = new Map<string, Promise<void>>();
-  const observeCommand = (roomId:string, commandId:string) => {
-    const existing=commandObservers.get(commandId);if(existing) return existing;
-    const observation=(async()=>{
-      let cursor=0,terminal=false;
-      updateRoom(roomId,{agentRunning:true,activeRoomCommandId:commandId});
-      while(!terminal) {
+  const commandObservers = new Map<string, { roomId: string; generation: number; controller: AbortController; promise: Promise<void> }>();
+  const observeCommand = (roomId: string, commandId: string, taskId?: string) => {
+    const generation = roomView(roomId).historyGeneration;
+    const existing = commandObservers.get(commandId);
+    if (existing?.generation === generation) return existing.promise;
+    existing?.controller.abort();
+    const controller = new AbortController();
+    updateRoom(roomId, { activeRoomCommandId: commandId });
+    const valid = () => !controller.signal.aborted && roomView(roomId).historyGeneration === generation && roomView(roomId).activeRoomCommandId === commandId;
+    const patch = (value: Partial<RoomProjection> | ((view: RoomProjection) => Partial<RoomProjection>)) => { if (valid()) updateRoom(roomId, value); };
+    const refreshTask = () => taskId ? get().loadMultiTask(taskId, roomId) : refreshMessages(roomId, generation);
+    const observation = (async () => {
+      let cursor = 0, terminal = false, unavailable = false;
+      patch({ activeRoomCommandId: commandId, ...(taskId ? { multiRunning: true } : { agentRunning: true }) });
+      if(taskId) await refreshTask().catch(error=>patch({multiError:String(error)}));
+      while (!terminal && valid()) {
         try {
-          const response=await sidecarFetch(hs(),`/room-commands/${commandId}/events?afterSeq=${cursor}`);
-          if(!response.ok || !response.body) await requireOk(response);
-          for await(const raw of streamSseEvents(response)) {
-            const event=raw as {type?:string;seq?:number;agentId?:string;text?:string;error?:string;message?:SessionMessage};
-            if(typeof event.seq === "number" && event.seq<=cursor) continue;
-            if(event.type === "delta" && event.text) updateRoom(roomId,view=>({agentStreamText:view.agentStreamText+event.text}));
-            if(event.type === "turn_started") updateRoom(roomId,{agentStreamText:"",multiStreamAgentId:event.agentId ?? null});
-            if(event.type === "message" && event.message) updateRoom(roomId,view=>({sessionMessages:view.sessionMessages.some(message=>message.id===event.message!.id) ? view.sessionMessages : [...view.sessionMessages,event.message!],agentStreamText:""}));
-            if(["completed","failed","cancelled"].includes(event.type ?? "")) {
-              terminal=true;
-              updateRoom(roomId,{agentRunning:false,activeRoomCommandId:null,multiStreamAgentId:null,agentStreamText:"",agentError:event.type === "completed" ? null : event.error ?? event.type!});
+          const response = await sidecarFetch(hs(), `/room-commands/${commandId}/events?afterSeq=${cursor}`, { signal: controller.signal });
+          if (response.status === 404 || response.status === 410) { terminal=true; unavailable=true; break; }
+          if (!response.ok || !response.body) await requireOk(response);
+          if(taskId) patch({multiError:null});
+          for await (const raw of streamSseEvents(response)) {
+            if (!valid()) break;
+            const event = raw as {type?:string; seq?:number; roomId?:string; taskId?:string; turnId?:string; agentId?:string; text?:string; error?:string; message?:SessionMessage; payload?:{runId?:string; agentId?:string; packageId?:string; event?:RuntimeEvent}; state?:string};
+            if (event.roomId && event.roomId !== roomId || taskId && event.taskId && event.taskId !== taskId) continue;
+            if (typeof event.seq !== "number" || event.seq <= cursor) continue;
+            if (taskId) {
+              const key = event.turnId ?? event.agentId ?? taskId;
+              if (event.type === "turn_started") patch(view => ({ multiStreamAgentId: event.agentId ?? null, multiStreamText: "", multiLiveStreams: {...view.multiLiveStreams, [key]: {agentId: event.agentId ?? "", text:""}} }));
+              if (event.type === "delta" && event.text) patch(view => ({multiStreamAgentId:event.agentId ?? view.multiStreamAgentId, multiStreamText: view.multiStreamText + event.text, multiLiveStreams:{...view.multiLiveStreams,[key]:{agentId:event.agentId ?? view.multiLiveStreams[key]?.agentId ?? "",text:(view.multiLiveStreams[key]?.text ?? "") + event.text}}}));
+              if (event.type === "multi.package_runtime" && event.payload?.event?.type === "text_delta") {
+                const payload=event.payload, runtime=payload.event;
+                const streamId=payload.runId ?? payload.packageId ?? key;
+                if (runtime?.type === "text_delta") patch(view => ({multiLiveStreams:{...view.multiLiveStreams,[streamId]:{agentId:payload.agentId ?? "",text:(view.multiLiveStreams[streamId]?.text ?? "")+runtime.text}}}));
+              } else if (event.type === "multi.package_runtime" && event.payload?.event) {
+                await refreshTask();
+              }
+              if (event.type === "turn_completed") {
+                await refreshTask();
+                patch(view => {const streams={...view.multiLiveStreams};delete streams[key];return {multiLiveStreams:streams,multiStreamText:"",multiStreamAgentId:null};});
+              } else if (["task_state", "plan_ready", "reviewer_verdict", "task_failed", "task_cancelled", "multi.package_started", "multi.package_reviewed", "multi.package_finished", "multi.team_completed", "multi.team_paused", "multi.team_cancelled"].includes(event.type ?? "")) {
+                await refreshTask();
+                if(event.type === "multi.package_finished") patch(view=>{const streams={...view.multiLiveStreams};for(const id of [event.payload?.runId,event.payload?.packageId]) if(id) delete streams[id];return {multiLiveStreams:streams};});
+                if(["multi.team_completed","multi.team_paused","multi.team_cancelled"].includes(event.type ?? "")) patch({multiLiveStreams:{},multiStreamText:"",multiStreamAgentId:null});
+              }
+              // A replayed failure can belong to an earlier attempt, or be a
+              // recoverable reviewer error. Reconcile status when SSE closes.
+            } else {
+              if (event.type === "delta" && event.text) patch(view => ({agentStreamText:view.agentStreamText + event.text}));
+              if (event.type === "turn_started") patch({agentStreamText:"",multiStreamAgentId:event.agentId ?? null});
+              if (event.type === "message" && event.message) {commitMessage(roomId,event.message);patch({agentStreamText:""});}
+              if (["completed","failed","cancelled","revoked"].includes(event.type ?? "")) {
+                terminal=true;
+                patch({agentRunning:false,multiStreamAgentId:null,agentStreamText:"",agentError:event.type === "completed" ? null : event.error ?? event.type!});
+              }
             }
-            if(typeof event.seq === "number") cursor=event.seq;
+            cursor=event.seq;
           }
-          if(!terminal) {
-            const command=await requireOk<{status:string;error?:string}>(await sidecarFetch(hs(),`/room-commands/${commandId}`));
-            if(!["dispatching","running"].includes(command.status)) {terminal=true;updateRoom(roomId,{agentRunning:false,activeRoomCommandId:null,agentStreamText:"",agentError:command.error ?? null});}
+          if (!terminal && valid()) {
+            const command=await requireOk<{status:string;error?:string}>(await sidecarFetch(hs(),`/room-commands/${commandId}`,{signal:controller.signal}));
+            terminal=["completed","failed","cancelled","revoked"].includes(command.status);
+            if (taskId) await refreshTask();
           }
-        } catch(error) { updateRoom(roomId,{agentError:error instanceof Error ? error.message : String(error)}); }
-        if(!terminal) await new Promise(resolve=>setTimeout(resolve,500));
+        } catch (error) {
+          patch(taskId ? {multiError:error instanceof Error ? error.message : String(error)} : {agentError:error instanceof Error ? error.message : String(error)});
+        }
+        if (!terminal && valid()) await new Promise(resolve=>setTimeout(resolve,500));
       }
-      const sessionMessages=await requireOk<SessionMessage[]>(await sidecarFetch(hs(),`/sessions/${roomId}/messages`));
-      updateRoom(roomId,view=>({sessionMessages:mergeSessionMessages(view.sessionMessages,sessionMessages)}));
+      if (!valid()) return;
+      if(unavailable) await Promise.all([refreshMessages(roomId,generation),get().loadMultiTasks(roomId)]);
+      else await refreshTask();
+      patch({activeRoomCommandId:null,agentRunning:false,...(taskId ? {multiRunning:false,multiStreamAgentId:null,multiStreamText:"",multiLiveStreams:{}} : {})});
       await get().loadSessions();
-    })();
-    commandObservers.set(commandId,observation);
-    void observation.finally(()=>commandObservers.delete(commandId));
+    })().catch(error => patch(taskId ? {multiError:String(error)} : {agentError:String(error)}));
+    const observer={roomId,generation,controller,promise:observation};
+    commandObservers.set(commandId,observer);
+    void observation.then(()=>{if(commandObservers.get(commandId) === observer) commandObservers.delete(commandId);});
     return observation;
+  };
+  const restoreTeamObserver = async (roomId: string, taskId: string, generation: number) => {
+    const commands=await requireOk<Array<{commandId:string;kind:string;taskId?:string}>>(await sidecarFetch(hs(),`/room-commands/rooms/${roomId}`));
+    const command=commands.find(item=>item.kind === "team" && item.taskId === taskId);
+    if(command && roomView(roomId).historyGeneration === generation) void observeCommand(roomId,command.commandId,taskId);
   };
 
   /** POST 到当前房间的流式端点并消费 SSE，把事件映射进 store。
@@ -517,72 +611,91 @@ export const useStore = create<Store>((set, get) => {
   };
 
   return {
-    activeRoomCommandId:null, lastStoppedRunId:null, roomNavigation: initialRoomNavigation(), pendingRoomRequests:{}, approvalDecisionKeys:{}, roomProjections: {}, composerDrafts: {}, composerMentions: {},
+    multiLiveStreams: {},
+    historyGeneration: 0, historyRequestVersion: 0, historyRevision: 0, taskRequestVersion: 0, attachmentError: null, attachmentImports: 0,
+    activeRoomCommandId:null, lastStoppedRunId:null, roomNavigation: storedRoomNavigation(), pendingRoomRequests:{}, approvalDecisionKeys:{}, roomProjections: {}, composerDrafts: {}, composerMentions: {},
     setComposerMentions: (roomId, mentions) => set(state => ({composerMentions:{...state.composerMentions,[roomId]:mentions}})),
     setComposerDraft: (roomId, text) => set(state => ({composerDrafts: {...state.composerDrafts, [roomId]: text}})),
     setAppMode: async mode => {
       const nav = switchRoomMode(get().roomNavigation, mode);
       set({roomNavigation:nav});
-      const id = nav.selected[mode];
-      if (id && get().sessions.some(session => session.id === id)) await get().selectAgentSession(id);
-      else if (id && get().rooms.some(room => room.id === id)) await get().selectRoom(id);
+      const sessions=get().sessions.filter(session=>session.kind === mode && !session.archived);
+      const rooms=mode === "chat" ? get().rooms.filter(room=>!room.archived && !get().sessions.some(session=>session.id === room.id || session.legacyRoomId === room.id)) : [];
+      const previous=nav.selected[mode];
+      const selectedSession=sessions.find(session=>session.id === previous || session.legacyRoomId === previous);
+      const id=selectedSession?.id ?? rooms.find(room=>room.id === previous)?.id ?? sessions[0]?.id ?? rooms[0]?.id;
+      if (id && sessions.some(session => session.id === id)) await get().selectAgentSession(id);
+      else if (id) await get().selectRoom(id);
       else set(state => {
         const oldId = state.currentSessionId ?? state.currentRoomId;
         return {...emptyRoomProjection(), currentSessionId:null, currentRoomId:null, roomProjections:oldId ? {...state.roomProjections,[oldId]:projectionOf(state)} : state.roomProjections};
       });
+      persistRoomNavigation(get().roomNavigation);
     },
     applyMemberTemplate: async (sessionId, agentId) => {
       await requireOk(await sidecarFetch(hs(), `/sessions/${sessionId}/agents/${agentId}/template`, {method:"PUT"}));
       await get().loadSessions();
     },
     assignWorkPackage: async (taskId, packageId, executorAgentId) => {
+      const roomId=taskRoom(taskId);
       await requireOk(await sidecarFetch(hs(), `/multi/tasks/${taskId}/packages/${encodeURIComponent(packageId)}`, {method:"PATCH",body:JSON.stringify({executorAgentId})}));
-      await get().loadMultiTask(taskId);
+      await get().loadMultiTask(taskId,roomId);
     },
     retryWorkPackage: async (taskId, packageId, confirmOutcomeUnknown) => {
+      const roomId=taskRoom(taskId);
+      const generation=roomId ? roomView(roomId).historyGeneration : 0;
       await requireOk(await sidecarFetch(hs(), `/multi/tasks/${taskId}/packages/${encodeURIComponent(packageId)}/retry`, {method:"POST",body:JSON.stringify(confirmOutcomeUnknown === true ? {confirmOutcomeUnknown:true} : {})}));
-      await get().loadMultiTask(taskId);
+      if(roomId && roomView(roomId).historyGeneration === generation) {
+        await get().loadMultiTask(taskId,roomId);
+        await restoreTeamObserver(roomId,taskId,generation);
+      }
     },
     continueAgentRun: async () => {
       const sessionId = get().currentSessionId;
       const lastRunId = get().lastStoppedRunId;
       if (!sessionId || !lastRunId || get().agentRunning) return;
+      const generation=roomView(sessionId).historyGeneration;
       updateRoom(sessionId,{agentRunning:true,agentError:null});
       try {
         const started = await requireOk<{runId:string}>(await sidecarFetch(hs(), `/agent/runs/${lastRunId}/continue`, {method:"POST"}));
+        if(roomView(sessionId).historyGeneration !== generation) return;
         updateRoom(sessionId,{agentRunning:true,activeAgentRunId:started.runId,lastStoppedRunId:null,agentError:null,agentStreamText:""});
         const storage=cursorStorage();if(storage) writeActiveAgentRunCursor(storage,{sessionId,runId:started.runId,afterSeq:0});
         void get().resumeAgentRun(sessionId,started.runId);
-      } catch(error) {updateRoom(sessionId,{agentRunning:false,agentError:error instanceof Error ? error.message : String(error)});}
+      } catch(error) {if(roomView(sessionId).historyGeneration === generation) updateRoom(sessionId,{agentRunning:false,agentError:error instanceof Error ? error.message : String(error)});}
     },
-    sendRoomCommand: async (content, mentions, intent, clientRequestId) => {
-      const roomId = get().currentSessionId;
-      if (!roomId || get().agentRunning || get().multiRunning) return false;
-      const attachments = get().draftAttachments.map(item=>item.id);
-      const workspaceRefs = get().draftWorkspaceRefs.map(item=>item.id);
+    sendRoomCommand: async (content, mentions, intent, clientRequestId, targetRoomId) => {
+      const roomId = targetRoomId ?? get().currentSessionId;
+      if (!roomId) return false;
+      const view = roomView(roomId);
+      if (view.agentRunning || view.multiRunning || get().sessions.find(item => item.id === roomId)?.archived) return false;
+      const generation = view.historyGeneration;
+      const attachments = view.draftAttachments.map(item=>item.id);
+      const workspaceRefs = view.draftWorkspaceRefs.map(item=>item.id);
       const fingerprint=JSON.stringify({content,mentions,intent,attachments,workspaceRefs});
       const pending=get().pendingRoomRequests[roomId];
       clientRequestId ??= pending?.fingerprint === fingerprint ? pending.clientRequestId : crypto.randomUUID();
       set(state=>({pendingRoomRequests:{...state.pendingRoomRequests,[roomId]:{fingerprint,clientRequestId:clientRequestId!}}}));
-      updateRoom(roomId,{agentRunning:true,lastStoppedRunId:null,agentError:null,agentEvents:[],agentStreamText:"",multiStreamAgentId:mentions.find(mention=>mention.type==="agent")?.type === "agent" ? (mentions.find(mention=>mention.type==="agent") as {agentId:string}).agentId : get().sessions.find(session=>session.id===roomId)?.primaryAgentId ?? null});
+      updateRoom(roomId,{activeRoomCommandId:`pending:${clientRequestId}`,agentRunning:true,lastStoppedRunId:null,agentError:null,agentEvents:[],agentStreamText:"",historyRevision:view.historyRevision+1,taskRequestVersion:view.taskRequestVersion+1,multiStreamAgentId:mentions.find(mention=>mention.type==="agent")?.type === "agent" ? (mentions.find(mention=>mention.type==="agent") as {agentId:string}).agentId : get().sessions.find(session=>session.id===roomId)?.primaryAgentId ?? null});
       try {
         const started = await requireOk<{kind:"direct"|"discussion"|"team";runId?:string;taskId?:string;commandId:string}>(await sidecarFetch(hs(),"/room-commands",{method:"POST",body:JSON.stringify({roomId,clientRequestId,content,mentions,intent,attachmentIds:attachments,workspaceRefIds:workspaceRefs})}));
+        if (roomView(roomId).historyGeneration !== generation) return false;
         set(state=>{const pendingRoomRequests={...state.pendingRoomRequests};delete pendingRoomRequests[roomId];return {pendingRoomRequests};});
-        updateRoom(roomId,{activeRoomCommandId:started.commandId});
+        updateRoom(roomId, current => ({activeRoomCommandId:started.commandId, draftAttachments: current.draftAttachments.filter(item => !attachments.includes(item.id)), draftWorkspaceRefs: current.draftWorkspaceRefs.filter(item => !workspaceRefs.includes(item.id))}));
         if (started.kind === "direct" && started.runId) {
           updateRoom(roomId,{activeAgentRunId:started.runId});
           const storage=cursorStorage(); if(storage) writeActiveAgentRunCursor(storage,{sessionId:roomId,runId:started.runId,afterSeq:0});
           void get().resumeAgentRun(roomId, started.runId, 0);
         } else if (started.kind === "team" && started.taskId) {
           updateRoom(roomId,{agentRunning:false,multiRunning:true});
-          void get().loadMultiTask(started.taskId).catch(error=>updateRoom(roomId,{multiError:error instanceof Error ? error.message : String(error)}));
+          void observeCommand(roomId,started.commandId,started.taskId);
         } else {
           void observeCommand(roomId,started.commandId);
         }
-        void sidecarFetch(hs(),`/sessions/${roomId}/messages`).then(requireOk<SessionMessage[]>).then(sessionMessages=>updateRoom(roomId,{sessionMessages})).catch(()=>{});
+        void refreshMessages(roomId, generation).catch(()=>{});
         return true;
       } catch(error) {
-        updateRoom(roomId,{agentRunning:false,agentError:error instanceof Error ? error.message : String(error)});
+        if (roomView(roomId).historyGeneration === generation) updateRoom(roomId,{activeRoomCommandId:null,agentRunning:false,agentError:error instanceof Error ? error.message : String(error)});
         return false;
       }
     },
@@ -671,8 +784,7 @@ export const useStore = create<Store>((set, get) => {
               );
               set({ agentCapabilities: capabilities });
               await Promise.all([get().loadProviders(), get().loadAgents(), get().loadRooms(), get().loadWorkspaces(), get().loadSessions(), get().loadMcpServers()]);
-              const first = get().rooms[0];
-              if (first) void get().selectRoom(first.id);
+              await get().setAppMode(get().roomNavigation.mode);
               return;
             }
           } catch {
@@ -789,7 +901,7 @@ export const useStore = create<Store>((set, get) => {
       }));
       await get().loadSessions();
       if (archived && get().currentSessionId === id) {
-        set({ currentSessionId: null, sessionMessages: [], agentEvents: [], agentStreamText: "", pendingApprovals: [] });
+        await get().setAppMode(get().roomNavigation.mode);
       }
     },
     removeSession: async (id, workspaceFiles) => {
@@ -803,21 +915,30 @@ export const useStore = create<Store>((set, get) => {
     rewindSessionTo: async (messageId) => {
       const sessionId = get().currentSessionId;
       if (!sessionId || get().agentRunning || get().multiRunning) return;
-      await requireOk(await sidecarFetch(hs(), `/sessions/${sessionId}/rewind`, {
-        method: "POST",
-        body: JSON.stringify({ messageId }),
-      }));
-      await get().selectAgentSession(sessionId);
+      const generation=roomView(sessionId).historyGeneration + 1;
+      updateRoom(sessionId,{historyGeneration:generation,activeAgentRunId:null,activeRoomCommandId:null,lastStoppedRunId:null,agentError:null,multiError:null,pendingApprovals:[],agentEvents:[],agentStreamText:"",multiStreamText:"",multiLiveStreams:{}});
+      for (const observer of activeAgentObservers.values()) if(observer.sessionId === sessionId) observer.controller.abort();
+      for (const observer of commandObservers.values()) if(observer.roomId === sessionId) observer.controller.abort();
+      const storage=cursorStorage();
+      const saved=storage ? readActiveAgentRunCursor(storage) : null;
+      if(storage && saved?.sessionId === sessionId) clearActiveAgentRunCursor(storage,saved.runId);
+      set(state=>{const requests={...state.pendingRoomRequests};delete requests[sessionId];return {pendingRoomRequests:requests};});
+      await requireOk(await sidecarFetch(hs(), `/sessions/${sessionId}/rewind`, {method:"POST",body:JSON.stringify({messageId})}));
+      if(roomView(sessionId).historyGeneration !== generation) return;
+      await refreshMessages(sessionId,generation);
+      await get().loadMultiTasks(sessionId);
     },
     selectAgentSession: async (id) => {
       const session=get().sessions.find(item=>item.id === id);
       selectProjection(id,"session",session?.kind === "chat" ? "chat" : "cowork");
-      const sessionMessages=await requireOk<SessionMessage[]>(await sidecarFetch(hs(),`/sessions/${id}/messages`));
-      updateRoom(id,{sessionMessages});
-      if(get().currentSessionId !== id) return;
-      await get().loadCurrentUsage();
-      await get().loadMultiTasks();
+      const generation=roomView(id).historyGeneration;
+      await refreshMessages(id,generation);
+      if(roomView(id).historyGeneration !== generation) return;
+      await Promise.all([get().loadCurrentUsage(id),get().loadMultiTasks(id)]);
+      if(roomView(id).historyGeneration !== generation) return;
+      const revision=roomView(id).historyRevision;
       const commands=await requireOk<Array<{commandId:string;kind:string;status:string;runId?:string;taskId?:string;error?:string}>>(await sidecarFetch(hs(),`/room-commands/rooms/${id}`));
+      if(roomView(id).historyGeneration !== generation || roomView(id).historyRevision !== revision) return;
       const latest=commands[0];
       if(latest?.kind === "direct" && latest.runId) {
         if(["running","dispatching","preparing","awaiting_approval"].includes(latest.status)) {
@@ -832,17 +953,25 @@ export const useStore = create<Store>((set, get) => {
         const storage=cursorStorage();if(storage) clearActiveAgentRunCursor(storage,latest.runId);
         return;
       }
+      if(latest?.kind === "team" && latest.taskId && !["completed","failed","cancelled","revoked"].includes(latest.status)) {void observeCommand(id,latest.commandId,latest.taskId);return;}
       if(latest?.kind === "discussion" && ["running","dispatching"].includes(latest.status)) {void observeCommand(id,latest.commandId);return;}
       const storage=cursorStorage();
       const saved=storage ? readActiveAgentRunCursor(storage) : null;
       if(saved?.sessionId === id && !activeAgentObservers.has(saved.runId)) {
-        updateRoom(id,{activeAgentRunId:saved.runId,agentRunning:true,agentEvents:[],agentStreamText:""});
-        void get().resumeAgentRun(id,saved.runId,0);
+        try {
+          const run=await requireOk<AgentRunStatusView>(await sidecarFetch(hs(),`/agent/runs/${saved.runId}`));
+          if(roomView(id).historyGeneration !== generation) return;
+          if(!["running","preparing","awaiting_approval"].includes(run.status)) {if(storage) clearActiveAgentRunCursor(storage,saved.runId);return;}
+          updateRoom(id,{activeAgentRunId:saved.runId,agentRunning:true,agentEvents:[],agentStreamText:""});
+          void get().resumeAgentRun(id,saved.runId,0);
+        } catch {if(storage) clearActiveAgentRunCursor(storage,saved.runId);}
       }
     },
     sendAgentPrompt: async prompt => get().sendRoomCommand(prompt,[],"execute"),
     resumeAgentRun: async (sessionId, runId, afterSeq = 0) => {
-      const set: (patch: Partial<RoomProjection> | ((view: RoomProjection) => Partial<RoomProjection>)) => void = patch => updateRoom(sessionId, patch);
+      const generation = roomView(sessionId).historyGeneration;
+      const valid = () => roomView(sessionId).historyGeneration === generation;
+      const set: (patch: Partial<RoomProjection> | ((view: RoomProjection) => Partial<RoomProjection>)) => void = patch => { if (valid()) updateRoom(sessionId, patch); };
       const existing = activeAgentObservers.get(runId);
       if (existing) return existing.promise;
       const controller = new AbortController();
@@ -878,7 +1007,7 @@ export const useStore = create<Store>((set, get) => {
                 yield event;
               }
             })(),
-            shouldContinue: () => !controller.signal.aborted && currentRun(sessionId) === runId,
+            shouldContinue: () => valid() && !controller.signal.aborted && currentRun(sessionId) === runId,
             onEvent: async (executionEvent) => {
               if (controller.signal.aborted || currentRun(sessionId) !== runId) return;
               const event = executionEventToRuntimeEvent(executionEvent);
@@ -928,6 +1057,7 @@ export const useStore = create<Store>((set, get) => {
           if (!result.terminal || currentRun(sessionId) !== runId) return false;
         } catch (error) {
           runError = error instanceof Error ? error.message : String(error);
+          if (!valid() || controller.signal.aborted) return false;
           if (currentRun(sessionId) === runId) set({ agentError: runError });
           const run = await pollAgentRunUntilTerminal(
             async () => requireOk<AgentRunStatusView>(
@@ -953,19 +1083,11 @@ export const useStore = create<Store>((set, get) => {
             agentError: runError,
             ...(!runError ? {lastStoppedRunId:null} : {}),
           });
-          if (!runError) {
-            set({ draftAttachments: [], draftWorkspaceRefs: [], workspacePathResults: [] });
-          }
         }
-        const refreshMessages = async () => {
-          const sessionMessages = await requireOk<SessionMessage[]>(
-            await sidecarFetch(hs(), `/sessions/${sessionId}/messages`),
-          );
-          set(view=>({sessionMessages:mergeSessionMessages(view.sessionMessages,sessionMessages)}));
-        };
+        if (!valid()) return false;
         await Promise.allSettled([
-          refreshMessages(),
-          get().loadCurrentUsage(),
+          refreshMessages(sessionId,generation),
+          get().loadCurrentUsage(sessionId),
           get().loadSessions(),
         ]);
         return runError === null;
@@ -978,185 +1100,137 @@ export const useStore = create<Store>((set, get) => {
       return observation;
     },
     decideAgentApproval: async (requestId, decision) => {
+      const roomId=get().currentSessionId;
       await submitApprovalDecision("agent",requestId,decision);
-      set((state) => ({ pendingApprovals: state.pendingApprovals.filter((approval) => approval.id !== requestId) }));
+      if(roomId) updateRoom(roomId,state => ({ pendingApprovals: state.pendingApprovals.filter((approval) => approval.id !== requestId) }));
     },
     cancelAgentRun: async () => {
       const {activeAgentRunId:runId,activeRoomCommandId:commandId}=get();
-      if(commandId) await requireOk(await sidecarFetch(hs(),`/room-commands/${commandId}/cancel`,{method:"POST"}));
+      if(commandId && !commandId.startsWith("pending:")) await requireOk(await sidecarFetch(hs(),`/room-commands/${commandId}/cancel`,{method:"POST"}));
       else if(runId) await requireOk(await sidecarFetch(hs(),`/agent/runs/${runId}/cancel`,{method:"POST"}));
     },
-    loadCurrentUsage: async () => {
+    loadCurrentUsage: async (targetRoomId) => {
       const state = get();
-      const path = state.currentSessionId ? `/sessions/${state.currentSessionId}/usage` : state.currentRoomId ? `/rooms/${state.currentRoomId}/usage` : null;
+      const roomId=targetRoomId ?? state.currentSessionId ?? state.currentRoomId;
+      const isSession=targetRoomId ? state.sessions.some(item=>item.id === targetRoomId) : Boolean(state.currentSessionId);
+      const path = isSession && roomId ? `/sessions/${roomId}/usage` : roomId ? `/rooms/${roomId}/usage` : null;
       if (!path) { set({ usageSummaries: [] }); return; }
-      const roomId=state.currentSessionId ?? state.currentRoomId;
       const usageSummaries=await requireOk<UsageSummaryView[]>(await sidecarFetch(hs(), path));
       if(roomId) updateRoom(roomId,{usageSummaries});
     },
-    loadMultiTasks: async () => {
-      const sessionId = get().currentSessionId;
-      if (!sessionId) return;
-      const summaries = await requireOk<Array<Omit<MultiTaskView, "plan" | "turns" | "pendingApprovals">>>(await sidecarFetch(hs(), `/multi/sessions/${sessionId}/tasks`));
-      updateRoom(sessionId,{ multiTasks: summaries as MultiTaskView[] });
-      if (get().currentSessionId === sessionId && summaries[0]) await get().loadMultiTask(summaries[0].id);
+    loadMultiTasks: async (targetSessionId) => {
+      const sessionId=targetSessionId ?? get().currentSessionId;
+      if(!sessionId) return;
+      const generation=roomView(sessionId).historyGeneration;
+      const version=roomView(sessionId).taskRequestVersion + 1;
+      updateRoom(sessionId,{taskRequestVersion:version});
+      const summaries=await requireOk<MultiTaskView[]>(await sidecarFetch(hs(),`/multi/sessions/${sessionId}/tasks`));
+      if(roomView(sessionId).historyGeneration !== generation || roomView(sessionId).taskRequestVersion !== version) return;
+      updateRoom(sessionId,{multiTasks:summaries,...(!summaries.length ? {currentMultiTask:null,multiRunning:false} : {})});
+      if(summaries[0]) await get().loadMultiTask(summaries[0].id,sessionId);
     },
-    loadMultiTask: async (id) => {
-      const currentMultiTask = await requireOk<MultiTaskView>(await sidecarFetch(hs(), `/multi/tasks/${id}`));
-      if (!canCommitMultiTaskLoad(get().currentSessionId, currentMultiTask.sessionId)) return;
-      const sessionMessages = await requireOk<SessionMessage[]>(await sidecarFetch(hs(), `/sessions/${currentMultiTask.sessionId}/messages`));
-      if (!canCommitMultiTaskLoad(get().currentSessionId, currentMultiTask.sessionId)) return;
-      set({
-        currentMultiTask,
-        sessionMessages,
-        pendingApprovals: currentMultiTask.pendingApprovals,
-        usageSummaries: currentMultiTask.usageSummaries,
-        multiRunning: !["awaiting_plan_approval", "failed", "cancelled", "completed", "paused"].includes(currentMultiTask.state),
+    loadMultiTask: async (id, targetSessionId) => {
+      const state=get();
+      const sessionId=targetSessionId ?? taskRoom(id) ?? state.currentSessionId;
+      if(!sessionId) return;
+      const generation=roomView(sessionId).historyGeneration;
+      const version=roomView(sessionId).taskRequestVersion + 1;
+      updateRoom(sessionId,{taskRequestVersion:version});
+      const currentMultiTask=await requireOk<MultiTaskView>(await sidecarFetch(hs(),`/multi/tasks/${id}`));
+      if(currentMultiTask.sessionId !== sessionId || roomView(sessionId).historyGeneration !== generation || roomView(sessionId).taskRequestVersion !== version) return;
+      updateRoom(sessionId,{
+        currentMultiTask, pendingApprovals:currentMultiTask.pendingApprovals ?? [], usageSummaries:currentMultiTask.usageSummaries ?? [],
+        multiRunning:!["awaiting_plan_approval","failed","cancelled","completed","paused"].includes(currentMultiTask.state),
       });
+      await refreshMessages(sessionId,generation);
     },
-    sendMultiTask: async (prompt) => {
-      const state = get();
-      const sessionId = state.currentSessionId;
-      if (!sessionId || get().multiRunning) return;
-      const session = state.sessions.find((item) => item.id === sessionId);
-      if (!session) return;
-      set({ multiRunning: true, multiError: null, currentMultiTask: null, multiStreamAgentId: null, multiStreamText: "" });
-      // 讨论/综合阶段 turn 级 delta 是主实时路径；turn 边界事件驱动一次精准重载
-      let pendingText = "";
-      let rafHandle: number | null = null;
-      const flushText = () => {
-        rafHandle = null;
-        if (!pendingText) return;
-        const chunk = pendingText;
-        pendingText = "";
-        set((state) => ({ multiStreamText: state.multiStreamText + chunk }));
-      };
-      const scheduleFlush = () => {
-        if (rafHandle === null) rafHandle = requestAnimationFrame(flushText);
-      };
-      const flushNow = () => {
-        if (rafHandle !== null) { cancelAnimationFrame(rafHandle); rafHandle = null; }
-        flushText();
-      };
-      try {
-        const config = deriveRoomTaskConfig(session);
-        const response = await sidecarFetch(hs(), `/multi/sessions/${sessionId}/tasks`, { method: "POST", body: JSON.stringify({ prompt, config }) });
-        if (!response.ok || !response.body) await requireOk(response);
-        const reader = response.body!.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let taskId: string | null = null;
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const blocks = buffer.split("\n\n");
-          buffer = blocks.pop() ?? "";
-          for (const block of blocks) {
-            const data = block.split("\n").find((line) => line.startsWith("data:"))?.slice(5).trim();
-            if (!data) continue;
-            const event = JSON.parse(data) as { type: string; taskId: string; agentId?: string; text?: string; message?: string };
-            taskId = event.taskId;
-            if (event.type === "delta" && typeof event.text === "string") {
-              if (event.agentId && event.agentId !== get().multiStreamAgentId) {
-                flushNow();
-                set({ multiStreamAgentId: event.agentId, multiStreamText: "" });
-              }
-              pendingText += event.text;
-              scheduleFlush();
-            } else if (event.type === "turn_started") {
-              flushNow();
-              set({ multiStreamAgentId: event.agentId ?? null, multiStreamText: "" });
-            } else if (event.type === "turn_completed") {
-              flushNow();
-              set({ multiStreamAgentId: null, multiStreamText: "" });
-              await get().loadMultiTask(event.taskId); // 内容已落库，精准重载
-            } else if (event.type === "task_state") {
-              await get().loadMultiTask(event.taskId);
-            } else if (event.type === "task_failed" || event.type === "task_cancelled") {
-              flushNow();
-              set({ multiStreamAgentId: null, multiStreamText: "" });
-              if (event.type === "task_failed") set({ multiError: event.message ?? "multi_task_failed" });
-            }
-          }
-        }
-        await get().loadMultiTasks();
-        if (taskId) await get().loadMultiTask(taskId);
-      } catch (error) { set({ multiError: error instanceof Error ? error.message : String(error) }); }
-      finally { flushNow(); set({ multiRunning: false, multiStreamAgentId: null, multiStreamText: "" }); }
-    },
+    sendMultiTask: async (prompt) => { await get().sendRoomCommand(prompt,[],"execute"); },
     decideMultiPlan: async (input) => {
       const task = get().currentMultiTask;
       if (!task?.plan) throw new Error("plan_not_ready");
+      const generation=roomView(task.sessionId).historyGeneration;
       await requireOk(await sidecarFetch(hs(), `/multi/tasks/${task.id}/plan-decisions`, {
         method: "POST", body: JSON.stringify({ version: task.plan.version, hash: task.plan.contentHash, clientDecisionKey: crypto.randomUUID(), ...input }),
       }));
-      await get().loadMultiTask(task.id);
+      if(roomView(task.sessionId).historyGeneration !== generation) return;
+      await get().loadMultiTask(task.id,task.sessionId);
+      await restoreTeamObserver(task.sessionId,task.id,generation);
     },
     decideMultiApproval: async (requestId, decision) => {
       const task = get().currentMultiTask;
       try {
         await submitApprovalDecision("multi",requestId,decision);
-        if (task) await get().loadMultiTask(task.id);
+        if (task) await get().loadMultiTask(task.id,task.sessionId);
       } catch(error) { if(task) updateRoom(task.sessionId,{multiError:error instanceof Error ? error.message : String(error)}); }
     },
     cancelMultiTask: async () => {
-      const id = get().currentMultiTask?.id;
-      if (!id) return;
-      await requireOk(await sidecarFetch(hs(), `/multi/tasks/${id}/cancel`, { method: "POST" }));
-      await get().loadMultiTask(id);
+      const task = get().currentMultiTask;
+      if (!task) return;
+      await requireOk(await sidecarFetch(hs(), `/multi/tasks/${task.id}/cancel`, { method: "POST" }));
+      await get().loadMultiTask(task.id,task.sessionId);
     },
     pauseMultiTask: async () => {
-      const id = get().currentMultiTask?.id;
-      if (!id) return;
-      await requireOk(await sidecarFetch(hs(), `/multi/tasks/${id}/pause`, { method: "POST" }));
-      await get().loadMultiTask(id);
+      const task = get().currentMultiTask;
+      if (!task) return;
+      await requireOk(await sidecarFetch(hs(), `/multi/tasks/${task.id}/pause`, { method: "POST" }));
+      await get().loadMultiTask(task.id,task.sessionId);
     },
     resumeMultiTask: async () => {
-      const id = get().currentMultiTask?.id;
-      if (!id) return;
-      set({ multiRunning: true, multiError: null });
-      try {
-        await requireOk(await sidecarFetch(hs(), `/multi/tasks/${id}/resume`, { method: "POST" }));
-      } catch (error) { set({ multiError: error instanceof Error ? error.message : String(error) }); }
-      finally { set({ multiRunning: false }); await get().loadMultiTask(id); }
+      const task=get().currentMultiTask;
+      if(!task) return;
+      const generation=roomView(task.sessionId).historyGeneration;
+      updateRoom(task.sessionId,{multiRunning:true,multiError:null});
+      try {await requireOk(await sidecarFetch(hs(),`/multi/tasks/${task.id}/resume`,{method:"POST"}));await restoreTeamObserver(task.sessionId,task.id,generation);}
+      catch(error) {if(roomView(task.sessionId).historyGeneration === generation) updateRoom(task.sessionId,{multiRunning:false,multiError:error instanceof Error ? error.message : String(error)});}
+      finally {if(roomView(task.sessionId).historyGeneration === generation) await get().loadMultiTask(task.id,task.sessionId).catch(error=>{if(roomView(task.sessionId).historyGeneration === generation) updateRoom(task.sessionId,{multiRunning:false,multiError:String(error)});});}
     },
     retryMultiTask: async () => {
-      const id = get().currentMultiTask?.id;
-      if (!id) return;
-      set({ multiError: null });
-      try { await requireOk(await sidecarFetch(hs(), `/multi/tasks/${id}/retry`, { method: "POST", body: JSON.stringify({ confirmOutcomeUnknown: true }) })); }
-      catch (error) { set({ multiError: error instanceof Error ? error.message : String(error) }); }
-      await get().loadMultiTask(id);
+      const task=get().currentMultiTask;
+      if(!task) return;
+      const generation=roomView(task.sessionId).historyGeneration;
+      updateRoom(task.sessionId,{multiError:null});
+      try {await requireOk(await sidecarFetch(hs(),`/multi/tasks/${task.id}/retry`,{method:"POST",body:JSON.stringify({confirmOutcomeUnknown:true})}));await restoreTeamObserver(task.sessionId,task.id,generation);}
+      catch(error) {if(roomView(task.sessionId).historyGeneration === generation) updateRoom(task.sessionId,{multiError:error instanceof Error ? error.message : String(error)});}
+      if(roomView(task.sessionId).historyGeneration === generation) await get().loadMultiTask(task.id,task.sessionId).catch(error=>{if(roomView(task.sessionId).historyGeneration === generation) updateRoom(task.sessionId,{multiError:String(error)});});
     },
-    importWorkspaceAttachment: async (absolutePath) => {
-      const state = get();
-      if (state.draftAttachments.length >= 10) throw new Error("attachment_count_exceeded");
-      const boundId = state.sessions.find((session) => session.id === state.currentSessionId)?.workspaceId;
-      const workspace = (boundId ? state.workspaces.find((item) => item.id === boundId) : null) ?? state.activeWorkspace;
-      if (!workspace) throw new Error("workspace_required");
-      const relativePath = relativeWorkspacePath(workspace.canonicalPath, absolutePath);
-      const attachment = await requireOk<AttachmentRecord>(await sidecarFetch(hs(), "/content/attachments/import", {
-        method: "POST",
-        body: JSON.stringify({ workspaceId: workspace.id, relativePath }),
-      }));
-      if (state.draftAttachments.reduce((total, item) => total + item.byteSize, 0) + attachment.byteSize > 50 * 1024 * 1024) throw new Error("attachment_batch_too_large");
-      set((state) => ({ draftAttachments: state.draftAttachments.some((item) => item.id === attachment.id) ? state.draftAttachments : [...state.draftAttachments, attachment] }));
+    captureRoomTarget: () => {
+      const state=get(), roomId=state.currentSessionId ?? state.currentRoomId;
+      if(!roomId) throw new Error("room_required");
+      const session=state.sessions.find(item=>item.id === roomId);
+      if(session?.kind === "chat") throw new Error("workspace_required");
+      const workspace=state.workspaces.find(item=>item.id === session?.workspaceId);
+      if(!workspace) throw new Error("workspace_required");
+      return {roomId,workspaceId:workspace.id,canonicalPath:workspace.canonicalPath};
     },
-    importClipboardAttachment: async (file) => {
-      const state = get();
-      if (state.draftAttachments.length >= 10) throw new Error("attachment_count_exceeded");
-      if (state.draftAttachments.reduce((total, item) => total + item.byteSize, 0) + file.size > 50 * 1024 * 1024) throw new Error("attachment_batch_too_large");
-      const boundId = state.sessions.find((session) => session.id === state.currentSessionId)?.workspaceId;
-      const workspace = (boundId ? state.workspaces.find((item) => item.id === boundId) : null) ?? state.activeWorkspace;
-      if (!workspace) throw new Error("workspace_required");
-      const filename = file.name || `clipboard-${Date.now()}.${file.type === "image/png" ? "png" : "bin"}`;
-      const attachment = await requireOk<AttachmentRecord>(await sidecarFetch(
-        hs(),
-        `/content/attachments/upload?workspaceId=${encodeURIComponent(workspace.id)}&filename=${encodeURIComponent(filename)}`,
-        { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file },
-      ));
-      set((current) => ({ draftAttachments: current.draftAttachments.some((item) => item.id === attachment.id) ? current.draftAttachments : [...current.draftAttachments, attachment] }));
+    importWorkspaceAttachment: async (absolutePath, target = get().captureRoomTarget()) => {
+      updateRoom(target.roomId,view=>({attachmentError:null,attachmentImports:view.attachmentImports+1}));
+      try {
+        if(roomView(target.roomId).draftAttachments.length >= 10) throw new Error("attachment_count_exceeded");
+        const relativePath=relativeWorkspacePath(target.canonicalPath,absolutePath);
+        const attachment=await requireOk<AttachmentRecord>(await sidecarFetch(hs(),"/content/attachments/import",{method:"POST",body:JSON.stringify({workspaceId:target.workspaceId,relativePath})}));
+        const view=roomView(target.roomId);
+        if(view.draftAttachments.some(item=>item.id === attachment.id)) return;
+        if(view.draftAttachments.length >= 10) throw new Error("attachment_count_exceeded");
+        if(view.draftAttachments.reduce((sum,item)=>sum+item.byteSize,0)+attachment.byteSize > 50*1024*1024) throw new Error("attachment_batch_too_large");
+        updateRoom(target.roomId,current=>({draftAttachments:[...current.draftAttachments,attachment]}));
+      } catch(error) {updateRoom(target.roomId,{attachmentError:error instanceof Error ? error.message : String(error)});throw error;}
+      finally {updateRoom(target.roomId,view=>({attachmentImports:Math.max(0,view.attachmentImports-1)}));}
+    },
+    importClipboardAttachment: async (file, target = get().captureRoomTarget()) => {
+      updateRoom(target.roomId,view=>({attachmentError:null,attachmentImports:view.attachmentImports+1}));
+      try {
+        const view=roomView(target.roomId);
+        if(view.draftAttachments.length >= 10) throw new Error("attachment_count_exceeded");
+        if(view.draftAttachments.reduce((sum,item)=>sum+item.byteSize,0)+file.size > 50*1024*1024) throw new Error("attachment_batch_too_large");
+        const filename=file.name || `clipboard-${Date.now()}.${file.type === "image/png" ? "png" : "bin"}`;
+        const attachment=await requireOk<AttachmentRecord>(await sidecarFetch(hs(),`/content/attachments/upload?workspaceId=${encodeURIComponent(target.workspaceId)}&filename=${encodeURIComponent(filename)}`,{method:"POST",headers:{"Content-Type":file.type || "application/octet-stream"},body:file}));
+        const current=roomView(target.roomId);
+        if(current.draftAttachments.some(item=>item.id === attachment.id)) return;
+        if(current.draftAttachments.length >= 10) throw new Error("attachment_count_exceeded");
+        if(current.draftAttachments.reduce((sum,item)=>sum+item.byteSize,0)+attachment.byteSize > 50*1024*1024) throw new Error("attachment_batch_too_large");
+        updateRoom(target.roomId,current=>({draftAttachments:[...current.draftAttachments,attachment]}));
+      } catch(error) {updateRoom(target.roomId,{attachmentError:error instanceof Error ? error.message : String(error)});throw error;}
+      finally {updateRoom(target.roomId,view=>({attachmentImports:Math.max(0,view.attachmentImports-1)}));}
     },
     removeDraftAttachment: (id) => set((state) => ({ draftAttachments: state.draftAttachments.filter((item) => item.id !== id) })),
     searchWorkspacePaths: async (query) => {
@@ -1169,21 +1243,9 @@ export const useStore = create<Store>((set, get) => {
       const workspacePathResults=await requireOk<WorkspacePathResult[]>(response);
       if(get().currentSessionId === state.currentSessionId) set({workspacePathResults});
     },
-    addWorkspaceRef: async (relativePath) => {
-      const state = get();
-      const boundId = state.sessions.find((session) => session.id === state.currentSessionId)?.workspaceId;
-      const workspace = (boundId ? state.workspaces.find((item) => item.id === boundId) : null) ?? state.activeWorkspace;
-      if (!workspace) throw new Error("workspace_required");
-      const reference = await requireOk<WorkspaceRef>(await sidecarFetch(hs(), `/content/workspaces/${workspace.id}/refs`, {
-        method: "POST",
-        body: JSON.stringify({ relativePath }),
-      }));
-      const roomId=state.currentSessionId;
-      if(!roomId) throw new Error("room_required");
-      updateRoom(roomId,(state) => ({
-        draftWorkspaceRefs: state.draftWorkspaceRefs.some((item) => item.id === reference.id) ? state.draftWorkspaceRefs : [...state.draftWorkspaceRefs, reference],
-        workspacePathResults: [],
-      }));
+    addWorkspaceRef: async (relativePath, target = get().captureRoomTarget()) => {
+      const reference=await requireOk<WorkspaceRef>(await sidecarFetch(hs(),`/content/workspaces/${target.workspaceId}/refs`,{method:"POST",body:JSON.stringify({relativePath})}));
+      updateRoom(target.roomId,view=>({draftWorkspaceRefs:view.draftWorkspaceRefs.some(item=>item.id === reference.id) ? view.draftWorkspaceRefs : [...view.draftWorkspaceRefs,reference],workspacePathResults:[]}));
       return reference;
     },
     removeDraftWorkspaceRef: (id) => set((state) => ({ draftWorkspaceRefs: state.draftWorkspaceRefs.filter((item) => item.id !== id) })),
@@ -1376,6 +1438,8 @@ export const useStore = create<Store>((set, get) => {
       if (archived && get().currentRoomId === id) set({ currentRoomId: null, messages: [], tasks: [] });
     },
     selectRoom: async (id) => {
+      const session=get().sessions.find(item=>item.id === id || item.legacyRoomId === id);
+      if(session) {await get().selectAgentSession(session.id);return;}
       selectProjection(id,"room","chat");
       const messages=await requireOk<StoredMessage[]>(await sidecarFetch(hs(),`/rooms/${id}/messages`));
       updateRoom(id,{messages});

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { SessionStore } from "./store/session-store";
 import type { Database } from "bun:sqlite";
 import {
   encodeSseEvent,
@@ -90,8 +91,19 @@ function sseResponse(handler: (emit: (e: StreamEvent) => void) => Promise<void>)
   });
 }
 
-export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGateway, usageCollector?: UsageCollector) {
+export function roomRoutes(db: Database, secrets: SecretStore, gateway: ModelGateway, usageCollector?: UsageCollector, sessions?: SessionStore) {
   const app = new Hono();
+  // Migrated sessions are authoritative. Old clients receive a stable mapping
+  // instead of silently creating a second writable history or member list.
+  if (sessions) app.use("*", async (c, next) => {
+    if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
+      const roomId = c.req.path.split("/").filter(Boolean)[1];
+      const canonical = roomId ? sessions.list().find(session => session.legacyRoomId === roomId) : undefined;
+      if (canonical) return c.json({ error: "room_upgraded_use_session", sessionId: canonical.id }, 409);
+      if (!roomId && c.req.method === "POST") return c.json({ error: "use_session_creation" }, 409);
+    }
+    await next();
+  });
   /** 运行中任务的取消把手与「失败后等用户处置」的挂起决定 */
   const taskControllers = new Map<string, AbortController>();
   const taskDecisions = new Map<string, (d: TurnFailureDecision) => void>();

@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { UNKNOWN_MODEL_CAPABILITIES, type AgentRuntime, type ApprovalDecision, type RuntimeEvent } from "@socrates/core";
 import { ApprovalManager } from "../approvals/manager";
 import { openDb } from "../db";
+import { WorkPackageStore } from "../multi-agent/work-package-store";
+import { UsageCollector, normalizeTokenUsage } from "../services/usage-collector";
 import { MultiTaskStore } from "../multi-agent/task-store";
 import { EventStore } from "../store/event-store";
 import { ExecutionEventStore } from "../store/execution-event-store";
@@ -17,12 +19,13 @@ class ApprovalRuntime implements AgentRuntime {
   readonly kind = "fake";
   readonly capabilities = { ...UNKNOWN_MODEL_CAPABILITIES, textInput: true as const, toolCalling: true as const };
   private resolve!: (decision: ApprovalDecision) => void;
+  constructor(private readonly call = { name: "shell_command", input: { command: "bun test" } as unknown }) {}
   async open() {}
   async *start(): AsyncIterable<RuntimeEvent> {
     yield { type: "extension", name: "provider_attempt_started", payload: { attemptNo: 1 } };
     yield { type: "extension", name: "provider_attempt_completed", payload: { attemptNo: 1 } };
     const decisionPromise = new Promise<ApprovalDecision>((resolve) => { this.resolve = resolve; });
-    yield { type: "tool_call", callId: "runtime-approval", name: "shell_command", input: { command: "bun test" } };
+    yield { type: "tool_call", callId: "runtime-approval", ...this.call };
     yield { type: "approval_required", requestId: "runtime-approval", callId: "runtime-approval" };
     const decision = await decisionPromise;
     if (decision === "deny") throw new Error("denied");
@@ -58,6 +61,107 @@ async function setup(factory: (input: RuntimeOpenInput) => AgentRuntime = () => 
 }
 
 describe("ExecutionRunner", () => {
+  for (const operation of ["pause", "cancel", "shutdown"] as const) {
+    it(`${operation} settles a queued legacy execution before another writer releases its lease`, async () => {
+      let opens = 0;
+      const { db, tasks, task, runner, leases, executionEvents } = await setup(() => { opens += 1; return new ApprovalRuntime(); });
+      const held = leases.acquire("w", "other-writer", "write", new Date(Date.now() + 60_000).toISOString());
+      let queued!: () => void;
+      const waiting = new Promise<void>((resolve) => { queued = resolve; });
+      const running = runner.run(task.id, (event) => { if (event.type === "extension" && event.name === "workspace_queued") queued(); })
+        .catch(() => {});
+      await waiting;
+      let failure: unknown;
+      try { if (operation === "shutdown") await runner.shutdown(); else await runner[operation](task.id); }
+      catch (error) { failure = error; }
+      const terminalBeforeRelease = executionEvents.listAfter(task.id, 0).some((event) => ["turn.failed", "turn.cancelled"].includes(event.type));
+      // Always release and settle even when testing the old broken pause path.
+      if (failure) await runner.cancel(task.id).catch(() => {});
+      leases.release(held.id);
+      await running;
+      expect(failure).toBeUndefined();
+      expect(terminalBeforeRelease).toBe(true);
+      expect(opens).toBe(0);
+      expect(tasks.get(task.id)?.state).toBe(operation === "cancel" ? "cancelled" : "paused");
+      expect(db.query("SELECT COUNT(*) AS count FROM workspace_leases").get()).toEqual({ count: 0 });
+    });
+  }
+
+  it("pause waits for runtime cleanup and forbids dispatch after an in-flight open", async () => {
+    let openStarted!: () => void;
+    const opening = new Promise<void>((resolve) => { openStarted = resolve; });
+    let releaseOpen!: () => void;
+    const openGate = new Promise<void>((resolve) => { releaseOpen = resolve; });
+    let closeStarted!: () => void;
+    const closing = new Promise<void>((resolve) => { closeStarted = resolve; });
+    let releaseClose!: () => void;
+    const closeGate = new Promise<void>((resolve) => { releaseClose = resolve; });
+    let dispatches = 0;
+    const { db, tasks, task, runner } = await setup(() => ({
+      kind: "delayed", capabilities: UNKNOWN_MODEL_CAPABILITIES,
+      async open() { openStarted(); await openGate; },
+      async *start() { dispatches += 1; }, async answerApproval() {}, async interrupt() {},
+      async close() { closeStarted(); await closeGate; },
+    }));
+    const running = runner.run(task.id).catch(() => {});
+    await opening;
+    let paused = false;
+    const pausing = runner.pause(task.id).then(() => { paused = true; });
+    releaseOpen();
+    await closing;
+    expect(paused).toBe(false);
+    expect(db.query("SELECT COUNT(*) AS count FROM workspace_leases").get()).toEqual({ count: 1 });
+    releaseClose();
+    await pausing; await running;
+    expect(dispatches).toBe(0);
+    expect(tasks.get(task.id)?.state).toBe("paused");
+    expect(db.query("SELECT COUNT(*) AS count FROM workspace_leases").get()).toEqual({ count: 0 });
+  });
+
+  it("counts actual failed and continued worker usage once at both task and room levels", async () => {
+    let attempt = 0;
+    const { db, tasks, task, runner } = await setup(() => ({
+      kind: "usage", capabilities: UNKNOWN_MODEL_CAPABILITIES,
+      async open() {}, async close() {}, async answerApproval() {}, async interrupt() {},
+      async *start() {
+        yield { type: "usage", usage: normalizeTokenUsage({ inputTokens: 100, outputTokens: 25 }) };
+        if (++attempt === 1) throw new Error("provider_failed_after_usage");
+      },
+    }));
+    const plan = tasks.getPlan(task.id)!;
+    const packages = new WorkPackageStore(db);
+    packages.replacePlan(task.id, plan.version, [{ id: "worker", title: "work", objective: "work", input: "work", dependencies: [], executorAgentId: "a", reviewerAgentId: null, expectedFiles: [], acceptanceCriteria: ["done"] }]);
+    for (let index = 0; index < 2; index++) {
+      const item = packages.start(packages.list(task.id)[0]!.id);
+      const outcome = await runner.runPackage({ taskId: task.id, packageId: item.id, agentId: "a", prompt: "work", plan: plan.content, attemptNo: item.attemptNo });
+      packages.finish(item.id, outcome);
+      if (!index) { expect(outcome.status).toBe("failed"); packages.retry(item.id); }
+      else expect(outcome.status).toBe("completed");
+    }
+    expect(tasks.usageSummaries(task.id)[0]).toMatchObject({ agentId: "a", records: 2, cumulative: { inputTokens: 200, outputTokens: 50, totalTokens: 250, cost: null } });
+    const item = packages.list(task.id)[0]!;
+    await runner.runPackage({ taskId: task.id, packageId: item.id, agentId: "a", prompt: "replay", plan: plan.content, attemptNo: item.attemptNo });
+    expect(tasks.usageSummaries(task.id)[0]?.cumulative.totalTokens).toBe(250);
+    expect(new UsageCollector(db).sessionSummaries("s")[0]?.cumulative.totalTokens).toBe(250);
+  });
+
+  for (const [input, expected] of [
+    [{ executable: "bun", argv: ["test"] }, "run_shell"],
+    [{ executable: "bun", argv: ["test", "--update-snapshots"] }, "plan_scope_expansion"],
+  ] as const) {
+    it(`classifies a native command as ${expected} in the production approval pipeline`, async () => {
+      const { task, runner, approvals } = await setup(() => new ApprovalRuntime({ name: "run_shell", input }));
+      let ready!: () => void;
+      const requested = new Promise<void>((resolve) => { ready = resolve; });
+      const running = runner.run(task.id, (event) => { if (event.type === "approval_required") ready(); });
+      await requested;
+      const request = approvals.recoverPending().pending[0]!;
+      expect(request.kind).toBe(expected);
+      await runner.decide(request.id, { clientDecisionKey: `approve-${expected}`, decision: "allow_once" });
+      await running;
+    });
+  }
+
   it("keeps a package approval undelivered when the durable decision checkpoint fails", async () => {
     const { tasks, task, runner, approvals, executionEvents, runtimes } = await setup();
     const plan = tasks.getPlan(task.id, tasks.get(task.id)!.approvedPlanVersion!)!.content;

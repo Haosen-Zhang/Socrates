@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { clampComposerHeight, COMPOSER_DEFAULT_HEIGHT, composerHeightFromKey, composerHeightFromPointer, composerMaxHeight } from "./composerMachine";
+import { useT } from "../store";
 
 const STORAGE_KEY = "socrates.composer.height.v1";
 
 function initialHeight(): number {
-  const saved = Number(localStorage.getItem(STORAGE_KEY));
-  return clampComposerHeight(Number.isFinite(saved) ? saved : COMPOSER_DEFAULT_HEIGHT, window.innerHeight);
+  try {
+    const saved = Number(localStorage.getItem(STORAGE_KEY));
+    return clampComposerHeight(saved > 0 && Number.isFinite(saved) ? saved : COMPOSER_DEFAULT_HEIGHT, window.innerHeight);
+  } catch { return COMPOSER_DEFAULT_HEIGHT; }
 }
 
 export default function ResizableComposer({ children, configured = false, label }: { children: ReactNode; configured?: boolean; label: string }) {
   const [height, setHeight] = useState(initialHeight);
+  const t = useT();
   const frame = useRef<number | null>(null);
   const drag = useRef<{ startHeight: number; startY: number } | null>(null);
   const apply = (next: number) => {
@@ -20,7 +24,7 @@ export default function ResizableComposer({ children, configured = false, label 
     });
   };
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, String(height));
+    try { localStorage.setItem(STORAGE_KEY, String(height)); } catch { /* Resizing works without storage. */ }
   }, [height]);
   useEffect(() => {
     const resize = () => apply(height);
@@ -37,7 +41,7 @@ export default function ResizableComposer({ children, configured = false, label 
       aria-label={label}
       aria-orientation="horizontal"
       aria-valuemin={104}
-      aria-valuemax={composerMaxHeight(window.innerHeight)}
+      aria-valuemax={composerMaxHeight(typeof window === "undefined" ? 800 : window.innerHeight)}
       aria-valuenow={height}
       tabIndex={0}
       onDoubleClick={() => apply(COMPOSER_DEFAULT_HEIGHT)}
@@ -60,6 +64,7 @@ export default function ResizableComposer({ children, configured = false, label 
       }}
       onPointerCancel={() => { drag.current = null; }}
     />
+    <button type="button" className="pixel-button absolute right-2 top-1 z-10 px-2 py-0.5 text-[10px]" aria-label={t("composer_reset_height")} title={t("composer_reset_height")} onClick={() => apply(COMPOSER_DEFAULT_HEIGHT)}>{t("composer_reset_height")}</button>
     {children}
   </div>;
 }
