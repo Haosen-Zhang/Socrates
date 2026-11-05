@@ -767,6 +767,19 @@ body.is-resizing-panel { cursor: col-resize; user-select: none; }
 .pixel-avatar-choice.is-selected { border-color: var(--pixel-accent); background: white; }
 .pixel-avatar-choice .pixel-avatar { box-shadow: none; }
 
+.persona-editor { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 20px; }
+.persona-editor__preview { display: flex; flex-direction: column; align-items: center; gap: 12px; padding-top: 4px; }
+.persona-editor__toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding-top: 8px; }
+.persona-avatar-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 5px; }
+.persona-avatar-grid .pixel-avatar-choice { display: flex; justify-content: center; padding: 5px; border-radius: 4px; }
+.persona-avatar-grid .is-selected { background: color-mix(in srgb, var(--pixel-accent) 12%, var(--pixel-paper)); outline: 1px solid var(--pixel-accent); }
+.persona-editor button:focus-visible { outline: 2px solid var(--pixel-accent); outline-offset: 3px; }
+@media (max-width: 540px) {
+  .persona-editor { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .persona-editor__preview { flex-direction: row; }
+  .persona-avatar-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
 .pixel-dialog-backdrop {
   position: fixed;
   inset: 0;

@@ -1,44 +1,135 @@
-# Socrates / 苏格拉底
+<p align="center">
+  <strong>English</strong> &nbsp;·&nbsp; <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-Socrates 是一个多模型群聊式 Agent 工作台。它允许用户把不同厂商的大模型邀请到同一个任务房间中，为它们分配角色、控制发言顺序和讨论轮数，并指定最终模型进行总结或执行。
+<p align="center">
+  <img src="doc/assets/readme/hero-en.svg" alt="Socrates — Think together. Build together. A desktop workspace for multi-AI discussion, agent collaboration, and custom characters." width="100%">
+</p>
 
-它的核心不是“在多个模型之间切换”，而是让多个模型围绕同一个问题进行结构化讨论：提出方案、审查反驳、补充细节、形成决策，最后进入可控执行。
+<p align="center">
+  <strong>A great idea deserves more than one perspective.</strong><br>
+  Bring different AI models into one room. Give them a voice, a role, and a shared purpose.<br>
+  Discuss in <strong>Chat</strong>. Put the plan to work in <strong>Work</strong>.
+</p>
 
-## 当前阶段
+<p align="center">
+  <a href="#get-started">Get started</a> &nbsp; / &nbsp;
+  <a href="#01--chat-let-the-ideas-meet">Explore Chat</a> &nbsp; / &nbsp;
+  <a href="#02--work-turn-the-conversation-into-progress">Explore Work</a> &nbsp; / &nbsp;
+  <a href="#03--your-models-your-characters">Meet your cast</a>
+</p>
 
-Chat / Work 分离入口、房间内创建角色、结构化成员 mention 和 Manager 工作包协作已接通。Work 成员共用 Native Runtime、审批、持久事件与工作区写队列。实现与验证范围见 [本轮验收](doc/chat-work-collaboration-acceptance.md)；产品与工程设计见 `doc/` 和 `docs/`。
+---
 
-## 开发
+## 01 / Chat. Let the ideas meet.
 
-依赖：[Bun](https://bun.sh)、[Rust](https://rustup.rs)（Tauri 需要）。
+**One question. Different models. A conversation that builds on itself.**
+
+Invite an architect, a researcher, and a skeptic into the same room. Let them propose ideas, question assumptions, and work toward a useful conclusion—with every voice visible in a shared conversation.
+
+![Chat in Socrates: two AI characters discuss and challenge a reading-app design.](doc/assets/readme/chat.png)
+
+- **Mix models and perspectives.** Use your configured OpenAI-compatible and Anthropic providers in the same room.
+- **Choose who responds.** Talk to a default member, select a member with `@`, or start a bounded team discussion.
+- **Keep it conversational.** Chat has no workspace or local execution tools. It is a place to think, compare, and decide.
+
+<sub>Actual application UI with demonstration conversations and illustrative model replies.</sub>
+
+## 02 / Work. Turn the conversation into progress.
+
+**A team with responsibilities, a workspace, and a plan you can inspect.**
+
+Attach a local project and choose how to work: ask one agent to handle a task, discuss an approach, or explicitly start team collaboration. The Manager breaks the task into work packages; members carry out their assignments after the plan is approved.
+
+![Socrates Work: inspect a Manager plan, assigned members, dependencies, and acceptance criteria before approving execution.](doc/assets/readme/work.png)
+
+<img src="doc/assets/readme/workflow-en.svg" alt="Optional discussion → Manager plan → approval → member execution → optional review." width="100%">
+
+- **Know who owns what.** Work packages carry an owner, dependencies, expected results, and acceptance criteria.
+- **Stay in the loop.** Inspect the plan, approve execution, follow member progress, and pause or resume a task.
+- **Build in your project.** The native runtime can read and edit files and run commands with permission controls. Optional agent review can request bounded rework.
+
+Members share a workspace, with execution queued to avoid conflicting writes. Collaboration does not imply simultaneous edits to the same files.
+
+<sub>Actual application UI in an isolated demonstration workspace. The plan shown is illustrative.</sub>
+
+## 03 / Your models. Your characters.
+
+**A model is the engine. You decide who joins the conversation.**
+
+<img src="doc/assets/readme/personas-en.svg" alt="Custom AI characters with recognizable pixel avatars: Lunar Sage, Azure Fox, and Moss Scout. Thousands of English and Chinese name combinations." width="100%">
+
+Create a practical teammate or a character with a particular point of view. Choose a model, write a role and system prompt, and give it an identity you can recognize at a glance.
+
+- **Thousands of names.** 2,048 base combinations each in English, Simplified Chinese, and Traditional Chinese, with duplicate-name avoidance.
+- **Distinctive pixel avatars.** Generate new patterns locally. Both silhouette and colour vary, so identity does not depend on colour alone.
+- **Make it yours.** Keep a classic character or upload a PNG, JPEG, WebP, or GIF up to 2 MB. Shuffle the name and avatar independently.
+- **Create where you work.** Use the character library, create a role while making a room, or add one from room members.
+
+<details>
+<summary><strong>See the character editor</strong></summary>
+
+![The Socrates character editor with name-language selection, generated avatars, image upload, model, role, and prompt.](doc/assets/readme/character-editor.png)
+
+</details>
+
+## Two modes. A clear choice.
+
+| | Chat | Work |
+| :-- | :-- | :-- |
+| Best for | Exploring ideas, debate, reviews, role-play | Implementing tasks in a local project |
+| Members | One or more AI characters | One or more AI agents |
+| How they respond | Selected member or team discussion | Direct execution, discussion, or a team plan |
+| Local files and commands | No | Yes, through the native runtime and permissions |
+| Your control | Participants and discussion settings | Workspace, plan approval, execution, and review |
+
+Adding more members never silently changes the collaboration strategy. You choose how the room works.
+
+## Get started
+
+Socrates is under active development. The development workflow is currently centred on **macOS**; see the [architecture](doc/architecture.md) for implementation details.
+
+Install [Bun](https://bun.sh) and [Rust](https://rustup.rs), with the macOS development tools available, then:
 
 ```bash
+git clone https://github.com/Haosen-Zhang/Socrates.git
+cd Socrates
 bun install
-bun run dev        # 启动桌面应用（Tauri + sidecar）
-bun test           # 运行测试
-bun run typecheck  # TypeScript 类型检查
+bun run dev
 ```
 
-代码结构（Bun workspaces）：
+The first desktop launch compiles the Rust application and can take a few minutes.
 
-| 包 | 内容 |
-| --- | --- |
-| `apps/desktop` | Tauri + React 桌面应用 |
-| `apps/sidecar` | Bun sidecar：编排引擎宿主，HTTP + SSE 服务 |
-| `packages/core` | 纯 TypeScript 编排逻辑与领域类型（零 IO 依赖） |
+1. **Connect your models.** Open **Settings → Providers** and add a provider and your API key.
+2. **Create your cast.** Open **Pixel agents**, choose a model, and set a name, avatar, role, and prompt.
+3. **Open a room.** Choose **Chat** for a conversation, or **Work** with a local workspace for execution.
 
-## 文档目录
+API keys are stored in the system Keychain on macOS. Conversations and task history are stored locally; the prompts and context you send are processed by your configured model providers. Model usage uses your provider credentials and billing.
 
-| 文件 | 内容 |
-| --- | --- |
-| `docs/01-product-requirements.md` | 产品定位、用户场景、功能需求、非功能需求、MVP 范围 |
-| `docs/02-system-architecture.md` | 总体系统架构、核心模块、数据流、技术栈建议 |
-| `docs/03-engineering-design.md` | 领域模型、存储设计、服务边界、测试和工程实践 |
-| `docs/04-orchestration-protocol.md` | 多模型群聊编排协议、发言策略、黑板机制、执行契约 |
-| `docs/05-security-permissions.md` | API Key、权限、工具执行、安全边界、审计日志 |
-| `docs/06-mvp-roadmap.md` | MVP 迭代路线、阶段目标、验收标准、主要风险 |
-| `docs/07-execution-event-authority.md` | Phase 1A 执行事件权威、身份层级、投影边界和迁移约束 |
+## Built for a workspace you control
 
-## 一句话定位
+**Tauri + React** on the desktop. **Bun + Hono** underneath. **SQLite** for local state. A shared **TypeScript** domain layer keeps room and execution rules consistent.
 
-Socrates turns multiple AI models into a structured council that can debate, review, decide, and execute together.
+| Package | Responsibility |
+| :-- | :-- |
+| [`apps/desktop`](apps/desktop) | Desktop UI, room timelines, character editor, and workspace views |
+| [`apps/sidecar`](apps/sidecar) | Providers, orchestration, persistence, approvals, and native agent runtime |
+| [`packages/core`](packages/core) | Shared types, contracts, validation, and state machines; no UI or I/O |
+
+```bash
+bun test
+bun run typecheck
+bun run --cwd apps/desktop build
+```
+
+Explore the [current architecture](doc/architecture.md), [Chat / Work implementation](doc/chat-work-collaboration-acceptance.md), [reliability verification](doc/chat-work-reliability-repair-acceptance.md), and [runtime roadmap](doc/native-runtime-and-langgraph-roadmap.md). The production execution engine is Socrates Native Runtime; the roadmap distinguishes future work from shipped behaviour.
+
+Found a problem or have an idea? [Open an issue](https://github.com/Haosen-Zhang/Socrates/issues). Contributions follow the [repository workflow](AGENTS.md).
+
+---
+
+<p align="center">
+  <strong>Different minds. Shared momentum.</strong><br>
+  <sub>Built for the conversations that lead somewhere.</sub><br><br>
+  <a href="README.zh-CN.md">阅读中文版 →</a>
+</p>

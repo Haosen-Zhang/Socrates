@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { Hono } from "hono";
-import { AGENT_AVATARS } from "@socrates/core";
+import { AGENT_AVATARS, agentAvatarFromSeed } from "@socrates/core";
 import { openDb } from "./db";
 import { MemorySecrets } from "./secrets";
 import { providerRoutes } from "./providers";
@@ -77,6 +77,22 @@ describe("agent identity validation", () => {
 
     const svg = await createAgent(app, providerId, "Unsafe", "data:image/svg+xml;base64,PHN2Zz4=");
     expect(svg.status).toBe(400);
+  });
+
+  it("round-trips generated avatar seeds through create, edit and list", async () => {
+    const avatar = agentAvatarFromSeed("one");
+    const created = await createAgent(app, providerId, "Amber Finch", avatar);
+    expect(created.status).toBe(201);
+    const agent = await created.json();
+    expect(agent.avatar).toBe(avatar);
+    const next = agentAvatarFromSeed("two");
+    const updated = await app.request(`/agents/${agent.id}`, { method: "PUT", body: JSON.stringify({ avatar: next }) });
+    expect(updated.status).toBe(200);
+    expect((await updated.json()).avatar).toBe(next);
+    expect((await (await app.request("/agents")).json())[0].avatar).toBe(next);
+    const invalid = await app.request(`/agents/${agent.id}`, { method: "PUT", body: JSON.stringify({ avatar: "identicon:v1:<script>" }) });
+    expect(invalid.status).toBe(400);
+    expect((await (await app.request("/agents")).json())[0].avatar).toBe(next);
   });
 
   it("derives model-aware reasoning efforts and rejects unsupported selections", async () => {

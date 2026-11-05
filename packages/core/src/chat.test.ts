@@ -10,6 +10,7 @@ import {
   randomUniqueAgentIdentity,
   normalizeAgentNickname,
   isAgentAvatarSource,
+  isGeneratedAgentAvatar,
   type StoredMessage,
   type StreamEvent,
 } from "./chat";
@@ -69,9 +70,9 @@ describe("historyToChatMessages", () => {
 });
 
 describe("agent identity", () => {
-  it("assigns a catalog avatar and formats the model label", () => {
+  it("assigns a generated avatar and formats the model label", () => {
     const identity = randomAgentIdentity(() => 0.51);
-    expect(AGENT_AVATARS).toContain(identity.avatar);
+    expect(isGeneratedAgentAvatar(identity.avatar)).toBe(true);
     expect(agentLabel({ ...identity, modelId: "gpt-5.4" })).toBe(`${identity.nickname} (gpt-5.4)`);
     expect(agentIdentityFromSeed("agent-1")).toEqual(agentIdentityFromSeed("agent-1"));
   });
