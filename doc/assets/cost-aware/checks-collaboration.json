@@ -1,0 +1,46 @@
+{
+  "generatedAt": "2026-11-06T12:07:27.482Z",
+  "controlledFixture": true,
+  "checks": [
+    {
+      "name": "Old Chat shows a complete speaking order after adding a member",
+      "ok": true
+    },
+    {
+      "name": "Chat settings Save is enabled after discussion edits",
+      "ok": true
+    },
+    {
+      "name": "Chat settings persist through the actual backend",
+      "ok": true
+    },
+    {
+      "name": "The composer exposes no token-limit controls",
+      "ok": true
+    },
+    {
+      "name": "User submission contains only money controls and no token cap",
+      "ok": true
+    },
+    {
+      "name": "Truncated reasoning is charged once before the expanded request is blocked",
+      "ok": true
+    },
+    {
+      "name": "Budget resume exposes no token-limit selector",
+      "ok": true
+    },
+    {
+      "name": "Resume keeps the root and completes planning without replaying the first call",
+      "ok": true
+    },
+    {
+      "name": "No renderer errors",
+      "ok": true
+    },
+    {
+      "name": "No external browser requests",
+      "ok": true
+    }
+  ]
+}

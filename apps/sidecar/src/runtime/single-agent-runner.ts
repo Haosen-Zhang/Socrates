@@ -29,6 +29,7 @@ import { WorkspacePathPolicy } from "../workspace/path-policy";
 import type { HistoryStore } from "../store/history-store";
 import { WorkspaceLeaseManager } from "../workspace/leases";
 import { memberConversationHistory, resolveRunProfile, type RunProfile } from "../services/run-profile";
+import { isCostBudgetPause } from "../services/model-invocation-broker";
 
 type SessionRow = {
   id: string;
@@ -844,7 +845,8 @@ export class SingleAgentRunner {
         sessionId: session.id,
         agentId: agent.agent_id,
         workspaceId: session.workspace_id ?? undefined,
-        runtimeOptions: { ...input.runtimeOptions, runProfile: profile,
+        runtimeOptions: { ...input.runtimeOptions, runProfile: profile, costRunId: prepared.runId,
+          costRootTaskId: input.runtimeOptions?.costRootTaskId ?? (clientTurnKey.startsWith("room-command:") ? clientTurnKey.slice(13) : prepared.runId),
           ...(contextWindowTokens === null ? {} : { contextWindowTokens, outputReserveTokens }) },
       });
       runtimeSessionId = handle.id;
@@ -969,6 +971,7 @@ export class SingleAgentRunner {
             if (!workspace) throw new Error("workspace_not_found");
             const approval = this.approvals.request({
               taskId: prepared.runId,
+              sessionId: session.id, toolGeneration: event.toolGeneration,
               kind: event.kind ?? (call.name === "file_change" ? "file_change" : "command_execution"),
               subjectId: `${prepared.runId}:${event.requestId}`,
               inputHash: hashToolInput(call.input),
@@ -1002,6 +1005,10 @@ export class SingleAgentRunner {
             } catch (error) {
               approvalJournalFailed = true;
               throw error;
+            }
+            if (this.approvals.hasSessionGrant(approval)) {
+              await this.decide(approval.id, { clientDecisionKey: `session-grant:${approval.id}`, decision: "allow_once", reason: "session_grant" });
+              return;
             }
             await emit({ ...event, requestId: approval.id });
             return;
@@ -1071,7 +1078,7 @@ export class SingleAgentRunner {
       if (turnCompleted) throw error;
       const message = leaseLost ? "workspace_lease_lost" : error instanceof Error ? error.message : String(error);
       const activeRun = this.active.get(prepared.runId);
-      const status = input.signal?.aborted || activeRun?.cancelled ? "cancelled" : budgetExhausted ? "interrupted" : "failed";
+      const status = input.signal?.aborted || activeRun?.cancelled ? "cancelled" : budgetExhausted || isCostBudgetPause(message) ? "interrupted" : "failed";
       const completedAt = new Date().toISOString();
       const partialContent = assistantText;
       assistantText = "";
@@ -1143,7 +1150,7 @@ export class SingleAgentRunner {
       LEFT JOIN runtime_sessions ON runtime_sessions.id = agent_runs.runtime_session_id WHERE agent_runs.id = ?
     `).get(runId);
     if (!row) throw new Error("agent_run_not_found");
-    if (row.status !== "interrupted" || row.error !== "budget_exhausted") throw new Error("agent_run_not_budget_stopped");
+    if (row.status !== "interrupted" || row.error !== "budget_exhausted" && !isCostBudgetPause(row.error)) throw new Error("agent_run_not_budget_stopped");
     const context = row.context_json ? JSON.parse(row.context_json) as { runProfile?: RunProfile } : {};
     const parts = this.db.query<{ type: string; attachment_id: string | null; metadata_json: string | null }, [string]>(`
       SELECT message_parts.type, message_parts.attachment_id, message_parts.metadata_json FROM message_parts

@@ -11,6 +11,8 @@ import { shouldSubmitComposerEnter } from "./composerIme";
 import PixelIcon from "./PixelIcon";
 import ResizableComposer from "./composer/ResizableComposer";
 import AttachmentTray from "./attachments/AttachmentTray";
+import ComposerCostControls from "./cost/ComposerCostControls";
+import { quoteBinding, submittedCostOptions, type BoundCostOptions } from "./cost/ui-state";
 
 /** Mentions are created only by explicit menu selection; plain @ text is inert. */
 export default function RoomComposer({
@@ -33,6 +35,8 @@ export default function RoomComposer({
     addWorkspaceRef,
     removeDraftWorkspaceRef,
     updateCollaboration,
+    draftAttachments,
+    draftWorkspaceRefs,
   } = useStorePick(
     "composerDrafts",
     "setComposerDraft",
@@ -44,6 +48,8 @@ export default function RoomComposer({
     "addWorkspaceRef",
     "removeDraftWorkspaceRef",
     "updateCollaboration",
+    "draftAttachments",
+    "draftWorkspaceRefs",
   );
   const t = useT();
   const composing = useRef(false);
@@ -52,6 +58,7 @@ export default function RoomComposer({
   const selected = composerMentions[session.id] ?? [];
   const query = roomMentionQuery(draft);
   const [error, setError] = useState<string | null>(null);
+  const [cost, setCost] = useState<BoundCostOptions | null>(null);
   const work = session.kind === "cowork";
   const behavior =
     session.collaboration.strategy === "team"
@@ -94,6 +101,14 @@ export default function RoomComposer({
     const mentions = retainSelectedMentions(prompt, selected).map(
       (item) => item.mention,
     );
+    let costOptions;
+    try {
+      costOptions = cost ? submittedCostOptions(cost, quoteBinding({ roomId: session.id, content: prompt, mentions,
+        intent: behavior === "team" ? "execute" : behavior,
+        attachmentIds: draftAttachments.map(item => item.id), workspaceRefIds: draftWorkspaceRefs.map(item => item.id),
+        ...(cost.options.maxOutputTokens !== undefined ? { maxOutputTokens: cost.options.maxOutputTokens } : {}), ...(cost.options.budget ? { budget: cost.options.budget } : {}),
+      }, session)) : undefined;
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return; }
     setComposerDraft(session.id, "");
     setComposerMentions(session.id, []);
     setError(null);
@@ -103,6 +118,7 @@ export default function RoomComposer({
       behavior === "team" ? "execute" : behavior,
       undefined,
       session.id,
+      costOptions,
     );
     if (!ok) {
       if (!(useStore.getState().composerDrafts[session.id] ?? "")) {
@@ -292,6 +308,8 @@ export default function RoomComposer({
         </p>
       )}
       {work && <AttachmentTray />}
+      <ComposerCostControls session={session} content={draft} mentions={retainSelectedMentions(draft.trim(), selected).map(item => item.mention)}
+        intent={behavior === "team" ? "execute" : behavior} attachmentIds={draftAttachments.map(item => item.id)} workspaceRefIds={draftWorkspaceRefs.map(item => item.id)} disabled={running} onChange={setCost} />
       <ResizableComposer label={t("composer_resize")}>
         <span className="pixel-composer-chevron mt-1 shrink-0 self-start">
           ›

@@ -1,0 +1,7 @@
+{
+  "name": "socrates-reuse-experiments",
+  "private": true,
+  "type": "module",
+  "scripts": { "promptfoo": "bun run promptfoo-smoke.ts" },
+  "devDependencies": { "promptfoo": "0.125.1" }
+}

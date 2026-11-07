@@ -77,6 +77,7 @@ export class TeamRunner {
         this.packages.finish(item.id, outcome);
         this.event(taskId, "multi.package_finished", this.packages.get(item.id)!);
         active.runId = null;
+        if (outcome.status === "budget_stopped") break;
       }
       const all = this.list(taskId);
       const current = this.tasks.get(taskId)!;
@@ -88,7 +89,8 @@ export class TeamRunner {
       } else if (all.every((item) => item.state === "completed")) {
         this.tasks.transition(taskId, { type: "complete" });
       } else {
-        const reason = all.some((item) => item.state === "budget_stopped") ? "work_package_budget_stopped" : "work_package_partial_failure";
+        const costReason = all.find(item => item.failureReason?.startsWith("cost_budget_"))?.failureReason;
+        const reason = costReason ?? (all.some((item) => item.state === "budget_stopped") ? "work_package_budget_stopped" : "work_package_partial_failure");
         if (current.state === "executing") this.tasks.transition(taskId, { type: "pause", reason });
       }
       await this.publishSummary(taskId);
@@ -112,6 +114,7 @@ export class TeamRunner {
       this.event(taskId, "multi.package_reviewed", { ...result, packageId: item.id, reviewerAgentId: item.reviewerAgentId });
     } catch (error) {
       if (signal.aborted) return;
+      if (error instanceof Error && error.message.startsWith("cost_budget_")) throw error;
       this.packages.review(item.id, "invalid", error instanceof Error ? error.message : String(error));
       this.event(taskId, "multi.package_review_failed", { packageId: item.id, reason: "review_output_invalid" });
     }

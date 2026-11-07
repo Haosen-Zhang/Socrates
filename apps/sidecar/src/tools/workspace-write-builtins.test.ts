@@ -48,6 +48,16 @@ describe("workspace-write builtins", () => {
     expect(readFileSync(join(tmp, "hello.txt"), "utf-8")).toContain("hello world");
   });
 
+  it("creates with a null precondition, rejects an invented hash and retains existing content on conflict", async () => {
+    const tool = tools.find(t => t.name === "write_file")!;
+    const input = { path: "create-only.md", content: "preserved", expectedSha256: null };
+    await expect(tool.execute!(input, context)).resolves.toMatchObject({ action: "created", oldSha256: null });
+    await expect(tool.execute!({ ...input, content: "must not overwrite" }, context)).rejects.toThrow("WORKSPACE_FILE_CHANGED");
+    expect(readFileSync(join(tmp, input.path), "utf8")).toBe("preserved");
+    await expect(tool.execute!({ path: "missing.md", content: "new", expectedSha256: "0".repeat(64) }, context)).rejects.toThrow("expectedSha256: null");
+    expect(existsSync(join(tmp, "missing.md"))).toBe(false);
+  });
+
   it("write_file overwrites existing files", async () => {
     const writeTool = tools.find((t) => t.name === "write_file")!;
     // Create first

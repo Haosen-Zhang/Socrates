@@ -12,7 +12,7 @@ import {
   realpathSync,
 } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
-import { normalizeWorkspaceRelativePath } from "@socrates/core";
+import { normalizeWorkspaceRelativePath, StructuredExecutionError } from "@socrates/core";
 import {
   listPinnedDirectoryEntries,
   mkdirPinnedWorkspaceEntry,
@@ -166,7 +166,7 @@ export class WorkspacePathPolicy {
     }
   }
 
-  writeText(input: string, content: string, options: MutationOptions & { expectedSha256?: string } = {}): {
+  writeText(input: string, content: string, options: MutationOptions & { expectedSha256?: string | null } = {}): {
     relativePath: string; existed: boolean; oldSha256: string | null; newSha256: string; diff: string; diffTruncated: boolean;
   } {
     options.signal?.throwIfAborted();
@@ -179,7 +179,12 @@ export class WorkspacePathPolicy {
       const existing = inspectEntry(parentFd, basename);
       if (before && (!existing || existing.dev !== before.dev || existing.ino !== before.ino)) throw new Error("WORKSPACE_FILE_CHANGED");
       if (!before && existing) throw new Error("WORKSPACE_FILE_CHANGED");
-      if (options.expectedSha256 !== undefined && existing?.sha256 !== options.expectedSha256) throw new Error("WORKSPACE_FILE_CHANGED");
+      if (options.expectedSha256 !== undefined && (existing?.sha256 ?? null) !== options.expectedSha256) {
+        throw new StructuredExecutionError({ code: "WORKSPACE_FILE_CHANGED", category: "filesystem", phase: "tool_execution", retryable: false,
+          message: existing
+            ? "WORKSPACE_FILE_CHANGED: The target exists or changed. Read it with read_file and copy its current sha256 before updating; do not guess hashes or repeat the stale input."
+            : "WORKSPACE_FILE_CHANGED: The target does not exist. To create it, use expectedSha256: null; do not invent a hash or use the hash of an empty file." });
+      }
       let oldText: string | null = null; let basisTruncated = false;
       if (existing) {
         const fd = openPinnedWorkspaceEntry(parentFd, basename, constants.O_RDONLY);

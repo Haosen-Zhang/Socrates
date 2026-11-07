@@ -5,6 +5,7 @@ import { PROVIDER_CARD_KEYS, PROVIDERS_PAGE_KEYS, useStorePick } from "./selecto
 import { sfx } from "./fx";
 import { useTransientFlag } from "./useTransientFlag";
 import NestedDialogPortal from "./dialog/NestedDialogPortal";
+import ProviderPrices from "./cost/ProviderPrices";
 
 const EMPTY: ProviderForm = {
   name: "",
@@ -118,6 +119,7 @@ function ProviderCard({
           </div>
         </div>
       )}
+      <ProviderPrices provider={provider} models={enabled} />
     </article>
   );
 }

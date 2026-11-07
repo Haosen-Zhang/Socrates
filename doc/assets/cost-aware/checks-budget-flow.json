@@ -1,0 +1,94 @@
+{
+  "generatedAt": "2026-11-06T12:11:52.021Z",
+  "controlledFixture": true,
+  "checks": [
+    {
+      "name": "Model output allowance is automatic in the composer",
+      "ok": true
+    },
+    {
+      "name": "Real quote contains Manager, execution, review and retry stages",
+      "ok": true
+    },
+    {
+      "name": "A refreshed quote after a dropped response reuses the original command envelope",
+      "ok": true
+    },
+    {
+      "name": "The real room command service commits one task after a lost response",
+      "ok": true
+    },
+    {
+      "name": "Budget pause is visible with its bound task",
+      "ok": true
+    },
+    {
+      "name": "Double-click increase commits one budget revision",
+      "ok": true
+    },
+    {
+      "name": "Budget resume requires no token-limit decision",
+      "ok": true
+    },
+    {
+      "name": "Resume preserves the root task with automatic output management",
+      "ok": true
+    },
+    {
+      "name": "Ledger contains real Manager, Worker and Reviewer invocations",
+      "ok": true
+    },
+    {
+      "name": "Known amounts reconcile and no reservation remains after completion",
+      "ok": true
+    },
+    {
+      "name": "JSON export contains ledger facts and no conversation text",
+      "ok": true
+    },
+    {
+      "name": "CSV export contains ledger facts and no conversation text",
+      "ok": true
+    },
+    {
+      "name": "Room switching keeps the second room draft and cost projection separate",
+      "ok": true
+    },
+    {
+      "name": "IME confirmation does not submit a task",
+      "ok": true
+    },
+    {
+      "name": "A dropped provider result retains unknown exposure and original price evidence",
+      "ok": true
+    },
+    {
+      "name": "Manual reconciliation starts disabled before bill confirmation",
+      "ok": true
+    },
+    {
+      "name": "Manual reconciliation commits once and preserves unknown usage plus frozen price",
+      "ok": true
+    },
+    {
+      "name": "Custom price shows a labelled synthetic example",
+      "ok": true
+    },
+    {
+      "name": "Custom and catalog imports preserve historical invocation prices and totals",
+      "ok": true
+    },
+    {
+      "name": "Cost controls remain inside the resized viewport",
+      "ok": true
+    },
+    {
+      "name": "No renderer errors",
+      "ok": true
+    },
+    {
+      "name": "No external browser requests",
+      "ok": true
+    }
+  ]
+}

@@ -70,9 +70,18 @@ describe("ToolActivityTimeline accessibility", () => {
     expect(markup).toContain("Socrates");
     expect(markup).toContain("该操作会在本机工作区运行命令");
     expect(markup).toContain("允许一次");
-    expect(markup).toContain("本会话允许");
+    expect(markup).not.toContain("本会话允许");
     expect(markup).toContain("拒绝");
     expect(markup).toContain('class="approval-shelf-technical" open=""');
     expect(markup).toContain("&quot;argv&quot;");
+  });
+
+  it("offers session permission for workspace writes, but not plan expansion or fresh confirmation", () => {
+    const render = (kind: string, freshHumanRequired: boolean) => renderToStaticMarkup(<ApprovalShelf
+      approvals={[{ id: "write", kind, subjectId: "run:write", risk: "high", freshHumanRequired, status: "pending", sessionId: "room", toolGeneration: 1 }]}
+      activities={[]} workspaceLabel="temporary workspace" busy={false} onDecision={async () => {}} />);
+    expect(render("write_file", false)).toContain("本会话允许");
+    expect(render("write_file", true)).not.toContain("本会话允许");
+    expect(render("plan_scope_expansion", true)).not.toContain("本会话允许");
   });
 });

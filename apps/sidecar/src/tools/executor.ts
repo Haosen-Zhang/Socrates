@@ -111,7 +111,8 @@ export class ToolExecutor {
     if (permission.effect === "deny") return this.get(id)!;
     if (permission.effect === "ask") {
       const approval = this.approvals.request({
-        taskId: context.taskId, kind: "tool", subjectId: id, inputHash,
+        taskId: context.taskId, kind: tool.name, subjectId: id, inputHash,
+        sessionId: context.sessionId, toolGeneration: tool.generation,
         workspaceIdentity: request.workspaceIdentity, attemptId: request.attemptId ?? context.taskId,
         policyVersion: request.policyVersion, risk: permission.risk, freshHumanRequired: permission.freshHumanRequired,
       });

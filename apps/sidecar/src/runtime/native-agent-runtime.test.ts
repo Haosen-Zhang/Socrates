@@ -692,7 +692,8 @@ describe("NativeAgentRuntime", () => {
       requestId: "approval-1",
       callId: "call-1",
       risk: "medium",
-      kind: "tool",
+      kind: "mcp__demo__lookup",
+      toolGeneration: 1,
       policyVersion: 7,
       freshHumanRequired: false,
     });

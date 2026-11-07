@@ -88,3 +88,70 @@ Scope: all applicable items in the attached repair specification; preserve user 
 - [x] Exercise browser user paths with isolated data and record current evidence/limitations.
 
 Status: complete. Final host verification: 879 tests passed, zero failures/skips; typecheck/build passed. Browser: 28 checks passed, zero page exceptions. Acceptance: `doc/chat-work-reliability-repair-acceptance.md`. Native Tauri window/live Provider checks are not claimed.
+
+
+---
+
+# Cost-aware implementation — RUN_SCOPE=P00-P02
+
+## Goal
+Deliver provider invocation accounting, persistent prices, quotes, atomic budgets and resumable budget pauses through the existing Chat/Work production services and UI.
+
+## Phases
+- [x] P00: verify current baseline, shared invocation seam, provider contract and executable reuse experiments.
+- [x] P01: exact money, frozen prices, provider-aware usage, immutable invocation ledger, configuration/export UI.
+- [x] P02: bound quotes, atomic parent/child reservations, durable budget pause/increase/resume, task UI.
+- [x] Verify migration preservation, controlled service integrations, UI interactions, full tests/typecheck/desktop build.
+
+## Decisions and constraints
+- User explicitly authorizes direct local implementation; do not stop at design approval.
+- Keep all existing changes, room/history data and user files. Never use the normal application database for tests.
+- No paid models, production secrets, uploads, pushes or releases.
+- Current checkout e374dd3 includes persona/UI changes beyond main; retain this baseline rather than reset it to the prompt's older Alpha.1 commit.
+- Cost ledger is authoritative and independent of history rollback; integers at fixed scale cross JSON as strings.
+- Existing Native loop remains the only tool loop; gateway and every native sampling attempt share one broker.
+
+## Errors encountered
+- Initial combined reads exceeded output budget; re-read scoped specification sections.
+- provider-retry.ts path in exploratory read does not exist; locate actual retry seam with rg.
+- Regressions demonstrated before fixing: missing Native output cap, ignored stale quote, dropped raw billing warnings, strict-parent heuristic under-reservation, conflicting concurrent resume caps, CSV formula text and unsupported-modality text pricing. Owning tests now pass.
+- Independent review fixed persisted user replan/ordinal recovery, monetary interrupted-package recovery, price validity at invocation time and cross-currency reconciliation. Browser diagnosis fixed a completed ledger panel closing during export; fixture test selector was corrected from Close to the existing Dismiss label.
+
+## Status
+Completed P00-P02. Final host gate: 971 tests pass, zero failures/skips, 22,148 assertions; typecheck and desktop build pass. Actual Chrome 20/20 checks pass; promptfoo evaluate 1/0. Durable report and evidence: implementation-progress.md and output/validation/cost-aware/summary.json. No paid/live Provider, native Tauri window, push or publication.
+
+## Follow-up: sidecar startup repair
+- [x] Reproduce checksum 23 failure using read-only metadata and an isolated source snapshot.
+- [x] Freeze early 023, append 024, narrowly recognize the complete-023 variant without rewriting metadata or bypassing unknown drift.
+- [x] Add both upgrade paths/data-preservation tests and a real entry-process handshake/HTTP bootstrap test.
+- [x] Validate isolated source copy, then apply consistent-backup-protected local repair; 12 protected tables, 4 rooms and 8 messages unchanged.
+- [x] Run full suite/typecheck/build; attempt isolated native Tauri observation; clean own services and record evidence/limitations.
+
+Current result: 975 tests passed, zero failures/skips, 22,171 assertions; typecheck/build pass. Actual sidecar handshake/room APIs verified. Tauri process chain launched, but UI tooling cannot attach the unbundled binary; no rendered-window claim. Backup retained; no model or production credential use. Evidence: output/validation/sidecar-startup-fix/.
+
+## Follow-up: Chat save / truncated planning / automatic output
+- [x] Read-only diagnosis: old Chat speaker order empty; both reported Manager calls finished `length` at 1,024 tokens.
+- [x] Reuse core room-aware collaboration defaults in the editable settings draft and expose validation reasons.
+- [x] Follow user correction: remove token-limit choices from composer/resume; application-managed output with one larger, separately admitted planning repair.
+- [x] Persist finish metadata and usage atomically; preserve explicit legacy caps, unknown-outcome boundaries and same-root checkpoints.
+- [x] Verify actual SDK controlled SSE, monetary expansion pause/topup/resume, Chat UI save persistence and complete cost/Native browser flow.
+- [x] Record 983/0 tests, 32/32 browser checks, typecheck/build and evidence in implementation-progress.md; stop disposable services.
+
+Current result: output is managed by the application; users configure money. Existing rooms, history and cost facts are retained. Final evidence: output/validation/collaboration-regression/summary.json. No paid model, production database mutation, upload, push or publication in this follow-up.
+
+## Follow-up: write preconditions / session approval (2026-11-07)
+- [x] Read-only diagnosis: absent write target with three invented/empty-file hashes; approved calls failed at precondition validation.
+- [x] Add explicit create-only null precondition and actionable hash-conflict output while retaining stale-write protections.
+- [x] Align frontend/backend eligibility; wire persisted room/workspace/tool/generation/policy session grants into direct and team hosts after plan-scope checks.
+- [x] Append migration 025; preserve old approval/grant records and keep unscoped historical grants inert.
+- [x] Verify actual SDK correction, two approved writes after one session decision, exact plan-expansion confirmation, 990 passing tests, typecheck/build and 8 Chrome checks.
+- [x] Record evidence in implementation-progress.md and stop own disposable fixture/Vite services.
+
+## Follow-up: automatic pricing defaults (2026-11-07)
+- [x] Read-only diagnosis: finished calls have usage but no price; UI incorrectly conflated this with uncertain outcomes.
+- [x] Verify primary pricing/API docs; reuse PricingStore/Broker/quotes/ledger for automatic exact-endpoint official references and labelled unlisted/proxy presets.
+- [x] Separate estimated/known money, preserve strict bounds and actual-outcome safeguards, and consume booked estimates in soft budgets.
+- [x] Expose current-reference historical estimates without rewriting original facts; export separate fields and remove ordinary per-call bill forms.
+- [x] Prefill provider model rates and apply one optional model override to future calls.
+- [x] Validate 26-call isolated real-data copy with 15 protected tables unchanged; 998 tests, typecheck/build and 11 Chrome checks pass.
+- [x] Record sources/limits/evidence, delete private test copy and stop disposable services. No paid model, production mutation, upload or push.

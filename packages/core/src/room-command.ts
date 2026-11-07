@@ -14,6 +14,9 @@ export interface RoomCommandInput {
   intent: RoomCommandIntent;
   attachmentIds?: string[];
   workspaceRefIds?: string[];
+  quoteId?: string;
+  maxOutputTokens?: number;
+  budget?: { mode: "strict_admission" | "soft_limit" | "tracking_only"; limitAtomic: string };
 }
 export interface ResolvedRoomCommand {
   kind: "direct" | "discussion" | "team";

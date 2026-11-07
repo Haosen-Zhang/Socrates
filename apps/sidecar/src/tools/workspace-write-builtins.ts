@@ -237,7 +237,7 @@ export function createWorkspaceWriteBuiltins(
       capability: "workspace_write",
       generation: 1,
       async execute(input: unknown, context: ToolContext) {
-        const { path, content, expectedSha256 } = input as { path: string; content: string; expectedSha256?: string };
+        const { path, content, expectedSha256 } = input as { path: string; content: string; expectedSha256?: string | null };
         const written = policy.writeText(path, content, { expectedSha256, operationId: context.toolOperationId, signal: context.signal });
         return { action: written.existed ? "overwritten" : "created", path: written.relativePath,
           oldSha256: written.oldSha256, newSha256: written.newSha256, diff: written.diff, diffTruncated: written.diffTruncated };

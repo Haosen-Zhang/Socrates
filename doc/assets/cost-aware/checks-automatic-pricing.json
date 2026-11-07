@@ -1,0 +1,50 @@
+{
+  "generatedAt": "2026-11-07T10:31:33.019Z",
+  "controlledFixture": true,
+  "checks": [
+    {
+      "name": "Known-usage historical calls and new calls have automatic reference estimates",
+      "ok": true
+    },
+    {
+      "name": "The main cost heading shows an amount without asking for reconciliation",
+      "ok": true
+    },
+    {
+      "name": "No per-invocation bill forms are required for priced estimates",
+      "ok": true
+    },
+    {
+      "name": "JSON export keeps reference estimates separate from original facts",
+      "ok": true
+    },
+    {
+      "name": "CSV export keeps reference estimates separate from original facts",
+      "ok": true
+    },
+    {
+      "name": "Provider settings prefill official prices and explain that overrides are optional",
+      "ok": true
+    },
+    {
+      "name": "One override automatically prices subsequent model calls",
+      "ok": true
+    },
+    {
+      "name": "History retains original unknown price facts while showing a current reference estimate",
+      "ok": true
+    },
+    {
+      "name": "Updating one model leaves a prior frozen invocation price and amount unchanged",
+      "ok": true
+    },
+    {
+      "name": "No renderer errors",
+      "ok": true
+    },
+    {
+      "name": "No external browser requests",
+      "ok": true
+    }
+  ]
+}

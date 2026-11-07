@@ -5,6 +5,8 @@ export interface Migration {
   version: number;
   name: string;
   checksum: string;
+  /** Only explicitly identified historical variants; never rewrites applied metadata. */
+  acceptsAppliedChecksum?: (db: Database, checksum: string) => boolean;
   up(db: Database): void;
 }
 
@@ -49,7 +51,7 @@ export function runMigrations(db: Database, migrations: readonly Migration[]): n
   for (const record of applied) {
     const migration = ordered.find((candidate) => candidate.version === record.version);
     if (!migration) throw new Error(`unknown_applied_migration:${record.version}`);
-    if (migration.checksum !== record.checksum) throw new Error(`migration_checksum_mismatch:${record.version}`);
+    if (migration.checksum !== record.checksum && !migration.acceptsAppliedChecksum?.(db, record.checksum)) throw new Error(`migration_checksum_mismatch:${record.version}`);
   }
 
   const appliedVersions = new Set(applied.map((record) => record.version));

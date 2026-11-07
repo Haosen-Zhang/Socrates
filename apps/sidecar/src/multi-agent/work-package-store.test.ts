@@ -4,6 +4,18 @@ import { ExecutionEventStore } from "../store/execution-event-store";
 import { ApprovalManager } from "../approvals/manager";
 
 describe("WorkPackageStore", () => {
+  it("recovers a persisted monetary pause before package finish without inventing an unknown failure", () => {
+    const { db, store, definitions } = packageSetup();
+    store.replacePlan("t", 1, definitions);
+    const first = store.start(store.ready("t")[0]!.id);
+    new ExecutionEventStore(db).append({ eventId: "cost-pause-before-finish", sessionId: "s", runId: first.runId!, agentId: "a", type: "run.interrupted", coordinates: { turnId: first.runId! }, payload: { reason: "cost_budget_insufficient" } });
+    expect(store.recoverInterrupted()).toBe(1);
+    expect(store.get(first.id)).toMatchObject({ state: "budget_stopped", failureReason: "cost_budget_insufficient" });
+    expect(store.attempts(first.id)[0]).toMatchObject({ status: "budget_stopped", failure_reason: "cost_budget_insufficient" });
+    expect(() => store.retry(first.id)).not.toThrow();
+    expect(store.ready("t")).toHaveLength(1);
+    db.close();
+  });
   it("recovers a proven child completion before marking unknown work and expires orphan approvals", () => {
     const { db, store, definitions } = packageSetup();
     store.replacePlan("t", 1, [{ ...definitions[0]!, reviewerAgentId: "b" }, definitions[1]!]);

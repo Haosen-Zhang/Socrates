@@ -1,0 +1,38 @@
+{
+  "generatedAt": "2026-11-06T17:58:13.340Z",
+  "controlledFixture": true,
+  "checks": [
+    {
+      "name": "The session-allow button is enabled for a scoped ordinary workspace write",
+      "ok": true
+    },
+    {
+      "name": "No file is written before permission",
+      "ok": true
+    },
+    {
+      "name": "Session permission writes both approved files without another user click",
+      "ok": true
+    },
+    {
+      "name": "The plan expansion remains pending and has no filesystem effect",
+      "ok": true
+    },
+    {
+      "name": "Fresh scope expansion exposes no session-allow button",
+      "ok": true
+    },
+    {
+      "name": "Exact expansion approval completes the task and third write",
+      "ok": true
+    },
+    {
+      "name": "No renderer errors",
+      "ok": true
+    },
+    {
+      "name": "No external browser requests",
+      "ok": true
+    }
+  ]
+}

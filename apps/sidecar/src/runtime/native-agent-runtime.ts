@@ -13,6 +13,8 @@ import {
   type ToolOutputRef,
   type ProviderType,
   type ReasoningEffort,
+  type GatewayInvocationContext,
+  type TokenUsage,
   truncateToolOutput,
   isStructuredExecutionError,
   StructuredExecutionError,
@@ -23,7 +25,8 @@ import type { ToolRegistry } from "../tools/registry";
 import { deniedToolOutcome } from "../tools/recovery-outcome";
 import { classifyProviderError } from "../provider-errors";
 import { executeProviderWithRetry, type ProviderRetryLifecycleEvent } from "../provider-retry";
-import { reasoningProviderOptions } from "../gateway-aisdk";
+import { invocationModelOptions, rawTokenUsageOf } from "../gateway-aisdk";
+import type { ModelInvocationBroker } from "../services/model-invocation-broker";
 
 type NativeTool = {
   definition: ToolDefinition;
@@ -49,7 +52,7 @@ type NativeStreamPart =
   | { type: "tool_call"; callId: string; name: string; input: unknown }
   | { type: "approval_required"; requestId: string; callId: string; name: string; input: unknown; permission: PermissionEvaluation }
   | { type: "tool_result"; callId: string; name: string; output: unknown; isError: boolean }
-  | { type: "usage"; usage: NormalizedUsage }
+  | { type: "usage"; usage: NormalizedUsage; requestId?: string; finishReason?: string; rawUsage?: TokenUsage }
   | { type: "error"; error: unknown }
   | { type: "provider_step_completed" }
   | { type: "budget_exhausted"; steps: number }
@@ -117,7 +120,8 @@ export function validateNativeToolInput(definition: ToolDefinition, input: unkno
 export function createAiSdkNativeStream(
   model: LanguageModel,
   invokeStreamText: typeof streamText = streamText,
-  profile: { temperature?: number; providerType?: ProviderType; modelId?: string; reasoningEffort?: ReasoningEffort } = {},
+  profile: { temperature?: number; providerType?: ProviderType; modelId?: string; baseUrl?: string; reasoningEffort?: ReasoningEffort;
+    maxOutputTokens?: number; broker?: ModelInvocationBroker; invocation?: GatewayInvocationContext } = {},
 ): NativeStreamFactory {
   return async function* (input) {
     let messages: ModelMessage[] = input.messages.length
@@ -125,7 +129,9 @@ export function createAiSdkNativeStream(
       : [{ role: "user", content: input.prompt }];
     let remainingSteps = input.maxSteps;
     const permissionByCallId = new Map<string, PermissionEvaluation>();
+    let sampleNo = 0;
     while (remainingSteps > 0) {
+      sampleNo++;
       input.signal?.throwIfAborted();
       // Re-snapshot room policy before every provider sample. A policy change
       // never mutates an already-pending call, but the next call sees it.
@@ -175,15 +181,20 @@ export function createAiSdkNativeStream(
           || part.type === "approval_required"
           || part.type === "tool_result",
         errorFromPart: (part) => part.type === "error" ? part.error : null,
-        openAttempt: async function* () {
+        openAttempt: (attemptNo) => {
+          const open = async function* (maxOutputTokens?: number): AsyncIterable<NativeStreamPart> {
           pending = [];
           hadToolActivity = false;
+          let requestId: string | undefined;
+          let finalUsage: NormalizedUsage | undefined;
+          let rawUsage: TokenUsage | undefined;
+          let finishReason: string | undefined;
           const result = invokeStreamText({
             model,
             system: input.system,
-            temperature: profile.temperature,
-            providerOptions: profile.providerType && profile.modelId
-              ? reasoningProviderOptions(profile.providerType, profile.modelId, profile.reasoningEffort) : undefined,
+            ...(profile.providerType && profile.modelId
+              ? invocationModelOptions({ providerType: profile.providerType, modelId: profile.modelId, baseUrl: profile.baseUrl ?? "",
+                temperature: profile.temperature, reasoningEffort: profile.reasoningEffort }) : { temperature: profile.temperature }),
             messages,
             tools,
             toolApproval,
@@ -192,6 +203,8 @@ export function createAiSdkNativeStream(
             stopWhen: stepCountIs(1),
             abortSignal: input.signal,
             maxRetries: 0,
+            maxOutputTokens,
+            includeRawChunks: true,
           });
           for await (const part of result.fullStream) {
             if (part.type === "text-delta") yield { type: "text_delta", text: part.text };
@@ -243,11 +256,30 @@ export function createAiSdkNativeStream(
               hadToolActivity = true;
               permissionByCallId.delete(part.toolCallId);
               yield { type: "tool_result", callId: part.toolCallId, name: part.toolName, output: JSON.stringify(deniedToolOutcome()), isError: true };
-            } else if (part.type === "finish") yield { type: "usage", usage: usageOf(part.totalUsage) };
+            } else if (part.type === "raw") rawUsage = rawTokenUsageOf(part.rawValue) ?? rawUsage;
+            else if (part.type === "finish") { finalUsage = usageOf(part.totalUsage); finishReason = String(part.finishReason); }
             else if (part.type === "error") yield { type: "error", error: part.error };
             else if (part.type === "abort") throw new DOMException(part.reason ?? "native_agent_cancelled", "AbortError");
           }
+          if (finalUsage) {
+            for (const key of ["inputTokens", "outputTokens", "totalTokens", "cachedInputTokens", "cacheWriteTokens", "reasoningTokens"] as const) {
+              if (rawUsage?.[key] !== undefined) finalUsage[key] = rawUsage[key]!;
+            }
+            const response = await result.response;
+            requestId = response?.headers?.["x-request-id"] ?? response?.id;
+            yield { type: "usage", usage: finalUsage, requestId, finishReason, rawUsage };
+          }
           successfulResult = result;
+          };
+          if (!profile.broker || !profile.invocation || !profile.providerType || !profile.modelId) return open(profile.maxOutputTokens);
+          return profile.broker.invoke({ context: { ...profile.invocation, logicalStepId: `${profile.invocation.logicalStepId}:sample:${sampleNo}`, attemptNo },
+            providerType: profile.providerType, baseUrl: profile.baseUrl ?? "", modelId: profile.modelId,
+            payload: { system: input.system, messages, tools: sample.map(({ native }) => native.definition) },
+            maxOutputTokens: profile.maxOutputTokens, signal: input.signal, reasoningEffort: profile.reasoningEffort, temperature: profile.temperature },
+          ({ maxOutputTokens }) => open(maxOutputTokens),
+          part => part.type === "usage" ? { usage: { ...Object.fromEntries(Object.entries(part.usage).filter(([key, value]) =>
+            ["inputTokens", "outputTokens", "totalTokens", "cachedInputTokens", "cacheWriteTokens", "reasoningTokens"].includes(key) && value !== null)),
+            ...part.rawUsage }, requestId: part.requestId, finishReason: part.finishReason } : part.type === "error" ? { failed: true } : undefined);
         },
       });
       for await (const part of retried) {
@@ -613,7 +645,8 @@ export class NativeAgentRuntime implements AgentRuntime {
         };
         else if (event.type === "approval_required") yield {
           type: "approval_required", requestId: event.requestId, callId: event.callId,
-          risk: tools[event.name]?.definition.risk ?? "high", kind: "tool",
+          risk: tools[event.name]?.definition.risk ?? "high", kind: event.name,
+          toolGeneration: tools[event.name]?.definition.generation,
           policyVersion: event.permission.policyVersion,
           freshHumanRequired: event.permission.freshHumanRequired,
         };

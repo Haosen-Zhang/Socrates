@@ -29,4 +29,19 @@ describe("ApprovalManager", () => {
     manager.request({ ...input, expiresAt: "2020-01-01T00:00:00.000Z" });
     expect(manager.recoverPending("2021-01-01T00:00:00.000Z")).toEqual({ expired: 1, pending: [] });
   });
+
+  it("persists and reuses an approved workspace writer only within the same room, workspace, tool generation and policy", () => {
+    const db = openDb(":memory:"), manager = new ApprovalManager(db);
+    const scope = { ...input, kind: "write_file", risk: "high" as const, sessionId: "room-a", toolGeneration: 1 };
+    const first = manager.request(scope);
+    manager.decide(first.id, { clientDecisionKey: "session-writer", decision: "allow_session" });
+    const next = manager.request({ ...scope, subjectId: "new-call", inputHash: "different-content", attemptId: "next-attempt" });
+    expect(manager.hasSessionGrant(next)).toBe(true);
+    for (const mismatch of [{ sessionId: "room-b" }, { workspaceIdentity: "other" }, { kind: "create_directory" }, { toolGeneration: 2 }, { policyVersion: 3 }, { freshHumanRequired: true }, { kind: "plan_scope_expansion", freshHumanRequired: true }]) {
+      expect(manager.hasSessionGrant({ ...next, ...mismatch })).toBe(false);
+    }
+    db.query("UPDATE permission_grants SET expires_at='2000-01-01'").run();
+    expect(manager.hasSessionGrant(next)).toBe(false);
+    db.close();
+  });
 });

@@ -2,6 +2,7 @@
 
 > 事无巨细版：从进程拓扑、前端 UI 策略，到运行时骨架、房间/多 Agent 编排、执行内核与安全边界。
 > 描述当前实现。2026-11-05 更新：Chat / Work、结构化房间命令与持久工作包已接通；房间异步归属、历史版本、团队实时事件和回退生命周期修复见 [可靠性验收](chat-work-reliability-repair-acceptance.md)。初版验收见 [本轮验收](chat-work-collaboration-acceptance.md)。
+> 2026-11-06：P00–P02 新增统一逐调用费用账本、连接级价格快照、任务报价与美元预算暂停/增额/恢复；当前验证与限制见 [implementation-progress.md](../implementation-progress.md)，权威边界见 [ADR 0009](../docs/adr/0009-model-invocation-cost-and-budget-authority.md)。
 
 ---
 
@@ -183,6 +184,7 @@ NavigationTarget =
 | `/agent` | 成员 Run 启动、状态、显式取消、预算继续与独立 SSE 观察 |
 | `/room-commands` | 带请求 ID/结构化 mentions 的统一房间分派、持久讨论与重放 |
 | `/multi` | 多 Agent 任务：讨论/计划/审批/执行（SSE 流式） |
+| `/cost` | 连接级价格快照/本地目录导入、版本化报价、逐调用账目/导出、预算增额/恢复、人工账单对账 |
 | `/content` | 附件/工作区文件内容 |
 | `/mcp` | MCP 服务器管理 + 工具 |
 
@@ -315,15 +317,21 @@ sequenceDiagram
   Ex->>Cx: 开执行(workspace-write, 写内建, 拿写锁)
   loop 每个高风险工具调用
     Cx-->>Ex: approval_required
-    Ex-->>U: 弹审批 (plan_scope 校验)
-    U->>Ex: allow_once / allow_session / deny
-    Ex->>Cx: 决定
+    alt 计划内且匹配当前会话工具授权
+      Ex->>Cx: 记录精确 allow_once (session_grant)
+    else 无授权或需要 fresh 审批
+      Ex-->>U: 弹审批 (plan_scope 校验)
+      U->>Ex: allow_once / allow_session / deny
+      Ex->>Cx: 决定
+    end
   end
   Cx-->>Ex: 执行完成
   Ex-->>U: completed
 ```
 
 ### 6.3 三个要点
+
+会话工具授权绑定房间、workspace identity、工具名称与 generation、风险和 policy version。仅明确支持的非破坏性内建写入工具可在 high 标签下接受该授权；命令、删除/移动、计划外操作和未知结果恢复仍需单次确认。迁移 025 保留旧授权事实，缺少房间/generation 的旧行不会被自动扩权。
 
 **幂等与恢复**：每个 turn 用 `stableKey = task:attempt:phase:round:index` 落库。暂停/恢复时已完成的 turn 直接回放，不重复调模型。上下文用 `services/context-compaction.ts` 压缩。
 
@@ -428,7 +436,7 @@ Run 独立的 `AbortController`。SSE/WebView 断开不能取消执行；
   未收敛的工具阻止该工作区继续 dispatch。相同工具与归一化参数连续3/5/8次仅提示模型
   检查结果或改变方法，不把基础设施 retry 当作模型重复调用。
 - `write_file` 使用同目录 staging/fsync/原子发布，返回前后 SHA-256 与有界真实 diff；
-  可传 `expectedSha256` 拒绝 stale 更新。16个工具的风险、契约和边界见
+  可传 `expectedSha256` 拒绝 stale 更新；新建时显式传 `null` 表示“目标必须不存在”，更新时使用 `read_file` 返回的完整哈希。哈希冲突保留文件并向模型返回具体纠正方法。16个工具的风险、契约和边界见
   [Native 工具审计](native-tool-audit.md)，验收证据见 [Phase 5–8 验收](single-agent-phase5-8-acceptance.md)。
 - LangGraph checkpoint、Zustand 和 Provider 均不是产品会话记录；API Key 仍只在 Keychain。
 
@@ -485,6 +493,18 @@ Run 独立的 `AbortController`。SSE/WebView 断开不能取消执行；
 - ✅ **执行层计费已解耦**（#77）：执行改走 `native_ai_sdk` + 你配的 provider key，不再依赖 codex 登录。
 - **LangGraph 编排**：`LangGraphAgentRuntime` 已在代码里但未 register 进生产（roadmap Phase 2）。
 - **`discussionMode=debate`**：未实现（只有 off/round_robin 生效）。
+
+### 费用与预算（P00–P02）
+
+正常使用不要求逐条填价格或账单：`PricingStore.resolveAutomatic` 在报价、Broker 和价格设置入口按精确连接/模型自动匹配内置官方参考价；未收录模型或未核对代理使用明确标注的预设估算，用户可按模型覆盖一次。参考估算和已知金额分别汇总，软预算同时扣除已知及已记账估算；严格模式不接受未核实预设。旧调用只在视图中追加当前参考估算，不改原价/用量/账目，也不据此释放历史待核实预算。来源、覆盖范围和验证见 [自动模型价格](automatic-model-pricing.md)。
+
+`index.ts` 将 `makeAiSdkGateway` 包进 `ModelInvocationBroker`；Native 的每次 `openAttempt` 也进入相同 broker。直接回复、讨论/总结、Manager/修复规划、Worker 采样、Reviewer 均携带 room/rootTask/run/member/profile 身份。SDK 内部重试关闭，现有 Native loop 与工具执行权威保留。当前上下文压缩是本地规则，不产生隐藏模型费。
+
+迁移 023 的 `cost_*` 表独立于可撤销消息。金额以 12 位定点整数字符串传输；价格按连接、模型、endpoint/protocol/tier 匹配，按请求冻结；缓存和 reasoning 先变成互斥计价项目。旧 `usage_records` 和 Token API 保留，货币费用由新账本投影。旧无价格的历史只标未知，不追溯伪造消费。
+
+RoomCommand 在任何付费准备调用前创建任务账户。SQLite 即时事务原子检查父子账户并预留，网络调用在事务之外；可能发送后的缺失 usage 保留未知暴露，不按超时退款。价格更新、费用不足、未知规则和实际超预留分别记录。严格模式仅支持有可信官方目录上下文上界及输出 cap 的已验证文本协议；其他连接可选估算暂停或显式仅统计。没有已验证价格的外部 MCP 工具在受预算保护的任务中不开放。
+
+预算暂停退出执行并释放写租约。增额和恢复是带请求身份的显式动作；同一 rootTask 延续已完成工具、成员配置和工作包。普通界面只要求金额预算，输出额度由应用管理；规划首次被明确截断时允许一次扩大额度的修复，各次物理调用分别预留和结算，金额不足仍暂停。恢复生成新报价；兼容 API 可降低旧任务的显式输出上限，不能通过回退消息抹掉费用。已开始运行的成员不被静默替换，工作包 owner 变更仍使用执行前的计划审批。
 
 ---
 

@@ -123,16 +123,35 @@ export type GatewayRequest = {
   messages: ChatMessage[];
   /** 任务取消时中止底层请求，不再消耗 token */
   signal?: AbortSignal;
+  maxOutputTokens?: number;
+  /** Public ownership only; never contains credentials or conversation content. */
+  invocation?: GatewayInvocationContext;
 };
+
+export interface GatewayInvocationContext {
+  roomId: string;
+  rootTaskId: string;
+  runId: string;
+  agentId: string;
+  providerConnectionId: string;
+  runProfileVersion: string;
+  logicalStepId: string;
+  attemptNo?: number;
+  workPackageId?: string;
+  purpose: import("./cost").InvocationPurpose;
+  contextWindowTokens?: number | null;
+  catalogContextWindow?: { tokens: number; providerId: string; revision: string };
+}
 
 export type TokenUsage = {
   inputTokens?: number; outputTokens?: number; totalTokens?: number;
   cachedInputTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number;
+  unsupportedBillingDimensions?: string[];
 };
 
 export type GatewayEvent =
   | { type: "delta"; text: string }
-  | { type: "done"; usage?: TokenUsage }
+  | { type: "done"; usage?: TokenUsage; requestId?: string; finishReason?: string; outputTokenLimit?: number; outputTokenCeiling?: number }
   | { type: "error"; message: string; detail?: ExecutionErrorDetail };
 
 export type ModelGateway = (req: GatewayRequest) => AsyncIterable<GatewayEvent>;

@@ -12,12 +12,12 @@ type Contract = Pick<ToolDefinition, "description" | "inputSchema" | "outputSche
 
 const contracts: Record<string, Contract> = {
   write_file: {
-    description: "Atomically create or overwrite a UTF-8 workspace file. Returns complete before/after SHA-256 and a bounded unified diff. Supply expectedSha256 to reject stale updates.",
+    description: "Atomically create or overwrite a UTF-8 workspace file. For a NEW file use expectedSha256: null (create only). To update, first read_file and copy its complete sha256. Never invent a hash or use an empty-file hash for an absent file. Returns before/after SHA-256 and a bounded unified diff.",
     inputSchema: withExample(object({
       path,
       content: { type: "string", description: "Complete replacement UTF-8 text, not a patch." },
-      expectedSha256: { ...hash, description: "Optional SHA-256 of the existing full file. A mismatch rejects the update; omission permits the approved overwrite." },
-    }, ["path", "content"]), { path: "notes.txt", content: "Updated notes\n" }),
+      expectedSha256: { anyOf: [hash, { type: "null" }], description: "null asserts that the target does not exist. Otherwise copy sha256 from read_file of the existing file; never guess. A mismatch rejects the change. Omission is a legacy unconditional approved overwrite." },
+    }, ["path", "content"]), { path: "notes.txt", content: "New notes\n", expectedSha256: null }),
     outputSchema: object({ action: { type: "string", enum: ["created", "overwritten"] }, path, oldSha256: { anyOf: [hash, { type: "null" }], description: "Full previous file hash, or null for a new file." }, newSha256: hash, diff: { ...string, description: "Bounded unified diff of the approved change." }, diffTruncated: { type: "boolean" } }),
     timeoutMs: 30_000,
   },

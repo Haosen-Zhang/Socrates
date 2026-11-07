@@ -81,6 +81,13 @@ export function resolveReasoningProfile(
     if (/opus-4[.-]5/.test(id)) return profile("anthropic", ["auto", "low", "medium", "high"]);
     return profile("anthropic", ["auto", "disabled"]);
   }
+  // OpenAI model pages distinguish GPT-6.1 Sol/Astra from the variants that allow none.
+  if (/(?:^|\/)gpt-(?:6\.1-sol|6-astra)(?:-|$)/.test(id)) {
+    return profile("openai", ["auto", "low", "medium", "high", "xhigh", "max"]);
+  }
+  if (/(?:^|\/)gpt-(?:6\.1-terra|6-(?:sol|luna))(?:-|$)/.test(id)) {
+    return profile("openai", ["auto", "disabled", "low", "medium", "high", "xhigh", "max"]);
+  }
   if (/(?:^|[/_-])(?:gpt-5(?:[.-]|$)|o[134](?:-|$))/.test(id)) {
     return profile("openai", ["auto", "disabled", "low", "medium", "high", "xhigh"]);
   }

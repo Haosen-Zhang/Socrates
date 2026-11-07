@@ -37,6 +37,9 @@ export type OrchestrationAgent = {
   providerType: ProviderType;
   baseUrl: string;
   apiKey: string;
+  providerConnectionId?: string;
+  runProfileVersion?: string;
+  catalogContextWindow?: import("./chat").GatewayInvocationContext["catalogContextWindow"];
   /** Resolved from the same frozen member profile used for the request. */
   contextWindowTokens?: number | null;
 };

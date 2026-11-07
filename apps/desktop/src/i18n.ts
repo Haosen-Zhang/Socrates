@@ -1,4 +1,5 @@
 /** 零依赖 i18n：字典 + {var} 插值。sidecar 返回的错误文案暂不翻译（#19 注明）。 */
+import { COST_TRANSLATIONS } from "./cost/strings";
 export type Lang = "zh-CN" | "zh-TW" | "en";
 
 export const LANGS: Array<{ value: Lang; label: string }> = [
@@ -1659,7 +1660,7 @@ const en: Dict = {
   status_cancelled: "Cancelled",
 };
 
-const DICTS: Record<Lang, Dict> = { "zh-CN": zhCN, "zh-TW": zhTW, en };
+const DICTS: Record<Lang, Dict> = { "zh-CN": { ...zhCN, ...COST_TRANSLATIONS["zh-CN"] }, "zh-TW": { ...zhTW, ...COST_TRANSLATIONS["zh-TW"] }, en: { ...en, ...COST_TRANSLATIONS.en } };
 
 export function tr(lang: Lang, key: string, vars?: Record<string, string | number>): string {
   let s = DICTS[lang][key] ?? zhCN[key] ?? key;

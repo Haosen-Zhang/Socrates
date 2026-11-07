@@ -15,6 +15,11 @@ function fixture() {
 }
 
 describe("native write tool contracts", () => {
+  it("accepts an explicit create-only precondition and describes real hash evidence", () => {
+    const tool = fixture().tools.find(tool => tool.name === "write_file")!;
+    expect(validateJsonSchemaInput(tool.inputSchema, { path: "new.md", content: "new", expectedSha256: null })).toEqual([]);
+    expect(tool.description).toContain("Never invent");
+  });
   it("publishes actual spreadsheet sheets, rows and mixed primitive cell schema", () => {
     const tool = fixture().tools.find((tool) => tool.name === "create_spreadsheet")!;
     const valid = { path: "a.xlsx", format: "xlsx", sheets: [{ name: "Data", rows: [["item", 2, true, null]] }] };
