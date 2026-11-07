@@ -14,6 +14,7 @@ import { SingleAgentRunner } from "./single-agent-runner";
 import { SessionStore } from "../store/session-store";
 import { AttachmentResolver } from "../attachments/resolver";
 import { tmpdir } from "node:os";
+import type { WorkVerification } from "../services/work-verification";
 
 class ApprovalRuntime implements AgentRuntime {
   readonly kind = "fake";
@@ -37,7 +38,7 @@ class ApprovalRuntime implements AgentRuntime {
   async close() {}
 }
 
-async function setup(factory: (input: RuntimeOpenInput) => AgentRuntime = () => new ApprovalRuntime()) {
+async function setup(factory: (input: RuntimeOpenInput) => AgentRuntime = () => new ApprovalRuntime(), verification?: WorkVerification) {
   const db = openDb(":memory:");
   const now = new Date().toISOString();
   db.query("INSERT INTO workspaces (id, canonical_path, display_path, identity_hash, label, created_at, last_opened_at) VALUES ('w', '/tmp', '/tmp', 'hash', 'tmp', ?, ?)").run(now, now);
@@ -56,11 +57,25 @@ async function setup(factory: (input: RuntimeOpenInput) => AgentRuntime = () => 
   runtimes.register("native_ai_sdk", factory);
   const approvals = new ApprovalManager(db);
   const leases = new WorkspaceLeaseManager(db, "test-instance");
-  const runner = new ExecutionRunner(db, tasks, runtimes, leases, approvals, events, executionEvents);
+  const runner = new ExecutionRunner(db, tasks, runtimes, leases, approvals, events, executionEvents, undefined, verification);
   return { db, tasks, task, approvals, runner, executionEvents, leases, runtimes };
 }
 
 describe("ExecutionRunner", () => {
+  it("checks package artifacts before releasing the child write lease and preserves execution status", async () => {
+    const observed:Array<{packageId:string|undefined;lease:boolean;terminal:boolean}>=[];
+    const verification:WorkVerification={
+      view:target=>({target,plan:null,run:null,verificationStatus:"failed",outcome:"verification_failed",acceptedUnverified:false,gatePassed:false}),
+      async verify(target,options){observed.push({packageId:target.workPackageId,lease:!!f.leases.get(options!.leaseId!),terminal:f.executionEvents.listAfter(options!.runId!,0).some(event=>event.type==="run.completed")});return this.view(target);},
+    };
+    const f=await setup(()=>({kind:"controlled",capabilities:UNKNOWN_MODEL_CAPABILITIES,async open(){},async close(){},async interrupt(){},async answerApproval(){},async *start(){yield {type:"text_delta",text:"Claimed success"};}}),verification);
+    const plan=f.tasks.getPlan(f.task.id)!;
+    const result=await f.runner.runPackage({taskId:f.task.id,packageId:`${f.task.id}/one`,agentId:"a",prompt:"fix",plan:plan.content,attemptNo:1});
+    expect(observed).toEqual([{packageId:`${f.task.id}/one`,lease:true,terminal:false}]);
+    expect(result.status).toBe("completed");
+    expect(f.db.query("SELECT COUNT(*) AS n FROM workspace_leases").get()).toEqual({n:0});
+    f.db.close();
+  });
   for (const operation of ["pause", "cancel", "shutdown"] as const) {
     it(`${operation} settles a queued legacy execution before another writer releases its lease`, async () => {
       let opens = 0;

@@ -5,6 +5,7 @@ import type { HistoryStore } from "../store/history-store";
 import { buildPublicRoomContext } from "../services/public-room-context";
 import type { MultiTaskStore } from "./task-store";
 import type { WorkPackageRecord, WorkPackageStore } from "./work-package-store";
+import { taskVerificationTarget, type WorkVerification } from "../services/work-verification";
 
 export interface PackageExecutor {
   runPackage(input: { taskId: string; packageId: string; agentId: string; prompt: string; plan: StructuredPlan; attemptNo: number; previousRunId?: string; runProfile?: Record<string, unknown>; signal?: AbortSignal }, emit?: (event: RuntimeEvent) => void | Promise<void>): Promise<{ status: "completed" | "failed" | "cancelled" | "budget_stopped"; runId: string; result: string; reason?: string }>;
@@ -26,6 +27,7 @@ export class TeamRunner {
     private readonly reviewer: PackageReviewer,
     private readonly events: EventStore,
     private readonly history?: HistoryStore,
+    private readonly verification?: WorkVerification,
   ) {}
 
   isActive(taskId: string): boolean { return this.active.has(taskId); }
@@ -46,6 +48,7 @@ export class TeamRunner {
     this.active.set(taskId, active);
     try {
       while (!active.controller.signal.aborted) {
+        this.packages.reconcileVerification(taskId);
         const reviewing = this.list(taskId).find((item) => item.state === "awaiting_review");
         if (reviewing) { await this.review(taskId, reviewing, active.controller.signal); continue; }
         const next = this.packages.ready(taskId)[0];
@@ -87,10 +90,20 @@ export class TeamRunner {
         this.packages.cancelQueued(taskId);
         if (!["cancelled", "completed", "failed"].includes(current.state)) this.tasks.transition(taskId, { type: "cancel", reason: "user_cancelled" });
       } else if (all.every((item) => item.state === "completed")) {
-        this.tasks.transition(taskId, { type: "complete" });
+        const verification = await this.verification?.verify(taskVerificationTarget(this.db, taskId), {
+          runId: `team:${taskId}:${task.attemptNo}`, agentId: task.config.synthesizerId, signal: active.controller.signal,
+        });
+        // Integration may itself alter generated files. Old local passes must
+        // not survive a changed snapshot just because their executors stopped.
+        this.packages.reconcileVerification(taskId);
+        if (active.controller.signal.aborted) {
+          if (this.tasks.get(taskId)?.state === "executing") this.tasks.transition(taskId, active.paused ? {type:"pause",reason:"user_paused"} : {type:"cancel",reason:"user_cancelled"});
+        } else if (verification && !verification.gatePassed || this.list(taskId).some(item => item.state !== "completed")) {
+          this.tasks.transition(taskId, {type:"pause",reason:"verification_required"});
+        } else this.tasks.transition(taskId, { type: "complete" });
       } else {
         const costReason = all.find(item => item.failureReason?.startsWith("cost_budget_"))?.failureReason;
-        const reason = costReason ?? (all.some((item) => item.state === "budget_stopped") ? "work_package_budget_stopped" : "work_package_partial_failure");
+        const reason = costReason ?? (all.some(item => item.state === "awaiting_verification") ? "verification_required" : all.some((item) => item.state === "budget_stopped") ? "work_package_budget_stopped" : "work_package_partial_failure");
         if (current.state === "executing") this.tasks.transition(taskId, { type: "pause", reason });
       }
       await this.publishSummary(taskId);
@@ -123,6 +136,8 @@ export class TeamRunner {
   async cancel(taskId: string): Promise<void> {
     const active = this.active.get(taskId);
     this.packages.cancelQueued(taskId);
+    const target = taskVerificationTarget(this.db, taskId);
+    await this.verification?.cancelRoot?.(target.roomId, target.rootTaskId);
     if (active) {
       active.cancelled = true;
       active.paused = false;

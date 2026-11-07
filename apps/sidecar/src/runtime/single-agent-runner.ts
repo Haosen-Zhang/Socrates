@@ -30,6 +30,7 @@ import type { HistoryStore } from "../store/history-store";
 import { WorkspaceLeaseManager } from "../workspace/leases";
 import { memberConversationHistory, resolveRunProfile, type RunProfile } from "../services/run-profile";
 import { isCostBudgetPause } from "../services/model-invocation-broker";
+import type { WorkVerification } from "../services/work-verification";
 
 type SessionRow = {
   id: string;
@@ -113,6 +114,7 @@ export class SingleAgentRunner {
     private readonly attachments: AttachmentResolver,
     history?: HistoryStore,
     leases?: WorkspaceLeaseManager,
+    private readonly verification?: WorkVerification,
   ) {
     this.usage = new UsageCollector(db);
     this.memory = new ConversationMemoryStore(db, history);
@@ -1033,6 +1035,12 @@ export class SingleAgentRunner {
       });
       if (leaseLost) throw new Error("workspace_lease_lost");
       if (budgetExhausted) throw new Error("budget_exhausted");
+      if (session.kind === "cowork") await this.verification?.verify({
+        roomId:session.id,
+        rootTaskId:String(input.runtimeOptions?.costRootTaskId ?? (clientTurnKey.startsWith("room-command:") ? clientTurnKey.slice(13) : prepared.runId)),
+      }, {runId:prepared.runId,agentId:agent.agent_id,signal:input.signal,leaseId:lease?.id});
+      if (leaseLost) throw new Error("workspace_lease_lost");
+      input.signal?.throwIfAborted();
       const completedAt = new Date().toISOString();
       const finalContent = assistantText;
       await this.memory.completeTurn({

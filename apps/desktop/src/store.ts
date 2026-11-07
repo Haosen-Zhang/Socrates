@@ -114,7 +114,7 @@ export type MultiTaskView = {
   workPackages?: WorkPackageView[];
   summary?: string | TeamSummaryView;
   id: string; sessionId: string; prompt: string; state: TaskState; resumeFrom: string | null; terminalReason: string | null; outcomeUnknown: boolean; requiresExecutionReview: boolean;
-  config: { speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string; effortByAgent?: Record<string, ReasoningEffort>; fallbackOrderByAgent?: Record<string, string[]> };
+  config: { clientRequestId?: string; speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string; effortByAgent?: Record<string, ReasoningEffort>; fallbackOrderByAgent?: Record<string, string[]> };
   plan: MultiPlan | null;
   turns: Array<{ id: string; phase: string; round: number; agentId: string; snapshot: Record<string, unknown>; status: string; content: string | null; usage: { inputTokens?: number; outputTokens?: number } | null; error: string | null }>;
   pendingApprovals: PendingApproval[];
@@ -181,7 +181,7 @@ export type Store = {
   setComposerMentions: (roomId:string,mentions:SelectedMention[]) => void;
   setComposerDraft: (roomId: string, text: string) => void;
   setAppMode: (mode: "chat" | "cowork") => Promise<void>;
-  sendRoomCommand: (content: string, mentions: RoomMention[], intent: RoomCommandIntent, clientRequestId?: string, roomId?: string, costOptions?: CostOptions) => Promise<boolean>;
+  sendRoomCommand: (content: string, mentions: RoomMention[], intent: RoomCommandIntent, clientRequestId?: string, roomId?: string, costOptions?: CostOptions, verificationPlanId?:string) => Promise<boolean>;
   continueAgentRun: () => Promise<void>;
   applyMemberTemplate: (sessionId: string, agentId: string) => Promise<void>;
   retryWorkPackage: (taskId: string, packageId: string, confirmOutcomeUnknown?:boolean) => Promise<void>;
@@ -668,7 +668,7 @@ export const useStore = create<Store>((set, get) => {
         void get().resumeAgentRun(sessionId,started.runId);
       } catch(error) {if(roomView(sessionId).historyGeneration === generation) updateRoom(sessionId,{agentRunning:false,agentError:error instanceof Error ? error.message : String(error)});}
     },
-    sendRoomCommand: async (content, mentions, intent, clientRequestId, targetRoomId, costOptions) => {
+    sendRoomCommand: async (content, mentions, intent, clientRequestId, targetRoomId, costOptions, verificationPlanId) => {
       const roomId = targetRoomId ?? get().currentSessionId;
       if (!roomId) return false;
       const view = roomView(roomId);
@@ -679,7 +679,7 @@ export const useStore = create<Store>((set, get) => {
       const requestedCostBody = commandCostBody(costOptions);
       const semanticCostBody = { ...requestedCostBody };
       delete semanticCostBody.quoteId;
-      const fingerprint=JSON.stringify({content,mentions,intent,attachments,workspaceRefs,...semanticCostBody});
+      const fingerprint=JSON.stringify({content,mentions,intent,attachments,workspaceRefs,verificationPlanId,...semanticCostBody});
       const pending=get().pendingRoomRequests[roomId];
       const retryingPending = pending?.fingerprint === fingerprint && (clientRequestId === undefined || clientRequestId === pending.clientRequestId);
       const costBody = retryingPending && pending.costOptions ? commandCostBody(pending.costOptions) : requestedCostBody;
@@ -687,7 +687,7 @@ export const useStore = create<Store>((set, get) => {
       set(state=>({pendingRoomRequests:{...state.pendingRoomRequests,[roomId]:{fingerprint,clientRequestId:clientRequestId!,costOptions:costBody}}}));
       updateRoom(roomId,{activeRoomCommandId:`pending:${clientRequestId}`,agentRunning:true,lastStoppedRunId:null,agentError:null,agentEvents:[],agentStreamText:"",historyRevision:view.historyRevision+1,taskRequestVersion:view.taskRequestVersion+1,multiStreamAgentId:mentions.find(mention=>mention.type==="agent")?.type === "agent" ? (mentions.find(mention=>mention.type==="agent") as {agentId:string}).agentId : get().sessions.find(session=>session.id===roomId)?.primaryAgentId ?? null});
       try {
-        const response = await sidecarFetch(hs(),"/room-commands",{method:"POST",body:JSON.stringify({roomId,clientRequestId,content,mentions,intent,attachmentIds:attachments,workspaceRefIds:workspaceRefs,...costBody})});
+        const response = await sidecarFetch(hs(),"/room-commands",{method:"POST",body:JSON.stringify({roomId,clientRequestId,content,mentions,intent,attachmentIds:attachments,workspaceRefIds:workspaceRefs,verificationPlanId,...costBody})});
         if (!response.ok) {
           const rejected = await response.json() as { error?: string };
           // These errors prove that this quote was rejected before dispatch.

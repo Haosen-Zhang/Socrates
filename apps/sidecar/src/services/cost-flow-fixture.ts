@@ -45,6 +45,9 @@ import { ConfigStore, configRoutes } from "../config-store";
 import { MemorySecrets } from "../secrets";
 import { providerRoutes } from "../providers";
 import { agentRoutes } from "../agents";
+import { VerificationService } from "./verification-service";
+import { taskVerificationTarget } from "./work-verification";
+import { verificationRoutes } from "../routes/verification";
 
 export async function untilCostFlow(predicate: () => boolean, label: string, timeoutMs = 8_000): Promise<void> {
   const end = Date.now() + timeoutMs;
@@ -212,7 +215,8 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
           ...(typeof input.runtimeOptions?.costWorkPackageId === "string" ? { workPackageId: input.runtimeOptions.costWorkPackageId } : {}) } }) });
   });
   const attachments = new AttachmentResolver(db, directory);
-  const runner = new SingleAgentRunner(db, runtimes, approvals, executionEvents, attachments, undefined, leases);
+  const verification = new VerificationService(db,sessions,workspaces,leases,approvals,events,executionEvents,outputs);
+  const runner = new SingleAgentRunner(db, runtimes, approvals, executionEvents, attachments, undefined, leases,verification);
   const supervisor = new RunSupervisor(runner);
   const tasks = new MultiTaskStore(db);
   const resolveAgent = (agentId: string, snapshot: Record<string, unknown>): OrchestrationAgent => {
@@ -221,9 +225,9 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
       providerType: "openai_compatible", baseUrl: "https://fixture.invalid/v1", apiKey: "fixture-not-a-real-key", providerConnectionId: profile.providerId,
       runProfileVersion: profile.configurationVersion, contextWindowTokens: profile.contextWindowTokens, reasoningEffort: profile.reasoningEffort };
   };
-  const coordinator = new MultiAgentCoordinator(db, tasks, events, gateway, resolveAgent);
-  const execution = new ExecutionRunner(db, tasks, runtimes, leases, approvals, events, executionEvents);
-  const packages = new WorkPackageStore(db), team = new TeamRunner(db, tasks, packages, execution, coordinator, events);
+  const coordinator = new MultiAgentCoordinator(db, tasks, events, gateway, resolveAgent,undefined,verification);
+  const execution = new ExecutionRunner(db, tasks, runtimes, leases, approvals, events, executionEvents,undefined,verification);
+  const packages = new WorkPackageStore(db,item=>verification.view(taskVerificationTarget(db,item.taskId,item.id)).gatePassed), team = new TeamRunner(db, tasks, packages, execution, coordinator, events,undefined,verification);
   const commands = new RoomCommandService(db, sessions, {
     startDirect: input => supervisor.start(input), getDirect: id => supervisor.get(id), cancelDirect: id => supervisor.cancel(id), isTeamActive: id => team.isActive(id),
     resolveFileContext: (workspaceId, refs, ids) => resolveRoomFileContext(db, workspaces, attachments, workspaceId, refs, ids),
@@ -234,7 +238,7 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
         clientRequestId, targetAgentIds, inputContext } });
       void coordinator.run(task.id).catch(() => {});
       return { taskId: task.id };
-    }, resolveAgent, gateway,
+    }, resolveAgent, gateway, verification,
   });
   const costTasks = new CostTaskService(db, commands, supervisor, runner, tasks, coordinator, team, execution);
   const quotes = new TaskQuoteService(db, sessions), usage = new UsageCollector(db);
@@ -255,10 +259,11 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
   app.route("/config", configRoutes(config)); app.route("/providers", providerRoutes(db, secrets, controlledFetch)); app.route("/agents", agentRoutes(db));
   app.route("/sessions", sessionRoutes(sessions, events, usage, workspaces)); app.route("/workspaces", workspaceRoutes(workspaces));
   app.route("/room-commands", roomCommandRoutes(commands)); app.route("/multi", multiAgentRoutes(tasks, coordinator, execution, approvals, team));
+  app.route("/verification",verificationRoutes(verification));
   app.route("/agent", agentRunRoutes(supervisor, runner, approvals, executionEvents)); app.route("/cost", costRoutes(db, sessions, broker, quotes, costTasks, commands));
   app.route("/content", contentRoutes(db, workspaces, attachments));
   app.get("/rooms", c => c.json([])); app.get("/mcp/servers", c => c.json([]));
-  return { directory, db, sessions, workspaces, workspace, roomIds: { work: work.id, chat: chat.id }, broker, commands, quotes, costTasks, tasks, coordinator,
+  return { directory, db, sessions, workspaces, workspace, roomIds: { work: work.id, chat: chat.id }, broker, commands, quotes, costTasks, tasks, coordinator, verification, packages,
     execution, team, runtimes, approvals, runner, supervisor, app, token, headers, gatewayCalls, nativeCalls,
-    async close() { await commands.shutdown(); await team.shutdown(); await execution.shutdown(); await supervisor.shutdown(); db.close(); rmSync(directory, { recursive: true, force: true }); } };
+    async close() { await verification.shutdown(); await commands.shutdown(); await team.shutdown(); await execution.shutdown(); await supervisor.shutdown(); db.close(); rmSync(directory, { recursive: true, force: true }); } };
 }

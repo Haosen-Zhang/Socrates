@@ -1,6 +1,7 @@
 import {taskResumeAction} from "./workPackageRecovery";
 import SessionMessageAuthor from "./SessionMessageAuthor";
 import RoomTimeline from "./RoomTimeline";
+import RoomVerificationPanel from "./RoomVerificationPanel";
 import type { SettingsSection } from "./settings/settingsOverlay";
 import { hasOpenNestedDialog } from "./dialog/dialogLayer";
 import AgentEditor from "./AgentEditor";
@@ -440,6 +441,7 @@ function SingleAgentSession({ chrome }: { chrome: RoomChromeControls }) {
         })}
         <PublicReasoningPanel summaries={liveReasoningSummaries} running={agentRunning} />
         <ToolActivityTimeline activities={unanchoredToolActivities} showHeading={false} />
+        {session?.kind === "cowork" && <RoomVerificationPanel roomId={session.id}/>}
         {agentRunning && streamingText && <div className="pixel-card max-w-[78%] whitespace-pre-wrap bg-white p-3 text-sm"><AgentHeader name={String(session?.agents.find(member=>member.agentId===multiStreamAgentId)?.snapshot.nickname ?? "Agent")} model={String(session?.agents.find(member=>member.agentId===multiStreamAgentId)?.snapshot.modelId ?? "")}/>{streamingText}</div>}
       </RoomTimeline>
       {queued && <p role="status" className="mx-4 mb-2 text-xs text-amber-700">{t("workspace_writer_queued")}</p>}
@@ -597,7 +599,7 @@ function MultiAgentSession({ chrome }: { chrome: RoomChromeControls }) {
         <p className="my-2 text-xs text-neutral-600">{approval.kind === "plan_scope_expansion" ? t("multi_scope_expansion") : t("multi_tool_approval_hint")}</p>
         <div className="flex gap-2"><button className="pixel-button pixel-button--primary px-3 py-1.5 text-xs" onClick={() => void decideMultiApproval(approval.id, "allow_once")}>{t("approval_allow_once")}</button>{canAllowSessionApproval(approval) && <button className="pixel-button px-3 py-1.5 text-xs" onClick={() => void decideMultiApproval(approval.id, "allow_session")}>{t("approval_allow_session")}</button>}<button className="pixel-button px-3 py-1.5 text-xs text-red-700" onClick={() => void decideMultiApproval(approval.id, "deny")}>{t("approval_deny")}</button></div>
       </section>)}
-      {currentMultiTask && session && <TeamTaskPanel task={currentMultiTask} session={session}/>}
+      {currentMultiTask && session && <><RoomVerificationPanel roomId={session.id} taskId={currentMultiTask.id}/><TeamTaskPanel task={currentMultiTask} session={session}/></>}
 
     </RoomTimeline>
     {session && <RoomCostPanel key={`cost-${session.id}`} roomId={session.id} />}

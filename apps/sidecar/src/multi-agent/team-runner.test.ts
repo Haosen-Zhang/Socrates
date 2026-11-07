@@ -8,6 +8,7 @@ import { MultiTaskStore } from "./task-store";
 import { TeamRunner, type PackageExecutor } from "./team-runner";
 import { packageSetup } from "./test-fixtures";
 import { EventStore } from "../store/event-store";
+import type { WorkVerification } from "../services/work-verification";
 
 const plan: StructuredPlan = { objective: "two jobs", summary: "two members", evidence: [], steps: [{ id: "1", title: "implement", description: "do jobs", files: [], commands: [], risks: [], verification: ["tests"] }] };
 
@@ -22,6 +23,27 @@ async function setup() {
 }
 
 describe("TeamRunner", () => {
+  it("waits for final integration checks and resumes without rerunning completed workers", async () => {
+    const {db,tasks,packages}=await setup();
+    let allowed=false;
+    const checks: WorkVerification={
+      view: target=>({target,plan:null,run:null,verificationStatus:allowed?"passed":"failed",outcome:allowed?"verified_success":"verification_failed",acceptedUnverified:false,gatePassed:allowed}),
+      async verify(target) {return this.view(target);},
+    };
+    const calls:string[]=[];
+    const runner=new TeamRunner(db,tasks,packages,{
+      async runPackage(input){calls.push(input.agentId);return {status:"completed",runId:`package:${input.packageId}:${input.attemptNo}`,result:"Tests passed says the worker"};},
+      async cancelPackage(){},
+    },{async reviewWorkPackage(){return {verdict:"approve",notes:"looks fine"};}},new EventStore(db),undefined,checks);
+    await runner.run("t");
+    expect(tasks.get("t")).toMatchObject({state:"paused",terminalReason:"verification_required"});
+    expect(calls).toEqual(["a","b"]);
+    allowed=true;
+    await runner.resume("t");
+    expect(tasks.get("t")?.state).toBe("completed");
+    expect(calls).toEqual(["a","b"]);
+    db.close();
+  });
   it("rejects resume while the paused runner is still persisting its summary without changing its attempt", async () => {
     const { db, tasks, packages } = await setup();
     const directory = mkdtempSync(join(tmpdir(), "socrates-team-settlement-"));

@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { WorkspacePathPolicy } from "../workspace/path-policy";
 import { createReadOnlyBuiltins } from "../tools/read-only-builtins";
 import { createWorkspaceWriteBuiltins } from "../tools/workspace-write-builtins";
+import type { WorkVerification } from "../services/work-verification";
 
 class ApprovalRuntime implements AgentRuntime {
   readonly kind = "fake";
@@ -217,6 +218,7 @@ function setupRecording(
     attachmentRoot?: string;
     contextOverheadTokens?: number;
     unknownContextWindow?: boolean;
+    verification?: WorkVerification;
   } = {},
 ) {
   const db = openDb(options.dbPath ?? ":memory:");
@@ -257,6 +259,9 @@ function setupRecording(
     approvals,
     events,
     attachments,
+    undefined,
+    undefined,
+    options.verification,
   );
   return { db, session, seen, runner, attachments, attachmentRoot };
 }
@@ -284,6 +289,22 @@ function setContextWindow(db: ReturnType<typeof openDb>, sessionId: string, toke
 }
 
 describe("SingleAgentRunner", () => {
+  it("runs independent verification under its write lease before announcing execution completion", async () => {
+    const observed: Array<{rootTaskId:string;lease:boolean;completed:boolean}>=[];
+    const verification: WorkVerification={
+      view:target=>({target,plan:null,run:null,verificationStatus:"failed",outcome:"verification_failed",acceptedUnverified:false,gatePassed:false}),
+      async verify(target,options){
+        observed.push({rootTaskId:target.rootTaskId,lease:!!f.db.query("SELECT id FROM workspace_leases WHERE id=?").get(options!.leaseId!),completed:new ExecutionEventStore(f.db).listAfter(options!.runId!,0).some(event=>event.type==="run.completed")});
+        return this.view(target);
+      },
+    };
+    const f=setupRecording({response:"All tests passed, according to the model",verification});
+    const result=await f.runner.run({sessionId:f.session.id,runtimeKind:"recording",prompt:"fix",clientTurnKey:"room-command:verified-root",runtimeOptions:{costRootTaskId:"verified-root"}});
+    expect(observed).toEqual([{rootTaskId:"verified-root",lease:true,completed:false}]);
+    expect(result.status).toBe("completed"); // Execution and verification remain separate facts.
+    expect(f.db.query("SELECT COUNT(*) AS n FROM workspace_leases").get()).toEqual({n:0});
+    f.db.close();
+  });
   it("persists a budget stop and continues its durable turn without duplicating the user", async () => {
     const { db, session, runner, runtimes } = setup();
     const seen: RuntimeConversationMessage[][] = [];

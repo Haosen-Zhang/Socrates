@@ -1,4 +1,7 @@
 import { Hono } from "hono";
+import { VerificationService } from "./services/verification-service";
+import { taskVerificationTarget } from "./services/work-verification";
+import { verificationRoutes } from "./routes/verification";
 import { cors } from "hono/cors";
 import { evaluatePermission, HANDSHAKE_PROTOCOL, serializeHandshake } from "@socrates/core";
 import { defaultDataDir, defaultDbPath, openDb } from "./db";
@@ -191,7 +194,9 @@ runtimes.register("native_ai_sdk", (input) => {
     },
   });
 });
-const agentRuns = new SingleAgentRunner(db, runtimes, approvals, executionEvents, attachments, history, leases);
+const verification = new VerificationService(db,sessions,workspaces,leases,approvals,events,executionEvents,toolOutputs);
+verification.recoverInterrupted();
+const agentRuns = new SingleAgentRunner(db, runtimes, approvals, executionEvents, attachments, history, leases, verification);
 const runSupervisor = new RunSupervisor(agentRuns);
 const multiTasks = new MultiTaskStore(db, history);
 await history.bootstrapAll();
@@ -218,12 +223,12 @@ const resolveMultiAgent = (agentId: string, snapshot: Record<string, unknown>): 
         revision: profile.modelCapabilities.contextWindow.catalogRevision } } : {}),
   };
 };
-const multiCoordinator = new MultiAgentCoordinator(db, multiTasks, events, gateway, resolveMultiAgent, history);
-const executionRunner = new ExecutionRunner(db, multiTasks, runtimes, leases, approvals, events, executionEvents, history);
+const multiCoordinator = new MultiAgentCoordinator(db, multiTasks, events, gateway, resolveMultiAgent, history,verification);
+const executionRunner = new ExecutionRunner(db, multiTasks, runtimes, leases, approvals, events, executionEvents, history, verification);
 multiTasks.recoverInterrupted();
-const workPackages = new WorkPackageStore(db);
+const workPackages = new WorkPackageStore(db,item=>verification.view(taskVerificationTarget(db,item.taskId,item.id)).gatePassed);
 workPackages.recoverInterrupted();
-const teamRunner = new TeamRunner(db, multiTasks, workPackages, executionRunner, multiCoordinator, events, history);
+const teamRunner = new TeamRunner(db, multiTasks, workPackages, executionRunner, multiCoordinator, events, history, verification);
 executionRunner.reconcileDurableTurnEvents();
 const commands = new RoomCommandService(db, sessions, {
   startDirect: (input) => runSupervisor.start(input),
@@ -243,7 +248,7 @@ const commands = new RoomCommandService(db, sessions, {
     void multiCoordinator.run(task.id).catch(() => {});
     return { taskId: task.id };
   },
-  resolveAgent: resolveMultiAgent, gateway,
+  resolveAgent: resolveMultiAgent, gateway, verification,
 }, history);
 commands.recoverInterrupted();
 const costTasks = new CostTaskService(db, commands, runSupervisor, agentRuns, multiTasks, multiCoordinator, teamRunner, executionRunner);
@@ -269,6 +274,7 @@ app.route(
   }),
 );
 app.route("/room-commands", roomCommandRoutes(commands));
+app.route("/verification",verificationRoutes(verification));
 app.route("/cost", costRoutes(db, sessions, invocationBroker, new TaskQuoteService(db, sessions), costTasks, commands));
 app.route("/agent", agentRunRoutes(runSupervisor, agentRuns, approvals, executionEvents));
 app.route("/content", contentRoutes(db, workspaces, attachments));
@@ -285,6 +291,7 @@ const server = Bun.serve({
 if (server.port === undefined) throw new Error("TCP server has no port");
 
 stopManagedServices = async () => {
+  await verification.shutdown();
   await commands.shutdown();
   await teamRunner.shutdown();
   await executionRunner.shutdown();

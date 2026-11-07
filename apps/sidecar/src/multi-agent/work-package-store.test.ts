@@ -2,8 +2,45 @@ import { describe, expect, it } from "bun:test";
 import { packageSetup } from "./test-fixtures";
 import { ExecutionEventStore } from "../store/execution-event-store";
 import { ApprovalManager } from "../approvals/manager";
+import { WorkPackageStore } from "./work-package-store";
 
 describe("WorkPackageStore", () => {
+  it("holds completed execution and recovered completion behind the current verification gate", () => {
+    const { db, definitions } = packageSetup();
+    let valid = false;
+    const store = new WorkPackageStore(db, () => valid);
+    store.replacePlan("t", 1, definitions);
+    const first = store.start(store.ready("t")[0]!.id);
+    store.finish(first.id, { status: "completed", runId: first.runId!, result: "Worker says all tests passed" });
+    expect(store.get(first.id)?.state).toBe("awaiting_verification");
+    expect(store.ready("t")).toHaveLength(0);
+    valid = true;
+    store.reconcileVerification("t");
+    expect(store.get(first.id)?.state).toBe("completed");
+    expect(store.ready("t")).toHaveLength(1);
+    valid = false;
+    expect(() => store.start(store.list("t")[1]!.id)).toThrow("work_package_dependency_incomplete");
+    store.updateState(first.id, "running");
+    new ExecutionEventStore(db).append({ eventId: "execution-only", sessionId: "s", runId: first.runId!, agentId: "a", type: "run.completed", coordinates: {turnId:first.runId!}, payload:{} });
+    store.recoverInterrupted();
+    expect(store.get(first.id)?.state).toBe("awaiting_verification");
+    expect(store.ready("t")).toHaveLength(0);
+    db.close();
+  });
+
+  it("a reviewer cannot release a dependency when independent checks have become invalid", () => {
+    const { db, definitions } = packageSetup();
+    let valid = true;
+    const store = new WorkPackageStore(db, () => valid);
+    store.replacePlan("t", 1, [{...definitions[0]!,reviewerAgentId:"b"},definitions[1]!]);
+    const first = store.start(store.ready("t")[0]!.id);
+    store.finish(first.id, {status:"completed",runId:first.runId!,result:"done"});
+    valid = false;
+    store.review(first.id,"approve","Looks fine to me");
+    expect(store.get(first.id)?.state).toBe("awaiting_verification");
+    expect(store.ready("t")).toHaveLength(0);
+    db.close();
+  });
   it("recovers a persisted monetary pause before package finish without inventing an unknown failure", () => {
     const { db, store, definitions } = packageSetup();
     store.replacePlan("t", 1, definitions);

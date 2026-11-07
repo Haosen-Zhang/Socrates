@@ -22,7 +22,22 @@ type PackageRow = { id: string; task_id: string; plan_version: number; definitio
 const toPackage = (row: PackageRow): WorkPackageRecord => ({ ...JSON.parse(row.definition_json), id: row.id, taskId: row.task_id, planVersion: row.plan_version, state: row.state, attemptNo: row.attempt_no, runId: row.run_id, result: row.result, failureReason: row.failure_reason === "workspace_write_lease_busy" ? null : row.failure_reason, queueReason: row.failure_reason === "workspace_write_lease_busy" ? row.failure_reason : null, reviewNotes: row.review_notes, reworkCount: row.rework_count, createdAt: row.created_at, updatedAt: row.updated_at });
 
 export class WorkPackageStore {
-  constructor(private readonly db: Database) {}
+  constructor(private readonly db: Database, private readonly verificationGate?: (item: WorkPackageRecord) => boolean) {}
+
+  private exitAllowed(item: WorkPackageRecord): boolean {
+    return this.verificationGate?.(item) ?? true;
+  }
+
+  /** Execution facts stay complete; dependency release follows current evidence. */
+  reconcileVerification(taskId: string): void {
+    if (!this.verificationGate) return;
+    for (const item of this.list(taskId)) {
+      if (!["completed", "awaiting_review", "awaiting_verification"].includes(item.state)) continue;
+      const allowed = this.exitAllowed(item);
+      if (!allowed && item.state !== "awaiting_verification") this.updateState(item.id, "awaiting_verification");
+      if (allowed && item.state === "awaiting_verification") this.updateState(item.id, item.reviewerAgentId ? "awaiting_review" : "completed");
+    }
+  }
 
   validateDefinitions(taskId: string, definitions: WorkPackageDefinition[]): void {
     const task = this.db.query<{ session_id: string }, [string]>("SELECT session_id FROM multi_tasks WHERE id = ?").get(taskId);
@@ -61,16 +76,17 @@ export class WorkPackageStore {
   }
 
   ready(taskId: string): WorkPackageRecord[] {
+    this.reconcileVerification(taskId);
     const all = this.list(taskId);
     const completed = new Set(all.filter((p) => p.state === "completed").map((p) => p.id));
     for (const item of all) if (item.state === "waiting" && item.dependencies.every((id) => completed.has(id))) this.updateState(item.id, "ready");
-    return this.list(taskId).filter((p) => p.state === "ready");
+    return this.list(taskId).filter((p) => p.state === "ready" && p.dependencies.every(id => completed.has(id)));
   }
 
   start(id: string): WorkPackageRecord {
     const item = this.get(id);
     if (!item || item.state !== "ready") throw new Error("work_package_not_ready");
-    if (!item.dependencies.every((dep) => this.get(dep)?.state === "completed")) throw new Error("work_package_dependency_incomplete");
+    if (!item.dependencies.every((dep) => { const dependency = this.get(dep); return dependency?.state === "completed" && this.exitAllowed(dependency); })) throw new Error("work_package_dependency_incomplete");
     const attemptNo = item.attemptNo + 1;
     const runId = `package:${id}:${attemptNo}`;
     const now = new Date().toISOString();
@@ -85,7 +101,7 @@ export class WorkPackageStore {
     const item = this.get(id);
     if (!item || item.runId !== outcome.runId || !["running", "awaiting_approval"].includes(item.state)) throw new Error("work_package_run_mismatch");
     const now = new Date().toISOString();
-    const state = outcome.status === "completed" && item.reviewerAgentId ? "awaiting_review" : outcome.status;
+    const state = outcome.status === "completed" ? !this.exitAllowed(item) ? "awaiting_verification" : item.reviewerAgentId ? "awaiting_review" : "completed" : outcome.status;
     this.db.transaction(() => {
       this.db.query("UPDATE work_packages SET state = ?, result = ?, failure_reason = ?, updated_at = ? WHERE id = ?").run(state, outcome.result, outcome.reason ?? null, now, id);
       this.db.query("UPDATE work_package_attempts SET status = ?, result = ?, failure_reason = ?, completed_at = ? WHERE run_id = ?").run(outcome.status, outcome.result, outcome.reason ?? null, now, outcome.runId);
@@ -96,7 +112,7 @@ export class WorkPackageStore {
     const item = this.get(id);
     if (!item || item.state !== "awaiting_review") throw new Error("work_package_not_awaiting_review");
     const rework = verdict === "request_changes" && item.reworkCount < 1;
-    const state = verdict === "approve" ? "completed" : rework ? "ready" : "failed";
+    const state = verdict === "approve" ? this.exitAllowed(item) ? "completed" : "awaiting_verification" : rework ? "ready" : "failed";
     const reason = verdict === "invalid" ? "review_output_invalid" : verdict === "request_changes" && !rework ? "review_rework_limit" : null;
     this.db.query("UPDATE work_packages SET state = ?, review_notes = ?, rework_count = ?, failure_reason = ?, updated_at = ? WHERE id = ?").run(state, notes, item.reworkCount + (rework ? 1 : 0), reason, new Date().toISOString(), id);
   }
@@ -119,7 +135,7 @@ export class WorkPackageStore {
   }
 
   cancelQueued(taskId: string): number {
-    return this.db.query("UPDATE work_packages SET state = 'cancelled', failure_reason = 'user_cancelled', updated_at = ? WHERE task_id = ? AND state IN ('waiting','ready','awaiting_review','budget_stopped')").run(new Date().toISOString(), taskId).changes;
+    return this.db.query("UPDATE work_packages SET state = 'cancelled', failure_reason = 'user_cancelled', updated_at = ? WHERE task_id = ? AND state IN ('waiting','ready','awaiting_verification','awaiting_review','budget_stopped')").run(new Date().toISOString(), taskId).changes;
   }
 
   recoverInterrupted(): number {
@@ -142,7 +158,7 @@ export class WorkPackageStore {
         const status = terminal?.type === "run.completed" ? "completed"
           : terminal?.type === "run.cancelled" ? "cancelled"
             : budgetReason ? "budget_stopped" : "failed";
-        const state = status === "completed" && definition.reviewerAgentId ? "awaiting_review" : status;
+        const state = status === "completed" ? !this.exitAllowed(toPackage(item)) ? "awaiting_verification" : definition.reviewerAgentId ? "awaiting_review" : "completed" : status;
         const reason = status === "completed" ? null : status === "budget_stopped" ? budgetReason
           : terminal?.type === "run.failed" ? payload.error ?? "execution_failed"
             : terminal?.type === "run.cancelled" ? payload.reason ?? "user_cancelled" : "execution_outcome_unknown";

@@ -17,6 +17,7 @@ export function roomCommandRoutes(commands: RoomCommandService): Hono {
     const body = await c.req.json().catch(() => null);
     if (!body || typeof body.roomId !== "string" || typeof body.content !== "string" || typeof body.clientRequestId !== "string" || !Array.isArray(body.mentions)
       || body.mentions.some((m: unknown) => !m || typeof m !== "object")
+      || body.verificationPlanId !== undefined && typeof body.verificationPlanId !== "string"
       || [body.attachmentIds, body.workspaceRefIds].some((ids) => ids !== undefined && (!Array.isArray(ids) || ids.some((id: unknown) => typeof id !== "string")))) {
       return c.json({ error: "invalid_room_command" }, 400);
     }

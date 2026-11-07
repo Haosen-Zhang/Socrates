@@ -326,7 +326,9 @@ async function macOsSandboxInvocation(
     "(deny file-write*)",
     `(allow file-write* (subpath ${sandboxString(workspaceRoot)}))`,
     `(deny file-read* (subpath ${sandboxString(canonicalHome)}) (subpath "/Users") (subpath "/private") (subpath "/Volumes") (subpath "/Applications") (subpath "/Library") (subpath "/opt") (subpath "/usr/local"))`,
-    `(allow file-read-metadata ${ancestorPaths(workspaceRoot).map((path) => `(literal ${sandboxString(path)})`).join(" ")})`,
+    // Project script launchers resolve getcwd through ancestor directories.
+    // Permit only these directory entries, never their sibling file contents.
+    `(allow file-read-metadata file-read-data ${ancestorPaths(workspaceRoot).map((path) => `(literal ${sandboxString(path)})`).join(" ")})`,
     `(allow file-read* (subpath ${sandboxString(workspaceRoot)}))`,
     ...runtimeReadRoots.map((path) => `(allow file-read* file-map-executable (subpath ${sandboxString(path)}))`),
     ...[...new Set([...runtimeLibraries].map(dirname))].map((path) => `(allow file-read* file-map-executable (subpath ${sandboxString(path)}))`),

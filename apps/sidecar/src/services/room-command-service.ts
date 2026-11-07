@@ -11,6 +11,7 @@ import { TaskQuoteService } from "./task-quotes";
 import { BudgetLedger } from "./cost-ledger";
 import { isCostBudgetPause } from "./model-invocation-broker";
 import { ExecutionEventStore } from "../store/execution-event-store";
+import type { VerificationService } from "./verification-service";
 
 export interface RoomCommandView {
   commandId: string; roomId: string; kind: "direct" | "discussion" | "team";
@@ -28,6 +29,7 @@ interface Dependencies {
   isTeamActive?(taskId: string): boolean;
   resolveAgent(agentId: string, snapshot: Record<string, unknown>): OrchestrationAgent;
   gateway: ModelGateway;
+  verification?: VerificationService;
 }
 /** Room authority for dispatch, stable request identity and public discussion history. */
 export class RoomCommandService {
@@ -80,6 +82,13 @@ export class RoomCommandService {
     if (!room || room.archived) throw new Error("room_not_found");
     new TaskQuoteService(this.db, this.sessions).validate(input);
     const resolved = resolveRoomCommand({ ...room, agentIds: room.agents.map((a) => a.agentId) }, input);
+    if (input.verificationPlanId) {
+      if (room.kind !== "cowork" || resolved.kind === "discussion") throw new Error("verification_work_execution_required");
+      if (!this.deps.verification) throw new Error("verification_unavailable");
+      const plan = this.deps.verification.getPlan(input.verificationPlanId);
+      if (!plan || plan.target.roomId !== room.id) throw new Error("verification_target_mismatch");
+      if (plan.approvalStatus !== "approved") throw new Error("verification_plan_approval_required");
+    }
     if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(room.status)) throw new Error("room_command_already_running");
     const order = resolved.kind === "team"
       ? [...new Set([room.collaboration.assignment.coordinatorAgentId ?? room.primaryAgentId, ...input.mentions.flatMap((m) => m.type === "agent" ? [m.agentId] : [])])]
@@ -105,6 +114,7 @@ export class RoomCommandService {
       this.db.query("INSERT INTO room_commands (id,room_id,client_request_id,fingerprint,input_json,kind,status,created_at,updated_at) VALUES (?,?,?,?,?,?,'dispatching',?,?)")
         .run(id, room.id, input.clientRequestId, fingerprint, JSON.stringify(input), resolved.kind, now, now);
       if (input.budget) new BudgetLedger(this.db).create({ rootTaskId: id, roomId: room.id, ...input.budget });
+      if (input.verificationPlanId) this.deps.verification!.bind(input.verificationPlanId,{roomId:room.id,rootTaskId:id});
     })();
     try {
       if (resolved.kind === "direct") {
@@ -269,6 +279,7 @@ export class RoomCommandService {
   async cancel(id: string): Promise<void> {
     const command = this.get(id);
     if (!command) throw new Error("command_not_found");
+    await this.deps.verification?.cancelRoot(command.roomId, command.commandId);
     if (command.runId && this.deps.cancelDirect) return this.deps.cancelDirect(command.runId);
     const discussion = this.discussions.get(id);
     if (!discussion) throw new Error("command_not_active");

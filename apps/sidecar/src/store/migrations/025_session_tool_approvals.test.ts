@@ -16,7 +16,7 @@ test("append-only session approval upgrade retains old facts without converting 
       VALUES ('old','task','write_file','old-call','old-hash','workspace','attempt',1,'medium',0,'allowed','now');
       INSERT INTO approval_decisions(id,request_id,client_decision_key,decision,decided_at) VALUES ('old-decision','old','old-key','allow_session','now');
       INSERT INTO permission_grants(id,request_id,workspace_identity,subject_hash,scope) VALUES ('old-grant','old','workspace','old-hash','session');`);
-    expect(runMigrations(db, migrations)).toEqual([25]);
+    expect(runMigrations(db, migrations.filter(m => m.version <= 25))).toEqual([25]);
     expect(db.query("SELECT session_id,tool_generation FROM approval_requests WHERE id='old'").get()).toEqual({ session_id: null, tool_generation: null });
     let manager = new ApprovalManager(db);
     const next = manager.request({ taskId: "new-task", kind: "write_file", subjectId: "new-call", inputHash: "new-input", workspaceIdentity: "workspace",
@@ -25,7 +25,7 @@ test("append-only session approval upgrade retains old facts without converting 
     manager.decide(next.id, { clientDecisionKey: "scoped", decision: "allow_session" });
     db.close(); db = new Database(path);
     manager = new ApprovalManager(db);
-    expect(runMigrations(db, migrations)).toEqual([]);
+    expect(runMigrations(db, migrations.filter(m => m.version <= 25))).toEqual([]);
     expect(manager.hasSessionGrant(next)).toBe(true);
     expect(db.query("SELECT COUNT(*) AS n FROM permission_grants").get()).toEqual({ n: 2 });
     expect(db.query("SELECT subject_hash FROM permission_grants WHERE id='old-grant'").get()).toEqual({ subject_hash: "old-hash" });

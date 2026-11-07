@@ -7,6 +7,7 @@ import type { ConversationSession } from "@socrates/core";
 import type { MultiTaskView } from "./store";
 import { useT } from "./store";
 import { useStorePick } from "./selectors";
+import VerificationPanel from "./verification/VerificationPanel";
 
 export default function TeamTaskPanel({
   task,
@@ -15,9 +16,10 @@ export default function TeamTaskPanel({
   task: MultiTaskView;
   session: ConversationSession;
 }) {
-  const { retryWorkPackage, assignWorkPackage } = useStorePick(
+  const { retryWorkPackage, assignWorkPackage, resumeMultiTask } = useStorePick(
     "retryWorkPackage",
     "assignWorkPackage",
+    "resumeMultiTask",
   );
   const t = useT();
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +57,10 @@ export default function TeamTaskPanel({
       aria-label={t("work_packages")}
     >
       <h3 className="font-bold">{t("work_packages")}</h3>
+      {task.state === "paused" && task.terminalReason === "verification_required" && <div className="space-y-2 text-xs">
+        <p>{t("verification_required")}</p>
+        <button type="button" className="pixel-button px-3 py-1" onClick={()=>perform(()=>resumeMultiTask())}>{t("continue_task")}</button>
+      </div>}
       {error && (
         <p role="alert" className="text-xs text-red-700">
           {t(error)}
@@ -139,6 +145,7 @@ export default function TeamTaskPanel({
             {item.result && (
               <p className="mt-2 whitespace-pre-wrap text-xs">{item.result}</p>
             )}
+            <VerificationPanel roomId={session.id} rootTaskId={task.config?.clientRequestId ?? task.id} workPackageId={item.id}/>
             {item.failureReason && (
               <p role="alert" className="mt-2 text-xs text-red-700">
                 {t(item.failureReason)}

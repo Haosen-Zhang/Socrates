@@ -166,7 +166,7 @@ Current result: output is managed by the application; users configure money. Exi
 
 ## Scrolling repair, then cost-aware P03–P04 (2026-11-07)
 - [x] Reproduce long Work result overflow, fix root flex constraint, pass 17 actual browser checks and all 1016 tests/types/build/lint.
-- [ ] P03: freeze and persist verification plans/snapshots/evidence; run checks through existing tool permission/approval/leases; gate package dependencies; expose results and recovery UI.
-- [ ] P03: validate false success, zero tests, stale artifact/contract change, permissions/timeouts/restart, single/team/integration; record stage evidence.
+- [x] P03: freeze and persist verification plans/snapshots/evidence; run checks through existing tool permission/approval/leases; gate package dependencies; expose results and recovery UI.
+- [x] P03: validate false success, zero tests, stale artifact/contract change, permissions/timeouts/restart, single/team/integration; record stage evidence.
 - [ ] P04: deterministic candidate/features/whole-workflow pricing and presets, persistent LangGraph flow through existing hosts, bounded evidence-based retry/escalation, UI and compatibility.
 - [ ] Complete all gates, real UI checks and progress/reuse documentation; preserve user data and do not push automatically.

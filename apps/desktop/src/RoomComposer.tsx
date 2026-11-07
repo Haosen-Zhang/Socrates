@@ -12,6 +12,7 @@ import PixelIcon from "./PixelIcon";
 import ResizableComposer from "./composer/ResizableComposer";
 import AttachmentTray from "./attachments/AttachmentTray";
 import ComposerCostControls from "./cost/ComposerCostControls";
+import VerificationControls from "./verification/VerificationControls";
 import { quoteBinding, submittedCostOptions, type BoundCostOptions } from "./cost/ui-state";
 
 /** Mentions are created only by explicit menu selection; plain @ text is inert. */
@@ -59,6 +60,7 @@ export default function RoomComposer({
   const query = roomMentionQuery(draft);
   const [error, setError] = useState<string | null>(null);
   const [cost, setCost] = useState<BoundCostOptions | null>(null);
+  const [verificationPlanId,setVerificationPlanId]=useState<string | undefined>();
   const work = session.kind === "cowork";
   const behavior =
     session.collaboration.strategy === "team"
@@ -119,6 +121,7 @@ export default function RoomComposer({
       undefined,
       session.id,
       costOptions,
+      behavior !== "discuss" ? verificationPlanId : undefined,
     );
     if (!ok) {
       if (!(useStore.getState().composerDrafts[session.id] ?? "")) {
@@ -310,6 +313,7 @@ export default function RoomComposer({
       {work && <AttachmentTray />}
       <ComposerCostControls session={session} content={draft} mentions={retainSelectedMentions(draft.trim(), selected).map(item => item.mention)}
         intent={behavior === "team" ? "execute" : behavior} attachmentIds={draftAttachments.map(item => item.id)} workspaceRefIds={draftWorkspaceRefs.map(item => item.id)} disabled={running} onChange={setCost} />
+      {work && behavior !== "discuss" && <VerificationControls roomId={session.id} disabled={running} onPlanChange={setVerificationPlanId}/>}
       <ResizableComposer label={t("composer_resize")}>
         <span className="pixel-composer-chevron mt-1 shrink-0 self-start">
           ›
