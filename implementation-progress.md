@@ -172,3 +172,40 @@ Remaining validation/coverage limits: no paid Provider or native Tauri-window ve
 - Re-ran the standard gates immediately before submission: **998 tests passed, 0 failed**, 180 files, 22,294 assertions; typecheck and desktop build passed. The opt-in actual promptfoo evaluation again passed with one controlled command and outbound fetch forbidden. `git diff --check` is clean.
 - Publish implementation, migrations, regression tests, reproducible fixture scripts, dependency locks, architecture/decision documents and a [sanitized acceptance record](doc/cost-aware-acceptance.md). Controlled screenshots/check lists use fictional test data. Original user-supplied prompts, the pre-existing local metadata edit, browser caches and raw host/private-data validation outputs remain local and unchanged.
 - This authorization covers code submission only. No paid model, private-data upload, merge, release or deployment is part of this submission.
+
+## Work interaction foundation — RUN_SCOPE=M00–M01 (2026-11-07)
+
+### Version and preservation baseline
+
+- Current `main` is `b71a8265b9e296947c1f5ef7879f08feca899852`, including cost PR #143; the prompt pack's Alpha.1 snapshot is older. Work is isolated in a managed worktree on `codex/multica-ux-m00-m01`. The original checkout, its local metadata edit, prompt pack, browser caches and raw prior validation outputs are retained unchanged.
+- Re-read current AGENTS and architecture/acceptance sources. The clean baseline passed **998 tests**, 180 files, 22,294 assertions. This run does not push, publish, modify the user's database or use live model credentials.
+- Multica reference `a9434451e1c7c5a72798e0b65fdfb769a9249dab`; observed current main `4239ec11eaa67541c28bb20e836768263e363286`. Full license and implementation audit evidence: [reuse decisions](doc/reuse-decisions.md), [source manifest](doc/assets/work-foundation/source-audit.json). Multica remains a behavior reference; no source, styling, icons or assets are incorporated into the product. Socrates currently has no root LICENSE; this work does not invent a project license.
+
+### M00 — passed
+
+- Read/verified 34 pinned text blobs and three reference images; traced Squad UI, assignment/suppress-run routing, one Leader enqueue, runtime claim/briefing, execution and persisted activity updates. Pinned/current license and README agree; AGENTS drift is recorded. Custom Part I restrictions are kept distinct from the incorporated Apache terms.
+- [Domain/state design](doc/work-interaction-domain.md) maps Squad / Room / WorkItem / Run to current authority, records three future component trees, and designs a later minimal `work_items` migration. M01 uses read-only execution projections; future backlog/assign-only/owner/review records cannot safely be represented by pretending each existing Run is a lasting WorkItem. No schema migration or copied task state is needed for M01.
+- Actual existing-module reuse includes AgentAvatar, RoomTimeline, PanelResizeHandle, WorkspaceDock, RoomCommandService, Native/TeamRunner, EventStore and cost/quote/budget services. P03–P08 are not inferred from types or roadmap entries.
+- Independently checked published licenses/versions/dependencies for Base UI **1.9.0**, cmdk **1.1.1** and react-resizable-panels **4.19.1**. Adopt Base UI's real Combobox/Dialog/Tooltip; defer cmdk and panels because they duplicate adopted/existing capabilities. Original MIT notice retained in [third-party notices](doc/third-party-ui-notices.md).
+- Base UI built in the actual React 19/Vite/Bun desktop and rendered in the production room-member picker/drawer. Chrome verified Chinese search, ArrowDown/Enter selection and an actual Add-to-room mutation through the original service. Initial focus/IME checks run in the real business page; broader M01 integration verification remains in progress below. An installed dependency or isolated mock is not counted as this PoC.
+
+### M01 — passed
+
+- Implemented shared business components, extracted a metadata-only sidebar and its actions, and connected Work Rooms / recent Tasks / explicit unavailable Squads contexts. Added only read-only activity endpoints/DTOs derived from existing command/task/run/event records; execution and budget authority remain unchanged.
+- Final gates: **1,016 tests passed, 0 failed**, 184 files, 22,393 assertions; `bun run typecheck`, desktop production build and lint (**433 files**) passed. Existing mixed-import and large-chunk build warnings remain. Projection tests prove zero SQLite changes/new dispatch during reads, preserve continuation attempts, bound lists/events, reject wrong-room/revoked records, and distinguish read failures from missing history.
+- Actual Chrome: **29/29 project/navigation checks + 36/36 shared-component checks**, zero renderer errors/external requests; Native/Gateway counters unchanged after controlled fixture setup. Covers Settings/AgentEditor, Chat/Work, Chinese search/IME, membership changes, confirmation, focus trapping/return, nested editor, notifications, three languages, both themes (minimum sampled contrast **5.43:1**), history expansion, per-room drafts/scroll and responsive details.
+- CDP using the application's actual hot-reload Store measured **4/4 positive-control renders** for sidebar/task hub, then **0/0 renders across 20 stream updates**. An earlier harness imported a second plain Store module and could not prove this claim; that test defect was corrected before accepting results.
+- Fixed integration/review findings: same-room navigation returns from project views; event details refresh without state changes; read errors do not claim empty history; unknown states stay unknown; task detail starts at its objective and preserves reading position; confirmation handles deleted triggers; nested editors remain above drawers; narrow rooms open workspace details only on request, including the first toggle. A pre-existing CSV lint finding was fixed by renaming its local `escape` helper only, retaining accounting behavior.
+- Same-host clean-baseline build comparison: emitted JS/CSS gzip **575,438 → 649,945 bytes**, delta **74,507 bytes / 72.76 KiB**. This is the whole M00/M01 upgrade, not Base UI alone or installer size. [Acceptance/evidence/reproduction](doc/work-foundation-acceptance.md) includes controlled screenshots, sanitized checks, exact reuse and limits.
+- No migration was needed; existing migration/history compatibility passed the full suite. No Native rewrite, Multica code/asset copy, live/paid model, user data mutation, commit, push, release or publication. Native Tauri WebView rendering remains unverified. Original prompts/raw debug logs remain local.
+
+### Following stages — not started in this run
+
+- **M02–M03** depend on documented Squad persistence/version/archive design and minimal lasting WorkItem identity, assign-only versus start, and stable links into existing commands/tasks/runs. Tasks is currently a recent-execution projection; Squads deliberately reports unavailable until its backend exists.
+- **M04–M05** add evidenced availability/workload, richer Run views, structured Squad mentions, handoff and local Inbox. **M06–M07** connect those entities to existing cost/quote/budget/approval/History seams and verify the full lifecycle. Types and static controls are not counted as implemented stages.
+
+### M00–M01 PR submission (2026-11-07)
+
+- The user subsequently requested PR submission, authorizing code commit/push and PR creation. Link this delivery to [issue #144](https://github.com/Haosen-Zhang/Socrates/issues/144); base and remote main remain `b71a826`.
+- Fresh submission gates passed: **1016 tests, 0 failures**, 184 files, 22,393 assertions; typecheck, desktop build and lint passed. The 65 Chrome checks are implementation acceptance evidence, not a claim of fresh browser reruns during submission.
+- Publish only source, tests, locks, architecture/reuse decisions, controlled screenshots and sanitized evidence. Original prompts and raw local browser/debug outputs remain local. This authorization does not include merging, releasing, deploying or calling live models.

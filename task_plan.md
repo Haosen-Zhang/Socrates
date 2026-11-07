@@ -155,3 +155,11 @@ Current result: output is managed by the application; users configure money. Exi
 - [x] Prefill provider model rates and apply one optional model override to future calls.
 - [x] Validate 26-call isolated real-data copy with 15 protected tables unchanged; 998 tests, typecheck/build and 11 Chrome checks pass.
 - [x] Record sources/limits/evidence, delete private test copy and stop disposable services. No paid model, production mutation, upload or push.
+
+## Work interaction foundation — M00–M01 (2026-11-07)
+- [x] Isolate on codex/multica-ux-m00-m01 from main b71a826, preserving original checkout/prompts/data.
+- [x] Audit pinned/current Multica license/source, independent MIT candidates and existing Socrates runtime/cost seams.
+- [x] Record domain authority, future WorkItem/Squad migration decisions and three component trees.
+- [x] Build/render/keyboard-test Base UI in production member management, reusing existing identity/timeline/resize/dock/services.
+- [x] Deliver Work navigation, real task projections/details, shared interactions and narrow drawers; fix observed integration issues.
+- [x] Verify 1016/0 tests, typecheck/build/lint and 65/65 Chrome checks. Record reuse/bundle evidence and M02–M07 dependencies in implementation-progress.md. No push/publish/live model/user data mutation.

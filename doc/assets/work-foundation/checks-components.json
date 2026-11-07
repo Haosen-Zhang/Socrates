@@ -1,0 +1,176 @@
+{
+  "generatedAt": "2026-11-07T13:02:11.477Z",
+  "controlledFixture": true,
+  "checks": [
+    {
+      "name": "Work room Members opens the production Base UI detail drawer",
+      "ok": true
+    },
+    {
+      "name": "Member drawer moves initial focus inside",
+      "ok": true
+    },
+    {
+      "name": "Dark theme primary and muted foundation text contrast is at least 4.5:1",
+      "ok": true,
+      "detail": [
+        13.26,
+        13.26,
+        13.26,
+        5.68
+      ]
+    },
+    {
+      "name": "Chinese member search filters the real actor catalogue",
+      "ok": true
+    },
+    {
+      "name": "Arrow keys and Enter select the searched role",
+      "ok": true
+    },
+    {
+      "name": "Selection alone does not change room membership",
+      "ok": true
+    },
+    {
+      "name": "IME Enter does not select or submit an invitation",
+      "ok": true
+    },
+    {
+      "name": "IME Escape keeps both picker and member drawer open",
+      "ok": true
+    },
+    {
+      "name": "Add to room persists selected actor through the real API",
+      "ok": true
+    },
+    {
+      "name": "Successful authoritative invitation displays a polite notification",
+      "ok": true
+    },
+    {
+      "name": "Notification appearance does not take focus from the member flow",
+      "ok": true
+    },
+    {
+      "name": "The notification close action dismisses its message",
+      "ok": true
+    },
+    {
+      "name": "Removing a member requires the production confirmation dialog",
+      "ok": true
+    },
+    {
+      "name": "Cancelling preserves membership and returns focus to Remove",
+      "ok": true
+    },
+    {
+      "name": "Confirming removes only the selected fixture member",
+      "ok": true
+    },
+    {
+      "name": "Confirmed removal restores focus inside the remaining roster",
+      "ok": true
+    },
+    {
+      "name": "Confirmed authoritative removal displays its success notification",
+      "ok": true
+    },
+    {
+      "name": "Unfocused success notification dismisses automatically",
+      "ok": true
+    },
+    {
+      "name": "Member drawer traps reverse Tab within the modal",
+      "ok": true
+    },
+    {
+      "name": "Member drawer traps forward Tab within the modal",
+      "ok": true
+    },
+    {
+      "name": "Nested member Create agent editor stays visible and receives focus",
+      "ok": true
+    },
+    {
+      "name": "Nested member editor is above its parent drawer and backdrop",
+      "ok": true
+    },
+    {
+      "name": "Nested member editor is not aria-hidden or inert",
+      "ok": true
+    },
+    {
+      "name": "Nested member editor traps keyboard focus inside its own panel",
+      "ok": true
+    },
+    {
+      "name": "Cancelling nested AgentEditor preserves the member drawer",
+      "ok": true
+    },
+    {
+      "name": "Nested editor returns focus to Create agent",
+      "ok": true
+    },
+    {
+      "name": "Closing member drawer returns focus to its Members trigger",
+      "ok": true
+    },
+    {
+      "name": "Existing Settings to AgentEditor path still opens and receives focus",
+      "ok": true
+    },
+    {
+      "name": "Cancelling Settings AgentEditor preserves Settings",
+      "ok": true
+    },
+    {
+      "name": "en member picker, create action and close action are localized",
+      "ok": true
+    },
+    {
+      "name": "zh-CN member picker, create action and close action are localized",
+      "ok": true
+    },
+    {
+      "name": "zh-TW member picker, create action and close action are localized",
+      "ok": true
+    },
+    {
+      "name": "Light theme primary and muted foundation text contrast is at least 4.5:1",
+      "ok": true,
+      "detail": [
+        14.69,
+        14.69,
+        14.69,
+        5.43
+      ]
+    },
+    {
+      "name": "Roster editing and UI inspection trigger zero additional gateway or native executions",
+      "ok": true,
+      "detail": {
+        "before": {
+          "gateway": 1,
+          "native": 2
+        },
+        "after": {
+          "gateway": 1,
+          "native": 2
+        }
+      }
+    },
+    {
+      "name": "No renderer or console errors",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "No external browser requests",
+      "ok": true,
+      "detail": []
+    }
+  ],
+  "errors": [],
+  "external": []
+}

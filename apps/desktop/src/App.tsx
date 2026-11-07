@@ -6,6 +6,7 @@ import GlobalFxLayer from "./fx/GlobalFxLayer";
 import { shouldPlayHoverFor } from "./fx/interactiveEntry";
 import ChatPage from "./ChatPage";
 import SettingsOverlayHost from "./settings/SettingsOverlayHost";
+import { Notifications } from "./foundation";
 import {
   INITIAL_SETTINGS_OVERLAY,
   closeSettings,
@@ -100,6 +101,7 @@ function App() {
   return (
     <main className="pixel-app text-neutral-900">
       <GlobalFxLayer />
+      <Notifications closeLabel={t("close")} label={t("work_notifications")} />
       {status !== "connected" ? (
         <div className="flex h-[100dvh] flex-col items-center justify-center gap-3 text-center">
           <span className={`text-sm font-medium ${BADGE_CLS[status]}`}>{t(status)}</span>

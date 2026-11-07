@@ -6,10 +6,12 @@ export default function RoomTimeline({
   roomId,
   children,
   className,
+  followInitially = true,
 }: {
   roomId: string;
   children: ReactNode;
   className: string;
+  followInitially?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
@@ -17,9 +19,9 @@ export default function RoomTimeline({
     const node = ref.current;
     if (!node) return;
     const saved = positions.get(roomId);
-    follow.current = saved?.follow ?? true;
-    node.scrollTop = saved?.top ?? node.scrollHeight;
-  }, [roomId]);
+    follow.current = saved?.follow ?? followInitially;
+    node.scrollTop = saved?.top ?? (followInitially ? node.scrollHeight : 0);
+  }, [roomId, followInitially]);
   useLayoutEffect(() => {
     const node = ref.current;
     if (node && follow.current) node.scrollTop = node.scrollHeight;

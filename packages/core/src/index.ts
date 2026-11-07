@@ -30,4 +30,5 @@ export * from "./turn-state";
 export * from "./tool-state";
 export * from "./room-command";
 export * from "./work-package";
+export * from "./work-activity";
 export * from "./cost";

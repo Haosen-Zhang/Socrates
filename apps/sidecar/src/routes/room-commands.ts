@@ -1,7 +1,15 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { RoomCommandInput } from "@socrates/core";
 import type { RoomCommandService } from "../services/room-command-service";
+
+function activityReadError(c: Context, error: unknown): Response {
+  const message=error instanceof Error ? error.message : "work_activity_failed";
+  if(message === "work_room_required")return c.json({error:message},409);
+  if(message === "room_command_revoked")return c.json({error:message},410);
+  if(message === "room_not_found" || message === "work_activity_not_found")return c.json({error:message},404);
+  return c.json({error:"work_activity_failed"},500);
+}
 
 export function roomCommandRoutes(commands: RoomCommandService): Hono {
   const app = new Hono();
@@ -16,6 +24,14 @@ export function roomCommandRoutes(commands: RoomCommandService): Hono {
     catch (error) { return c.json({ error: error instanceof Error ? error.message : "room_command_failed" }, 409); }
   });
   app.get("/rooms/:roomId", (c) => c.json(commands.list(c.req.param("roomId"))));
+  app.get("/rooms/:roomId/activity", (c) => {
+    try { return c.json(commands.listWorkActivity(c.req.param("roomId"))); }
+    catch (error) { return activityReadError(c,error); }
+  });
+  app.get("/rooms/:roomId/activity/:activityId", (c) => {
+    try { return c.json(commands.workActivityDetail(c.req.param("roomId"), c.req.param("activityId"))); }
+    catch (error) { return activityReadError(c,error); }
+  });
   app.get("/:id", (c) => { const command = commands.get(c.req.param("id")); return command ? c.json(command) : c.json({ error: "command_not_found" }, 404); });
   app.post("/:id/cancel", async (c) => {
     try { await commands.cancel(c.req.param("id")); return c.json({ ok: true }); }

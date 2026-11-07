@@ -12,6 +12,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@base-ui/react": "1.9.0",
     "@git-diff-view/react": "0.1.7",
     "@socrates/core": "workspace:*",
     "@tailwindcss/vite": "^4.3.2",

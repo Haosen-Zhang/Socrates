@@ -1,0 +1,129 @@
+{
+  "baseline": {
+    "label": "baseline",
+    "revision": "b71a8265b9e296947c1f5ef7879f08feca899852",
+    "measured_at_utc": "2026-11-07T13:09:59.007884+00:00",
+    "build_command": "bun run --cwd apps/desktop build",
+    "install_command": "bun install --frozen-lockfile --ignore-scripts",
+    "lock_sha256": "fe22c23be42a437ad2d61c2af7ad138352e1112a79f3a809c6c233a1f726a583",
+    "compression": {
+      "implementation": "Python gzip.compress",
+      "compresslevel": 9,
+      "mtime": 0,
+      "aggregation": "sum of each individual emitted .js/.css file; excludes HTML, maps and static media"
+    },
+    "by_kind": {
+      "js": {
+        "count": 3,
+        "raw_bytes": 1860618,
+        "gzip_bytes": 558569
+      },
+      "css": {
+        "count": 1,
+        "raw_bytes": 107733,
+        "gzip_bytes": 16869
+      }
+    },
+    "total": {
+      "count": 4,
+      "raw_bytes": 1968351,
+      "gzip_bytes": 575438
+    },
+    "files": [
+      {
+        "path": "assets/index-C7H3Zo3d.js",
+        "kind": "js",
+        "raw_bytes": 1117894,
+        "gzip_bytes": 339392,
+        "sha256": "b2036020b8e2fab0fad1dc60967339ecebdefa386e87201947e8ceaef754c817"
+      },
+      {
+        "path": "assets/index-CMhMCqFo.css",
+        "kind": "css",
+        "raw_bytes": 107733,
+        "gzip_bytes": 16869,
+        "sha256": "751e87e1d78a5b74e3f51f833055f52e3a267f6c7de0ba730114a4cb3b231c1c"
+      },
+      {
+        "path": "assets/index-Cxz8_376.js",
+        "kind": "js",
+        "raw_bytes": 334,
+        "gzip_bytes": 220,
+        "sha256": "77b70d36ec23e11244d1fd6b5eb78d2fe4dbf356fb2788f12e8454c36999ff81"
+      },
+      {
+        "path": "assets/index-DMOWP5Ip.js",
+        "kind": "js",
+        "raw_bytes": 742390,
+        "gzip_bytes": 218957,
+        "sha256": "2f5cba79d2159e657150780c27e9a62dc02a7e0ea02bc23fa0bbfdcd7870fa46"
+      }
+    ]
+  },
+  "current": {
+    "label": "m00-m01",
+    "revision": "b71a826-plus-local-m00-m01",
+    "measured_at_utc": "2026-11-07T13:15:56.298334+00:00",
+    "build_command": "bun run --cwd apps/desktop build",
+    "install_command": "bun install --frozen-lockfile --ignore-scripts",
+    "lock_sha256": "15fb4965401acc42688feb380abe2f7302d3a47ca4ca67a283952d6af865874c",
+    "compression": {
+      "implementation": "Python gzip.compress",
+      "compresslevel": 9,
+      "mtime": 0,
+      "aggregation": "sum of each individual emitted .js/.css file; excludes HTML, maps and static media"
+    },
+    "by_kind": {
+      "js": {
+        "count": 3,
+        "raw_bytes": 2072312,
+        "gzip_bytes": 630086
+      },
+      "css": {
+        "count": 1,
+        "raw_bytes": 123458,
+        "gzip_bytes": 19859
+      }
+    },
+    "total": {
+      "count": 4,
+      "raw_bytes": 2195770,
+      "gzip_bytes": 649945
+    },
+    "files": [
+      {
+        "path": "assets/index-B4vGguBT.js",
+        "kind": "js",
+        "raw_bytes": 334,
+        "gzip_bytes": 222,
+        "sha256": "06956ebb1633247ee1e1eba39b3e80fe225791da83cdc1b821be9e76edb51bf3"
+      },
+      {
+        "path": "assets/index-B9iTD7qe.css",
+        "kind": "css",
+        "raw_bytes": 123458,
+        "gzip_bytes": 19859,
+        "sha256": "b66bdb2ab29d6ef570d93d85e0664b9c9fb5f21de0a8587587a73dcfb1228cce"
+      },
+      {
+        "path": "assets/index-C1vC86DL.js",
+        "kind": "js",
+        "raw_bytes": 1117894,
+        "gzip_bytes": 339392,
+        "sha256": "d2759a912c7c183866a8b688e0da81a0e6df220bcdeac52dd1a1cd85137d2106"
+      },
+      {
+        "path": "assets/index-DMKRZ2d3.js",
+        "kind": "js",
+        "raw_bytes": 954084,
+        "gzip_bytes": 290472,
+        "sha256": "83a51535923616ec7f79a109b076539374714cb24944789ec2be655d3fc06787"
+      }
+    ]
+  },
+  "delta": {
+    "raw_bytes": 227419,
+    "gzip_bytes": 74507
+  },
+  "interpretation": "All M00/M01 application and UI dependency changes combined; not Base UI in isolation. Sum of emitted JS/CSS only, not a Tauri installer size."
+}

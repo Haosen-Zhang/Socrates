@@ -37,6 +37,11 @@ export const HIGH_FREQUENCY_KEYS = [
 
 // —— 受保护组件的订阅清单（与调用点一一对应，改一处必须同步改另一处） ——
 export const APP_KEYS = ["status", "config", "connect"] as const;
+export const ROOM_SIDEBAR_KEYS = [
+  "rooms", "agents", "sessions", "workspaces", "activeWorkspace", "currentRoomId", "currentSessionId", "config",
+  "selectRoom", "selectAgentSession", "setActiveWorkspace", "roomNavigation", "setAppMode",
+] as const;
+export const WORK_PROJECT_KEYS = ["sessions", "handshake", "selectAgentSession"] as const;
 export const SETTINGS_GENERAL_KEYS = ["config", "lang", "setLang", "updateConfig"] as const;
 export const SETTINGS_CONFIG_KEYS = ["config", "updateConfig"] as const;
 export const PROVIDER_CARD_KEYS = [
@@ -95,6 +100,8 @@ export const MCP_SETTINGS_KEYS = [
 ] as const;
 
 export const GUARDED_KEY_LISTS: Record<string, readonly (keyof Store)[]> = {
+  ROOM_SIDEBAR_KEYS,
+  WORK_PROJECT_KEYS,
   APP_KEYS,
   SETTINGS_GENERAL_KEYS,
   SETTINGS_CONFIG_KEYS,

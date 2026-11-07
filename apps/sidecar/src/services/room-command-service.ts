@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { DEFAULT_MAX_OUTPUT_TOKENS, resolveRoomCommand, type ModelGateway, type OrchestrationAgent, type RoomCommandInput, type SessionMessage } from "@socrates/core";
+import { DEFAULT_MAX_OUTPUT_TOKENS, WORK_ACTIVITY_LIMIT, WORK_ACTIVITY_EVENT_LIMIT, resolveRoomCommand, type ModelGateway, type OrchestrationAgent, type RoomCommandInput, type SessionMessage, type WorkActivityRecord, type WorkActivityEvent, type WorkActivityDetail } from "@socrates/core";
 import { ConversationMemoryStore } from "../store/conversation-memory-store";
 import type { HistoryStore } from "../store/history-store";
 import type { SessionStore } from "../store/session-store";
@@ -10,12 +10,15 @@ import { normalizeTokenUsage, UsageCollector } from "./usage-collector";
 import { TaskQuoteService } from "./task-quotes";
 import { BudgetLedger } from "./cost-ledger";
 import { isCostBudgetPause } from "./model-invocation-broker";
+import { ExecutionEventStore } from "../store/execution-event-store";
 
 export interface RoomCommandView {
   commandId: string; roomId: string; kind: "direct" | "discussion" | "team";
   status: string; runId?: string; taskId?: string; error?: string;
 }
 interface Row { id: string; room_id: string; fingerprint: string; input_json: string; kind: RoomCommandView["kind"]; status: string; run_id: string | null; task_id: string | null; error: string | null }
+type ActivityCommandRow = Row & { created_at: string; updated_at: string };
+type ActivityTaskRow = { id: string; session_id: string; prompt: string; state: string; terminal_reason: string | null; attempt_no: number; created_at: string; updated_at: string };
 interface Dependencies {
   startDirect(input: { sessionId: string; agentId: string; runtimeKind: string; prompt: string; clientTurnKey: string; attachmentIds: string[]; workspaceRefIds: string[]; runtimeOptions?: Record<string, unknown> }): Promise<{ runId: string }>;
   getDirect(runId: string): { status: string; error?: string | null } | null;
@@ -147,6 +150,100 @@ export class RoomCommandService {
   }
   list(roomId: string): RoomCommandView[] {
     return this.db.query<{ id: string }, [string]>("SELECT id FROM room_commands WHERE room_id = ? AND status != 'revoked' ORDER BY created_at DESC LIMIT 50").all(roomId).map((r) => this.get(r.id)!);
+  }
+  listWorkActivity(roomId: string): WorkActivityRecord[] {
+    this.assertWorkRoom(roomId);
+    const commands = this.db.query<ActivityCommandRow, [string, number]>("SELECT * FROM room_commands WHERE room_id = ? AND status != 'revoked' ORDER BY created_at DESC LIMIT ?")
+      .all(roomId, WORK_ACTIVITY_LIMIT).map(row => this.commandActivity(row));
+    const legacy = this.db.query<ActivityTaskRow, [string, number]>(`SELECT * FROM multi_tasks AS task WHERE session_id = ?
+      AND NOT EXISTS (SELECT 1 FROM room_commands AS command WHERE command.room_id = task.session_id
+        AND (command.task_id = task.id OR command.id = json_extract(task.config_json, '$.clientRequestId')))
+      ORDER BY created_at DESC LIMIT ?`).all(roomId, WORK_ACTIVITY_LIMIT).map(row => this.taskActivity(row));
+    return [...commands, ...legacy].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).slice(0, WORK_ACTIVITY_LIMIT);
+  }
+  workActivityDetail(roomId: string, activityId: string): WorkActivityDetail {
+    this.assertWorkRoom(roomId);
+    let activity: WorkActivityRecord;
+    let events: WorkActivityEvent[];
+    let truncated = false;
+    if (activityId.startsWith("command:")) {
+      const row = this.db.query<ActivityCommandRow, [string, string]>("SELECT * FROM room_commands WHERE room_id = ? AND id = ?").get(roomId, activityId.slice(8));
+      if (!row) throw new Error("work_activity_not_found");
+      if (row.status === "revoked") throw new Error("room_command_revoked");
+      activity = this.commandActivity(row);
+      if (row.kind === "direct") {
+        const result = this.directActivityEvents(roomId, activity.runId);
+        events = result.events; truncated = result.truncated;
+      } else if (row.kind === "team") events = activity.taskId ? this.taskActivityEvents(roomId, activity.taskId) : [];
+      else {
+        events = this.db.query<{ seq: number; type: string; payload_json: string }, [string, number]>(
+          "SELECT seq,type,payload_json FROM room_command_events WHERE command_id = ? ORDER BY seq DESC LIMIT ?",
+        ).all(row.id, WORK_ACTIVITY_EVENT_LIMIT + 1).map(event => ({ id: `discussion:${row.id}:${event.seq}`, type: event.type, occurredAt: null,
+          ...this.activityEventIdentity(JSON.parse(event.payload_json)) }));
+      }
+    } else if (activityId.startsWith("multi-task:")) {
+      const row = this.db.query<ActivityTaskRow, [string, string]>(`SELECT * FROM multi_tasks AS task WHERE session_id = ? AND id = ?
+        AND NOT EXISTS (SELECT 1 FROM room_commands AS command WHERE command.room_id = task.session_id
+          AND (command.task_id = task.id OR command.id = json_extract(task.config_json, '$.clientRequestId')))`)
+        .get(roomId, activityId.slice(11));
+      if (!row) throw new Error("work_activity_not_found");
+      activity = this.taskActivity(row);
+      events = this.taskActivityEvents(roomId, row.id);
+    } else throw new Error("work_activity_not_found");
+    return { activity, events: events.slice(0, WORK_ACTIVITY_EVENT_LIMIT).reverse(), truncated: truncated || events.length > WORK_ACTIVITY_EVENT_LIMIT };
+  }
+  private assertWorkRoom(roomId: string): void {
+    const room = this.sessions.get(roomId);
+    if (!room) throw new Error("room_not_found");
+    if (room.kind !== "cowork") throw new Error("work_room_required");
+  }
+  private commandActivity(row: ActivityCommandRow): WorkActivityRecord {
+    const command = this.get(row.id)!;
+    const child = command.taskId
+      ? this.db.query<{ updated_at: string; attempt_no: number }, [string, string]>("SELECT updated_at,attempt_no FROM multi_tasks WHERE id = ? AND session_id = ?").get(command.taskId, row.room_id)
+      : command.runId ? this.db.query<{ updated_at: string | null; attempt_no: number }, [string, string]>(`SELECT attempt_no,
+        COALESCE(completed_at, (SELECT MAX(occurred_at) FROM runtime_events WHERE run_id = agent_runs.id AND session_id = agent_runs.session_id AND schema_version = 1)) AS updated_at
+        FROM agent_runs WHERE id = ? AND session_id = ?`).get(command.runId, row.room_id) : null;
+    return { id: `command:${row.id}`, source: "command", roomId: row.room_id, commandId: row.id, kind: row.kind,
+      prompt: String((JSON.parse(row.input_json) as { content?: string }).content ?? ""), status: command.status,
+      ...(command.runId ? { runId: command.runId } : {}), ...(command.taskId ? { taskId: command.taskId } : {}),
+      ...(command.error ? { error: command.error } : {}), ...(child ? { attemptNo: child.attempt_no } : {}),
+      createdAt: row.created_at, updatedAt: child?.updated_at && child.updated_at > row.updated_at ? child.updated_at : row.updated_at };
+  }
+  private taskActivity(row: ActivityTaskRow): WorkActivityRecord {
+    return { id: `multi-task:${row.id}`, source: "legacy_task", roomId: row.session_id, taskId: row.id, kind: "team", prompt: row.prompt,
+      status: row.state, ...(row.terminal_reason ? { error: row.terminal_reason } : {}), attemptNo: row.attempt_no,
+      createdAt: row.created_at, updatedAt: row.updated_at };
+  }
+  private activityEventIdentity(payload: unknown): Pick<WorkActivityEvent, "agentId" | "runId"> {
+    if (!payload || typeof payload !== "object") return {};
+    const value = payload as Record<string, unknown>;
+    return { ...(typeof value.agentId === "string" ? { agentId: value.agentId } : {}), ...(typeof value.runId === "string" ? { runId: value.runId } : {}) };
+  }
+  private taskActivityEvents(roomId: string, taskId: string): WorkActivityEvent[] {
+    return this.db.query<{ event_id: string; type: string; occurred_at: string; payload_json: string }, [string, string, number]>(
+      "SELECT event_id,type,occurred_at,payload_json FROM task_events WHERE session_id = ? AND task_id = ? ORDER BY seq DESC LIMIT ?",
+    ).all(roomId, taskId, WORK_ACTIVITY_EVENT_LIMIT + 1).map(event => ({ id: event.event_id, type: event.type, occurredAt: event.occurred_at,
+      ...this.activityEventIdentity(JSON.parse(event.payload_json)) }));
+  }
+  private directActivityEvents(roomId: string, runId?: string): { events: WorkActivityEvent[]; truncated: boolean } {
+    if (!runId) return { events: [], truncated: false };
+    const runs = this.db.query<{ id: string }, [string, string, string, string, number]>(`SELECT id FROM agent_runs WHERE session_id = ?
+      AND (id = ? OR turn_id = (SELECT turn_id FROM agent_runs WHERE id = ? AND session_id = ?))
+      ORDER BY attempt_no DESC, created_at DESC LIMIT ?`).all(roomId, runId, runId, roomId, WORK_ACTIVITY_EVENT_LIMIT + 1);
+    const store = new ExecutionEventStore(this.db), events: WorkActivityEvent[] = [];
+    let truncated = false;
+    for (const run of runs) {
+      const remaining = WORK_ACTIVITY_EVENT_LIMIT + 1 - events.length;
+      if (remaining <= 0) { truncated = true; break; }
+      const after = Math.max(0, store.latestSeq(run.id) - remaining);
+      truncated ||= after > 0;
+      for (const event of store.listAfter(run.id, after, remaining).reverse()) {
+        if (event.sessionId !== roomId) continue;
+        events.push({ id: event.eventId, type: event.type, occurredAt: event.occurredAt, agentId: event.agentId, runId: event.runId });
+      }
+    }
+    return { events, truncated };
   }
   eventsAfter(id: string, seq: number): Array<{ seq: number; type: string; [key: string]: unknown }> {
     const command = this.get(id);
