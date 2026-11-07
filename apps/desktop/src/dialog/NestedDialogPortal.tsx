@@ -79,6 +79,7 @@ export default function NestedDialogPortal({
 	return createPortal(
 		<div
 			className="pixel-dialog-backdrop"
+			style={{ zIndex: 120 }}
 			data-dialog-layer="nested"
 			role="presentation"
 			onMouseDown={(event) => {

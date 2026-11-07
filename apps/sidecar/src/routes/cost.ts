@@ -98,7 +98,7 @@ export function costRoutes(db: Database, sessions: SessionStore, broker: ModelIn
     const invocations = broker.ledger.list({ roomId }), summary = broker.ledger.summary({ roomId }), generatedAt = new Date().toISOString();
     if (c.req.query("format") === "csv") {
       const numericColumns = new Set([8, 9, 10, 13, 15, 17]);
-      const escape = (value: unknown, column: number) => {
+      const escapeCsvCell = (value: unknown, column: number) => {
         const raw = String(value ?? "");
         const safe = !numericColumns.has(column) && /^\s*[=+\-@]/u.test(raw) ? `'${raw}` : raw;
         return `"${safe.replaceAll('"', '""')}"`;
@@ -108,7 +108,7 @@ export function costRoutes(db: Database, sessions: SessionStore, broker: ModelIn
         i.priceSnapshotId ? broker.prices.get(i.priceSnapshotId)?.sourceVersion : null,
         i.reconciliation?.amount.currency ?? i.amount?.currency, i.amount?.atomic, i.reconciliation?.amount.atomic,
         i.reconciliation?.amount.atomic ?? i.amount?.atomic, i.reconciliation?.requestId, i.reconciliation?.reason,
-        12, i.status, summary.unknownCount, generatedAt, i.referenceEstimate?.amount.atomic, i.referenceEstimate?.amount.currency, i.referenceEstimate?.priceSnapshotId].map(escape).join(","));
+        12, i.status, summary.unknownCount, generatedAt, i.referenceEstimate?.amount.atomic, i.referenceEstimate?.amount.currency, i.referenceEstimate?.priceSnapshotId].map(escapeCsvCell).join(","));
       return c.text([header.join(","), ...rows].join("\n"), 200, { "Content-Type": "text/csv;charset=utf-8", "Content-Disposition": 'attachment; filename="costs.csv"' });
     }
     return c.json({ schemaVersion: 1, generatedAt, summary, invocations, pricingVersions: [...new Set(invocations.flatMap(i => [i.priceSnapshotId, i.referenceEstimate?.priceSnapshotId].filter((id): id is string => !!id)))].map(id => broker.prices.get(id)) });

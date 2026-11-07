@@ -1,0 +1,42 @@
+{
+  "scope": "M00-M01",
+  "baseSha": "b71a8265b9e296947c1f5ef7879f08feca899852",
+  "branch": "codex/multica-ux-m00-m01",
+  "changesCommittedAtValidation": false,
+  "checks": {
+    "tests": {
+      "command": "bun test",
+      "exitCode": 0,
+      "logSha256": "6a2ec3ed05062fc020ac72e902bc665439248c930c0b744c3b58c631f7a9cadc",
+      "passed": 1016,
+      "failed": 0,
+      "files": 184,
+      "assertions": 22393
+    },
+    "typecheck": {
+      "command": "bun run typecheck",
+      "exitCode": 0,
+      "logSha256": "859f05647a92fcb79f6a57008bd6478a9bea618f6933c12cb2bb76a0a7f2bb7f"
+    },
+    "build": {
+      "command": "bun run --cwd apps/desktop build",
+      "exitCode": 0,
+      "logSha256": "b752568a9a2358624fae36db2439370128c7c23be76ab0bb072031d700743dc5"
+    },
+    "lint": {
+      "command": "bun run lint",
+      "exitCode": 0,
+      "logSha256": "b5cf17827577749527f894ec01a205180bed8030adbd50e2d7b079d57488a8da"
+    }
+  },
+  "chromeChecks": {
+    "navigation": 29,
+    "components": 36,
+    "errors": 0,
+    "externalRequests": 0,
+    "additionalModelCalls": 0
+  },
+  "nativeTauriWebViewVerified": false,
+  "paidModelCalls": false,
+  "pushOrPublication": false
+}

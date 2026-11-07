@@ -133,3 +133,9 @@ core cost.ts owns Money/PriceSnapshot/InvocationIdentity/CostSummary/BudgetSumma
 - Known and estimated totals remain separate. Soft budgets consume booked estimates; strict admission rejects unverified generic presets. Frozen invocation prices remain immutable; current-reference historical views do not settle old uncertainty or rewrite facts.
 - Real-data isolated copy: 26/26 calls estimated, all 15 protected table hashes unchanged. Actual database read only; private copy cleaned after derived evidence capture.
 - Final: 998/0 tests, 22,294 assertions, typecheck/build and 11 Chrome checks. Sources/limits: doc/automatic-model-pricing.md. Evidence: output/validation/automatic-pricing/. No paid inference, credential use, upload or push.
+
+## Work foundation M00–M01 (2026-11-07)
+- Current main b71a826 includes cost PR #143; Alpha.1 assumptions were stale. Multica pinned a9434451/current4239ec11 remain reference-only: 34 text blobs/three images audited, none copied into product.
+- Adopt MIT Base UI1.9.0 with real business callsites and retained notices. Defer cmdk/panels for overlapping capabilities. Existing execution records support recent activity, while future assign-only/backlog ownership requires a minimal lasting WorkItem entity.
+- Shared components and metadata-only sidebar/task subscriptions verified through real Chrome. Exact Vite Store positive control4/4 then20 stream updates0/0 avoids a misleading duplicate-Store probe.
+- Final:1016/0 tests, typecheck/build/lint pass;65/65Chrome with zero extra modelcalls/errors/externalrequests. Whole upgrade JS/CSS gzip +74,507bytes, not package-only overhead. Evidence/limits: doc/work-foundation-acceptance.md.

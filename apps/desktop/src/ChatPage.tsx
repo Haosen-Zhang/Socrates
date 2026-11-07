@@ -5,10 +5,15 @@ import type { SettingsSection } from "./settings/settingsOverlay";
 import { hasOpenNestedDialog } from "./dialog/dialogLayer";
 import AgentEditor from "./AgentEditor";
 import RoomComposer from "./RoomComposer";
-import ModeSegmented from "./sidebar/ModeSegmented";
+import RoomSidebar from "./sidebar/RoomSidebar";
+import WorkContextBar from "./work/WorkContextBar";
+import WorkProjectHub from "./work/WorkProjectHub";
+import type { WorkContext } from "./work/workNavigation";
+import { ActorPicker, ConfirmationDialog, DetailPanel, ErrorNotice, notify } from "./foundation";
+import { useAnimatedDialogClose } from "./dialog/useAnimatedDialogClose";
 import TeamTaskPanel from "./TeamTaskPanel";
 import RoomCostPanel from "./cost/RoomCostPanel";
-import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -17,14 +22,13 @@ import { useThrottledValue } from "./useThrottledValue";
 import { DEFAULT_WINDOW_SIZE, expandWindow, windowTail } from "./listWindow";
 import { useTransientFlag } from "./useTransientFlag";
 import { agentLabel, canAllowSessionApproval, validateCollaborationSettings, type Agent,
-  type ConversationSession, type RoomCollaborationSettings, type WorkspaceRecord,
+  type ConversationSession, type RoomCollaborationSettings,
   type SessionMessage, type StoredMessage, type TaskSummary,
 } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
 import PixelIcon from "./PixelIcon";
-import { isOwnedManagedWorkspace, roomDraftBlocker, toggleRoomAgentSelection } from "./roomSelection";
-import { searchSidebar, topLevelRooms, workspaceGroups, type SidebarRoom } from "./sidebar/sidebarLists";
-import { useStore, useT, type MultiPlan, type StreamingTurn } from "./store";
+import { roomDraftBlocker, toggleRoomAgentSelection } from "./roomSelection";
+import { useT, type MultiPlan, type StreamingTurn } from "./store";
 import { useStorePick } from "./selectors";
 import { sfx } from "./fx";
 import { prepareNewRoomWorkspace, selectableProjectWorkspaces } from "./workspace/newRoomWorkspace";
@@ -43,12 +47,10 @@ import {
 import { projectPublicReasoning, projectToolActivities, toolActivityId } from "./tooling/toolActivity";
 import { approvalModeOptions } from "./approvalPolicyUi";
 import ApprovalPolicySegmented from "./ApprovalPolicySegmented";
-import { resolveSidebarRevealPath, revealResolvedSidebarTarget } from "./sidebar/revealInFinder";
 import { agentRunErrorKey } from "./agentRunErrorUi";
 import { canEditCollaboration, collaborationStrategyOptions, createCollaborationDraft } from "./collaborationSettingsUi";
 import { taskStatusKey } from "./taskSurface";
 import WindowRoomToolbar from "./window/WindowRoomToolbar";
-import PanelResizeHandle from "./layout/PanelResizeHandle";
 import { clampPanelSize } from "./layout/panelResize";
 import {
   deriveWindowChromeLayout,
@@ -101,23 +103,6 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 const DATE_LOCALE_OF: Record<string, string> = { "zh-CN": "zh-CN", "zh-TW": "zh-TW", en: "en-US" };
-
-/** Let modal close transitions finish before their parent unmounts the dialog. */
-function useAnimatedDialogClose(onClose: () => void) {
-  const [closing, setClosing] = useState(false);
-  const timeoutRef = useRef<number | null>(null);
-  useEffect(() => () => {
-    if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
-  }, []);
-  return {
-    closing,
-    close: () => {
-      if (closing) return;
-      setClosing(true);
-      timeoutRef.current = window.setTimeout(onClose, 150);
-    },
-  };
-}
 
 type MessageActionTarget = Pick<StoredMessage | SessionMessage, "id" | "content" | "createdAt">;
 
@@ -864,196 +849,6 @@ function NewRoomDialog({ onClose, presetWorkspaceId, kind, onOpenSettings, setti
   );
 }
 
-/** Side-bar entities all share the same predictable rename/archive/remove menu. */
-type SidebarEntityKind = "room" | "session" | "workspace";
-/** 侧栏统一行：rooms 与 sessions 折算成同一形状，source 决定打开哪条路径 */
-type SidebarEntry = SidebarRoom & { source: "room" | "session" };
-type MenuState = { kind: SidebarEntityKind; id: string; x: number; y: number };
-type RenameTarget = { kind: SidebarEntityKind; id: string; value: string };
-
-function SidebarEntityMenu({
-  menu,
-  onClose,
-  onRename,
-  onCollab,
-  onError,
-}: {
-  menu: MenuState;
-  onClose: () => void;
-  onRename: (target: RenameTarget) => void;
-  onCollab: (sessionId: string) => void;
-  onError: (message: string) => void;
-}) {
-  const {
-    rooms, sessions, workspaces,
-    archiveRoom, removeRoom, archiveSession, removeSession, archiveWorkspace, removeWorkspace,
-  } = useStorePick("rooms", "sessions", "workspaces", "archiveRoom", "removeRoom", "archiveSession", "removeSession", "archiveWorkspace", "removeWorkspace");
-  const t = useT();
-  const [confirming, setConfirming] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const entity = menu.kind === "room"
-    ? rooms.find((room) => room.id === menu.id)
-    : menu.kind === "session"
-      ? sessions.find((session) => session.id === menu.id)
-      : workspaces.find((workspace) => workspace.id === menu.id);
-
-  useEffect(() => {
-    const closeOnPointerDown = (event: PointerEvent) => {
-      if (menuRef.current?.contains(event.target as Node)) return;
-      onClose();
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    // The trigger is a click. Closing on window click made a newly mounted menu
-    // consume that very same event and disappear before it could be seen.
-    window.addEventListener("pointerdown", closeOnPointerDown);
-    window.addEventListener("keydown", closeOnEscape);
-    return () => {
-      window.removeEventListener("pointerdown", closeOnPointerDown);
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [onClose]);
-
-  if (!entity) return null;
-  const value = "name" in entity ? entity.name : "title" in entity ? entity.title : entity.label;
-  const archived = entity.archived;
-  const managedSessionWorkspace = menu.kind === "session" && "workspaceId" in entity
-    ? workspaces.find((workspace) => (
-      workspace.id === entity.workspaceId && isOwnedManagedWorkspace(workspace, entity.id)
-    ))
-    : null;
-  const revealTarget = resolveSidebarRevealPath(menu, sessions, workspaces);
-  const item = "block w-full px-3 py-2 text-left text-sm hover:bg-neutral-100";
-  const run = async (operation: () => Promise<void>) => {
-    try {
-      await operation();
-      onClose();
-    } catch (error) {
-      onError(error instanceof Error && error.message === "workspace_not_found"
-        ? t("reveal_workspace_missing")
-        : error instanceof Error ? error.message : String(error));
-      onClose();
-    }
-  };
-  return (
-    <div
-      ref={menuRef}
-      className="pixel-card anim-panel fixed z-[90] w-48 overflow-hidden py-1"
-      style={{ left: menu.x, top: menu.y }}
-      onClick={(e) => e.stopPropagation()}
-      onContextMenu={(e) => e.preventDefault()}
-    >
-      <button
-        className={item}
-        onClick={() => {
-          onRename({ kind: menu.kind, id: menu.id, value });
-          onClose();
-        }}
-      >
-        {t("rename")}
-      </button>
-      {revealTarget && (
-        <button
-          className={item}
-          onClick={() => void run(() => revealResolvedSidebarTarget(revealTarget))}
-        >
-          {t("reveal_in_finder")}
-        </button>
-      )}
-      {menu.kind === "session" && "kind" in entity && entity.kind === "cowork" && (
-        <button
-          className={item}
-          onClick={() => {
-            onCollab(menu.id);
-            onClose();
-          }}
-        >
-          {t("cowork_settings_title")}
-        </button>
-      )}
-      <button
-        className={item}
-        onClick={() => {
-          sfx.delete();
-          void run(() => menu.kind === "room"
-            ? archiveRoom(menu.id, !archived)
-            : menu.kind === "session"
-              ? archiveSession(menu.id, !archived)
-              : archiveWorkspace(menu.id, !archived));
-        }}
-      >
-        {archived ? t("unarchive") : t("archive")}
-      </button>
-      {confirming && managedSessionWorkspace ? (
-        <>
-          <div className="px-3 py-2 text-xs text-neutral-600">{t("managed_workspace_delete_prompt")}</div>
-          <button className={`${item} text-red-700`} onClick={() => {
-            sfx.delete();
-            void run(() => removeSession(menu.id, "keep"));
-          }}>{t("delete_room_keep_files")}</button>
-          <button className={`${item} font-medium text-red-700`} onClick={() => {
-            sfx.delete();
-            void run(() => removeSession(menu.id, "delete"));
-          }}>{t("delete_room_and_files")}</button>
-        </>
-      ) : (
-        <button
-          className={`${item} ${confirming ? "font-medium text-red-700" : "text-red-600"}`}
-          onClick={() => {
-            if (!confirming) {
-              setConfirming(true);
-              return;
-            }
-            sfx.delete();
-            void run(() => menu.kind === "room"
-              ? removeRoom(menu.id)
-              : menu.kind === "session"
-                ? removeSession(menu.id)
-                : removeWorkspace(menu.id));
-          }}
-        >
-          {confirming ? t("confirm_delete") : menu.kind === "workspace" ? t("remove_from_socrates") : t("delete")}
-        </button>
-      )}
-    </div>
-  );
-}
-
-function RenameDialog({ target, onClose }: { target: RenameTarget; onClose: () => void }) {
-  const { renameRoom, renameSession, renameWorkspace } = useStorePick("renameRoom", "renameSession", "renameWorkspace");
-  const t = useT();
-  const dialog = useAnimatedDialogClose(onClose);
-  const [value, setValue] = useState(target.value);
-  const [error, setError] = useState<string | null>(null);
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    try {
-      const next = value.trim();
-      if (!next) throw new Error("name_required");
-      if (target.kind === "room") await renameRoom(target.id, next);
-      else if (target.kind === "session") await renameSession(target.id, next);
-      else await renameWorkspace(target.id, next);
-      dialog.close();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    }
-  };
-  return (
-    <div className={`pixel-dialog-backdrop ${dialog.closing ? "is-closing" : ""}`} role="presentation" onMouseDown={dialog.close}>
-      <form className="pixel-dialog w-[min(440px,calc(100vw-40px))] p-5" role="dialog" aria-modal="true" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div><div className="pixel-kicker">RENAME</div><h2 className="text-lg font-bold">{t(`rename_${target.kind}`)}</h2></div>
-          <button className="pixel-button h-8 w-8" type="button" aria-label={t("close")} onClick={dialog.close}>×</button>
-        </div>
-        <input autoFocus className="pixel-input w-full px-3 py-2 text-sm" value={value} maxLength={80} onChange={(event) => { setValue(event.target.value); setError(null); }} />
-        {error && <p className="mt-2 text-xs text-red-700">{error}</p>}
-        <div className="mt-5 flex justify-end gap-2"><button className="pixel-button px-3 py-2 text-sm" type="button" onClick={dialog.close}>{t("cancel")}</button><button className="pixel-button pixel-button--primary px-4 py-2 text-sm" disabled={!value.trim()}>{t("save")}</button></div>
-      </form>
-    </div>
-  );
-}
-
 function RoomMembersDialog({
   roomId,
   memberIds,
@@ -1413,8 +1208,10 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
 function SessionMembersDialog({ session, onClose }: { session: ConversationSession; onClose: () => void }) {
   const { agents, providers, addSessionAgent, removeSessionAgent, applyMemberTemplate, updatePrimaryAgent } = useStorePick("agents", "providers", "addSessionAgent", "removeSessionAgent", "applyMemberTemplate", "updatePrimaryAgent");
   const t = useT();
-  const dialog = useAnimatedDialogClose(onClose);
   const [creatingAgent,setCreatingAgent]=useState(false);
+  const [inviteId,setInviteId]=useState<string|null>(null);
+  const [removeId,setRemoveId]=useState<string|null>(null);
+  const [removing,setRemoving]=useState(false);
   const [error, setError] = useState<string | null>(null);
   const memberIds = session.agents.map((agent) => agent.agentId);
   const members = session.agents.map(member=>({...member.snapshot,id:member.agentId} as unknown as Agent));
@@ -1423,16 +1220,7 @@ function SessionMembersDialog({ session, onClose }: { session: ConversationSessi
   const run = (op: () => Promise<void>) => op().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
 
   return (
-    <div className={`pixel-dialog-backdrop ${dialog.closing ? "is-closing" : ""}`} role="presentation" onMouseDown={dialog.close}>
-      <section className="pixel-dialog max-h-[calc(100vh-40px)] w-[min(560px,calc(100vw-48px))] overflow-y-auto p-5" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="mb-4 flex items-start justify-between">
-          <div>
-            <div className="pixel-kicker">ROOM ROSTER</div>
-            <h3 className="text-lg font-bold">{t("room_members_title")}</h3>
-            <p className="mt-1 text-xs text-neutral-500">{session.title}</p>
-          </div>
-          <button className="pixel-button h-8 w-8" aria-label={t("close")} onClick={() => { sfx.close(); dialog.close(); }}>×</button>
-        </div>
+    <DetailPanel open drawer title={t("room_members_title")} description={session.title} closeLabel={t("close")} onClose={onClose}>
         {busy && <p className="mb-3 text-xs text-amber-700">{t("active_session_members_locked")}</p>}
         <div className="space-y-2">
           {members.map((agent) => (
@@ -1450,7 +1238,7 @@ function SessionMembersDialog({ session, onClose }: { session: ConversationSessi
                 className="pixel-button px-3 py-1.5 text-xs text-red-700 disabled:opacity-40"
                 disabled={busy || members.length <= 1}
                 title={members.length <= 1 ? t("session_requires_at_least_one_member") : t("remove_member")}
-                onClick={() => void run(() => removeSessionAgent(session.id, agent.id))}
+                onClick={() => setRemoveId(agent.id)}
               >
                 {t("remove_member")}
               </button>
@@ -1462,60 +1250,55 @@ function SessionMembersDialog({ session, onClose }: { session: ConversationSessi
         {available.length === 0 ? (
           <p className="text-sm text-neutral-500">{t("all_agents_joined")}</p>
         ) : (
-          <div className="space-y-2">
-            {available.map((agent) => (
-              <div key={agent.id} className="flex items-center gap-3 border-b border-neutral-200 py-2 last:border-0">
-                <AgentAvatar src={agent.avatar} label={agent.nickname} size={42} />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">{agentLabel(agent)}</div>
-                  <div className="truncate text-xs text-neutral-500">{agent.role || agent.modelId}</div>
-                </div>
-                <button
-                  className="pixel-button pixel-button--primary px-3 py-1.5 text-xs disabled:opacity-40"
-                  disabled={busy}
-                  onClick={() => void run(() => addSessionAgent(session.id, agent.id))}
-                >
-                  + {t("add_to_room")}
-                </button>
-              </div>
-            ))}
+          <div className="space-y-3">
+            <ActorPicker label={t("work_pick_member")} placeholder={t("search_members")} emptyLabel={t("work_no_matches")} value={inviteId}
+              actors={available.map(agent=>({id:agent.id,label:agentLabel(agent),description:agent.role || agent.modelId,
+                avatar:<AgentAvatar src={agent.avatar} label={agent.nickname} size={30}/>,disabled:busy,disabledReason:busy ? t("active_session_members_locked") : undefined}))}
+              onChange={setInviteId}/>
+            <button type="button" className="pixel-button pixel-button--primary px-3 py-2" disabled={busy || !available.some(agent=>agent.id === inviteId)} onClick={()=>{
+              if(inviteId)void run(async()=>{await addSessionAgent(session.id,inviteId);setInviteId(null);notify(t("work_member_added"));});
+            }}>+ {t("add_to_room")}</button>
           </div>
         )}
-        {error && <p className="mt-3 text-sm text-red-700">{t(error)}</p>}
-      </section>
+        {error && <ErrorNotice message={t(error)}/>}
       {creatingAgent && <AgentEditor onClose={()=>setCreatingAgent(false)} onSaved={agent=>{void run(()=>addSessionAgent(session.id,agent.id));}}/>}
-    </div>
+      <ConfirmationDialog open={removeId !== null} onOpenChange={open=>{if(!open&&!removing)setRemoveId(null);}}
+        title={t("work_remove_member")} description={`${members.find(agent=>agent.id === removeId)?.nickname ?? ""} · ${t("work_remove_hint")}`}
+        confirmLabel={t("remove_member")} cancelLabel={t("cancel")} pending={removing} error={error ? t(error) : undefined}
+        onConfirm={()=>{if(!removeId || removing)return;setRemoving(true);setError(null);
+          void removeSessionAgent(session.id,removeId).then(()=>{setRemoveId(null);notify(t("work_member_removed"));}).catch(cause=>setError(String(cause))).finally(()=>setRemoving(false));}}/>
+    </DetailPanel>
   );
 }
 
 export default function ChatPage({ onOpenSettings, settingsOpen=false }: { onOpenSettings: (section?:SettingsSection) => void; settingsOpen?:boolean }) {
-  const { rooms, agents, sessions, workspaces, activeWorkspace, currentRoomId, currentSessionId, config, updateConfig, messages, streaming, activeTaskId, rewindTo, chatError, tasks, usageSummaries, selectRoom, selectAgentSession, setActiveWorkspace, clearChatError, handshake, roomNavigation, setAppMode } =
-    useStorePick("rooms", "agents", "sessions", "workspaces", "activeWorkspace", "currentRoomId", "currentSessionId", "config", "updateConfig", "messages", "streaming", "activeTaskId", "rewindTo", "chatError", "tasks", "usageSummaries", "selectRoom", "selectAgentSession", "setActiveWorkspace", "clearChatError", "handshake", "roomNavigation", "setAppMode");
+  const { rooms, agents, sessions, workspaces, activeWorkspace, currentRoomId, currentSessionId, config, updateConfig, messages, streaming, activeTaskId, rewindTo, chatError, tasks, usageSummaries, clearChatError, handshake, roomNavigation } =
+    useStorePick("rooms", "agents", "sessions", "workspaces", "activeWorkspace", "currentRoomId", "currentSessionId", "config", "updateConfig", "messages", "streaming", "activeTaskId", "rewindTo", "chatError", "tasks", "usageSummaries", "clearChatError", "handshake", "roomNavigation");
   const mode=roomNavigation.mode;
   const bubbleBusy = !!streaming || !!activeTaskId;
   const t = useT();
   const [creating, setCreating] = useState<false | { presetWorkspaceId: string | null }>(false);
   const [showTasks, setShowTasks] = useState(false);
-  const [menu, setMenu] = useState<MenuState | null>(null);
-  const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
-  const [sidebarError, setSidebarError] = useState<string | null>(null);
-  const [archivedByMode,setArchivedByMode]=useState({chat:false,cowork:false});
-  const showArchived=archivedByMode[mode];
-  const setShowArchived=(value:React.SetStateAction<boolean>)=>setArchivedByMode(current=>({...current,[mode]:typeof value === "function" ? value(current[mode]) : value}));
   const [showMembers, setShowMembers] = useState(false);
   const [collabSessionId, setCollabSessionId] = useState<string | null>(null);
-  const [queries,setQueries]=useState({chat:"",cowork:""});
-  const query=queries[mode];
-  const setQuery=(value:string)=>setQueries(current=>({...current,[mode]:value}));
-  const [foldedGroups, setFoldedGroups] = useState<string[]>([]);
   const [dockModes,setDockModes]=useState<Record<string,WorkspaceDockMode>>({});
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const currentRoom = rooms.find((room) => room.id === currentRoomId);
   const currentSession = sessions.find((session) => session.id === currentSessionId);
   const boundWorkspaceId = currentSession?.workspaceId ?? null;
   const activeSessionWorkspaceId = workspaces.some((workspace) => workspace.id === boundWorkspaceId && !workspace.archived) ? boundWorkspaceId : null;
+  const projectId = currentSession?.workspaceId ?? activeWorkspace?.id ?? null;
+  const projectKey = projectId ?? "unbound";
+  const [projectContexts,setProjectContexts]=useState<Record<string,WorkContext>>({});
+  const workContext=projectContexts[projectKey] ?? "rooms";
+  const changeWorkContext=useCallback((context:WorkContext)=>setProjectContexts(current=>({...current,[projectKey]:context})),[projectKey]);
+  useEffect(()=>{if(currentSessionId)changeWorkContext("rooms");},[currentSessionId,changeWorkContext]);
+  const project=workspaces.find(workspace=>workspace.id === projectId);
+  const openRooms=useCallback(()=>changeWorkContext("rooms"),[changeWorkContext]);
   const activeConversationId = currentSessionId ?? currentRoomId;
-  const dockMode=activeConversationId ? dockModes[activeConversationId] ?? "overview" : "closed";
-  const setDockMode=(value:React.SetStateAction<WorkspaceDockMode>)=>{if(activeConversationId) setDockModes(current=>({...current,[activeConversationId]:typeof value === "function" ? value(current[activeConversationId] ?? "overview") : value}));};
+  const defaultDockMode:WorkspaceDockMode=viewportWidth <= 980 ? "closed" : "overview";
+  const dockMode=activeConversationId ? dockModes[activeConversationId] ?? defaultDockMode : "closed";
+  const setDockMode=(value:React.SetStateAction<WorkspaceDockMode>)=>{if(activeConversationId) setDockModes(current=>({...current,[activeConversationId]:typeof value === "function" ? value(current[activeConversationId] ?? defaultDockMode) : value}));};
   const collapsed = config?.sidebar.collapsed ?? false;
   const windowState = useWindowChromeState();
   const chromeLayout = deriveWindowChromeLayout({
@@ -1537,111 +1320,6 @@ export default function ChatPage({ onOpenSettings, settingsOpen=false }: { onOpe
   };
   const bottomRef = useRef<HTMLDivElement>(null);
   const followBottom=useRef(true);
-
-  // 侧栏统一视图：历史 rooms 与 workspace sessions 折算成同一种行，
-  // source 决定点击走 selectRoom 还是 selectAgentSession。
-  const allEntries = useMemo<SidebarEntry[]>(() => [
-    ...rooms.filter(room=>!sessions.some(session=>session.id === room.id || session.legacyRoomId === room.id)).map((room) => ({ id: room.id, name: room.name, kind: "chat" as const, workspaceId: null, archived: room.archived, source: "room" as const })),
-    ...sessions.map((session) => ({ id: session.id, name: session.title, kind: session.kind, workspaceId: session.workspaceId, archived: session.archived, source: "session" as const })),
-  ], [rooms, sessions]);
-
-  const entries=useMemo(()=>allEntries.filter(entry=>entry.kind === mode),[allEntries,mode]);
-  const memberNamesByRoom = useMemo(() => {
-    const named = (ids: string[]) => ids.map((id) => agents.find((agent) => agent.id === id)?.nickname ?? "");
-    return Object.fromEntries([
-      ...rooms.map((room) => [room.id, named(room.agentIds)] as const),
-      ...sessions.map((session) => [session.id, named(session.agents.map((agent) => agent.agentId))] as const),
-    ]);
-  }, [rooms, sessions, agents]);
-
-  const openEntry = (entry: SidebarEntry) =>
-    void (entry.source === "room" ? selectRoom(entry.id) : selectAgentSession(entry.id));
-
-  const searchHits = searchSidebar(query, {
-    rooms: entries,
-    workspaces: (mode === "cowork" ? workspaces : []).map((workspace) => ({ ...workspace, path: workspace.canonicalPath })),
-    memberNamesByRoom,
-  });
-  const topLevelEntries = useMemo(() => topLevelRooms(entries, workspaces) as SidebarEntry[], [entries, workspaces]);
-  const projectGroups = useMemo(() => mode === "cowork" ? workspaceGroups(entries, workspaces) : [], [entries, workspaces,mode]);
-
-  const archivedRooms = mode === "chat" ? rooms.filter((r) => r.archived && !sessions.some(session=>session.id === r.id || session.legacyRoomId === r.id)) : [];
-  const archivedSessions = sessions.filter((session) => session.archived && session.kind === mode);
-  const archivedWorkspaces = mode === "cowork" ? workspaces.filter((workspace) => workspace.archived) : [];
-
-  const entryRow = (entry: SidebarEntry) => {
-    const active = entry.id === (entry.source === "room" ? currentRoomId : currentSessionId);
-    const menuKind: SidebarEntityKind = entry.source;
-    const roomStatus=sessions.find(session=>session.id===entry.id)?.status;
-    return (
-      <div
-        key={`${entry.source}-${entry.id}`}
-        className={`pixel-room-row group flex cursor-pointer items-center gap-2 px-2 py-2 text-sm ${active ? "is-active" : ""} ${entry.archived ? "opacity-60" : ""}`}
-        onClick={() => openEntry(entry)}
-        title={collapsed ? entry.name : undefined}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          setMenu({ kind: menuKind, id: entry.id, x: event.clientX, y: event.clientY });
-        }}
-      >
-        <PixelIcon name="robot" size={18} />
-        {!collapsed && (
-          <>
-            <span className="min-w-0 flex-1 truncate font-medium">{entry.name}</span>
-            {roomStatus && !["idle","completed"].includes(roomStatus) && <span className="text-[9px] text-neutral-500">{t(taskStatusKey(roomStatus === "failed" ? "failed" : roomStatus === "awaiting_approval" ? "awaiting_tool_approval" : roomStatus === "interrupted" ? "paused" : roomStatus === "cancelled" ? "cancelled" : "executing"))}</span>}
-            <button
-              title={t("room_menu")}
-              className={`pixel-room-more shrink-0 px-1 text-sm opacity-0 group-hover:opacity-100 ${menu?.id === entry.id ? "opacity-100" : ""}`}
-              onClick={(event) => {
-                event.stopPropagation();
-                const rect = event.currentTarget.getBoundingClientRect();
-                setMenu({ kind: menuKind, id: entry.id, x: rect.right - 176, y: rect.bottom + 4 });
-              }}
-            >
-              ⋯
-            </button>
-          </>
-        )}
-      </div>
-    );
-  };
-
-  // 从工作区分组的「＋」建房：直接锁定该工作区，不再走全局 activeWorkspace、不让重选
-  const createInWorkspace = (workspaceId: string) => setCreating({ presetWorkspaceId: workspaceId });
-
-  /** 工作区分组；展开与选中互不影响（展开状态由 foldedGroups 单独持有）。 */
-  const workspaceGroup = (group: { workspace: WorkspaceRecord; rooms: SidebarRoom[] }) => {
-    const { workspace } = group;
-    const folded = foldedGroups.includes(workspace.id);
-    return (
-      <section key={workspace.id} className={`pixel-project-group ${activeWorkspace?.id === workspace.id ? "is-current" : ""}`}>
-        <div className="pixel-project-heading group flex items-center gap-1 px-1 py-1.5">
-          <button
-            className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs font-bold"
-            title={workspace.canonicalPath}
-            aria-expanded={!folded}
-            onClick={() => setFoldedGroups((current) => current.includes(workspace.id) ? current.filter((id) => id !== workspace.id) : [...current, workspace.id])}
-          >
-            <PixelIcon name="folder" size={18} />
-            {!collapsed && (
-              <>
-                <span className="truncate">{workspace.label}</span>
-                {group.rooms.length > 0 && <span className="text-[10px] font-normal text-neutral-400">{group.rooms.length}</span>}
-              </>
-            )}
-          </button>
-          {!collapsed && <button className="pixel-project-action" title={t("new_room")} aria-label={t("new_room")} onClick={() => createInWorkspace(workspace.id)}><PixelIcon name="plus" size={15} /></button>}
-          {!collapsed && <button className="pixel-project-action" title={t("room_menu")} aria-label={t("room_menu")} onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setMenu({ kind: "workspace", id: workspace.id, x: rect.right - 176, y: rect.bottom + 4 }); }}>⋯</button>}
-        </div>
-        {!folded && (
-          <div className="space-y-1 px-1 pb-2">
-            {(group.rooms as SidebarEntry[]).map(entryRow)}
-            {group.rooms.length === 0 && !collapsed && <p className="px-2 py-1 text-[10px] text-neutral-400">{t("project_empty")}</p>}
-          </div>
-        )}
-      </section>
-    );
-  };
 
   const jumpToTask = (taskId: string) => {
     document.getElementById(`task-${taskId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1705,7 +1383,6 @@ export default function ChatPage({ onOpenSettings, settingsOpen=false }: { onOpe
 
   const [sidebarWidth, setSidebarWidth] = useState(config?.sidebar.width ?? 256);
   const [dockWidth, setDockWidth] = useState(config?.sidebar.dockWidth ?? 420);
-  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   useEffect(() => setSidebarWidth(config?.sidebar.width ?? 256), [config?.sidebar.width]);
   useEffect(() => setDockWidth(config?.sidebar.dockWidth ?? 420), [config?.sidebar.dockWidth]);
   useEffect(() => {
@@ -1718,144 +1395,17 @@ export default function ChatPage({ onOpenSettings, settingsOpen=false }: { onOpe
   const effectiveSidebarWidth = clampPanelSize(sidebarWidth, 180, sidebarMax);
   const dockMax = Math.min(640, Math.max(300, viewportWidth - (collapsed ? 0 : effectiveSidebarWidth) - 420));
   const effectiveDockWidth = clampPanelSize(dockWidth, 300, dockMax);
-  const commitSidebarWidth = (width: number) => {
+  const commitSidebarWidth = useCallback((width: number) => {
     if (config) void updateConfig({ sidebar: { ...config.sidebar, width } });
-  };
+  }, [config, updateConfig]);
   const commitDockWidth = (width: number) => {
     if (config) void updateConfig({ sidebar: { ...config.sidebar, dockWidth: width } });
   };
 
   return (
     <div className="flex h-[100dvh]" style={{ "--room-sidebar-width": `${effectiveSidebarWidth}px`, "--workspace-dock-width": `${effectiveDockWidth}px` } as React.CSSProperties}>
-      <aside
-        className={`pixel-room-sidebar flex shrink-0 flex-col p-3 ${collapsed ? "is-hidden" : ""}`}
-        aria-hidden={collapsed}
-        inert={collapsed ? true : undefined}
-      >
-        {!collapsed && <PanelResizeHandle edge="end" size={effectiveSidebarWidth} min={180} max={sidebarMax} label={t("resize_sidebar")} onResize={setSidebarWidth} onCommit={commitSidebarWidth} />}
-        <div className="pixel-sidebar-brand" data-tauri-drag-region>
-          <span>Socrates</span>
-        </div>
-        <div className="mb-3"><ModeSegmented mode={mode} onChange={next=>{void setAppMode(next).catch(cause=>setSidebarError(String(cause)));}} labels={{chat:"Chat",cowork:"Work"}}/></div>
-        <button
-          className="pixel-new-room-button flex min-w-0 items-center justify-center gap-2 px-3 py-2.5 text-sm font-bold"
-          onClick={() => setCreating({ presetWorkspaceId: mode === "cowork" ? activeWorkspace?.id ?? null : null })}
-        >
-          <PixelIcon name="plus" size={20} />
-          {t("new_room")}
-        </button>
-
-        {mode === "cowork" && <button className="pixel-button mt-2 px-3 py-2 text-xs" onClick={()=>{void open({directory:true,multiple:false,title:t("new_project")}).then(async selected=>{if(typeof selected !== "string") return;const workspace=await useStore.getState().registerWorkspacePath(selected);setCreating({presetWorkspaceId:workspace.id});}).catch(cause=>setSidebarError(String(cause)));}}>+ {t("new_project")}</button>}
-        {!collapsed && (
-          <input
-            type="search"
-            className="pixel-input mt-3 w-full px-2 py-1.5 text-xs"
-            placeholder={t("sidebar_search_placeholder")}
-            aria-label={t("sidebar_search_placeholder")}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        )}
-        {sidebarError && <div role="alert" className="mt-2 border border-red-300 bg-red-50 px-2 py-1 text-[10px] text-red-700">{sidebarError}</div>}
-
-        <div className="pixel-room-list mt-3 flex-1 overflow-y-auto pr-1">
-          {query.trim() ? (
-            searchHits.length === 0 ? (
-              <p className="px-2 py-1 text-[10px] text-neutral-400">{t("sidebar_search_empty")}</p>
-            ) : (
-              <div className="space-y-1 px-1">
-                {searchHits.map((hit) =>
-                  hit.kind === "room" ? (
-                    entryRow(hit.room as SidebarEntry)
-                  ) : (
-                    <button
-                      key={`ws-${hit.workspaceId}`}
-                      className="pixel-room-row flex w-full items-center gap-2 px-2 py-2 text-left text-sm"
-                      onClick={() => void setActiveWorkspace(hit.workspaceId).catch((error: unknown) => setSidebarError(error instanceof Error ? error.message : String(error)))}
-                    >
-                      <PixelIcon name="folder" size={18} />
-                      <span className="truncate">{hit.label}</span>
-                    </button>
-                  ),
-                )}
-              </div>
-            )
-          ) : (
-            <div className="space-y-2">
-              {topLevelEntries.length > 0 && (
-                <div className="space-y-1 px-1">
-                  {topLevelEntries.map(entryRow)}
-                </div>
-              )}
-              {projectGroups.map((group) => workspaceGroup({
-                ...group,
-                workspace: workspaces.find((item) => item.id === group.workspace.id)!,
-              }))}
-              {topLevelEntries.length === 0 && projectGroups.length === 0 && (
-                <p className="px-2 py-1 text-[10px] text-neutral-400">{t("project_empty")}</p>
-              )}
-            </div>
-          )}
-        </div>
-        <div className="pixel-archive-dock mt-3 pt-3">
-          {!collapsed && showArchived && archivedRooms.length + archivedSessions.length + archivedWorkspaces.length > 0 && (
-            <div className="pixel-archive-panel mb-2 max-h-56 space-y-1 overflow-y-auto p-2">
-              {(entries.filter((entry) => entry.archived) as SidebarEntry[]).map(entryRow)}
-              {/* 归档的工作区自己成一行（可能没有房间）——否则它只加计数却不显示 */}
-              {archivedWorkspaces.map((workspace) => (
-                <div
-                  key={`ws-${workspace.id}`}
-                  className="pixel-room-row group flex items-center gap-2 px-2 py-2 text-sm opacity-60"
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    setMenu({ kind: "workspace", id: workspace.id, x: event.clientX, y: event.clientY });
-                  }}
-                >
-                  <PixelIcon name="folder" size={18} />
-                  <span className="min-w-0 flex-1 truncate font-medium">{workspace.label}</span>
-                  <button
-                    title={t("room_menu")}
-                    className="pixel-room-more shrink-0 px-1 text-sm opacity-0 group-hover:opacity-100"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      const rect = event.currentTarget.getBoundingClientRect();
-                      setMenu({ kind: "workspace", id: workspace.id, x: rect.right - 176, y: rect.bottom + 4 });
-                    }}
-                  >
-                    ⋯
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          <button
-            className="pixel-archive-button flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
-            onClick={() => setShowArchived((v) => !v)}
-            title={t("archived_section", { n: archivedRooms.length + archivedSessions.length + archivedWorkspaces.length })}
-          >
-            <PixelIcon name="archive" size={20} />
-            {!collapsed && (
-              <>
-                <span className="min-w-0 flex-1">{t("archived_section", { n: archivedRooms.length + archivedSessions.length + archivedWorkspaces.length })}</span>
-                <span>{showArchived ? "▾" : "▸"}</span>
-              </>
-            )}
-          </button>
-          <button className="pixel-archive-button mt-2 flex w-full items-center gap-2 px-3 py-2 text-left text-xs" title={t("agents_title")} onClick={()=>onOpenSettings("bots")}><PixelIcon name="robot" size={20}/>{!collapsed && <span>{t("agents_title")}</span>}</button>
-          {/* Settings 固定在左下角；打开的是 overlay，不改变当前房间导航状态 */}
-          <button
-            className="pixel-archive-button mt-2 flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
-            onClick={()=>onOpenSettings()}
-            title={`${t("settings_title")} (⌘,)`}
-          >
-            <PixelIcon name="gear" size={20} />
-            {!collapsed && <span className="min-w-0 flex-1">{t("settings_title")}</span>}
-          </button>
-        </div>
-      </aside>
+      <RoomSidebar onCreate={setCreating} onOpenSettings={onOpenSettings} onCollab={setCollabSessionId} onNavigateRoom={openRooms} width={effectiveSidebarWidth} maxWidth={sidebarMax} onResize={setSidebarWidth} onCommit={commitSidebarWidth} />
       {creating && <NewRoomDialog kind={mode} settingsOpen={settingsOpen} onOpenSettings={()=>onOpenSettings("providers")} onClose={() => setCreating(false)} presetWorkspaceId={creating.presetWorkspaceId} />}
-      {renameTarget && <RenameDialog target={renameTarget} onClose={() => setRenameTarget(null)} />}
-      {menu && <SidebarEntityMenu menu={menu} onClose={() => setMenu(null)} onRename={setRenameTarget} onCollab={setCollabSessionId} onError={setSidebarError} />}
       {collabSessionId && (() => {
         const target = sessions.find((session) => session.id === collabSessionId);
         return target ? <CoworkRoomSettingsDialog session={target} onClose={() => setCollabSessionId(null)} /> : null;
@@ -1864,7 +1414,10 @@ export default function ChatPage({ onOpenSettings, settingsOpen=false }: { onOpe
         ? <SessionMembersDialog session={currentSession} onClose={() => setShowMembers(false)} />
         : currentRoom ? <RoomMembersDialog roomId={currentRoom.id} memberIds={currentRoom.agentIds} onClose={() => setShowMembers(false)} /> : null)}
 
-      <section className="pixel-room-content flex min-w-0 flex-1 flex-col">
+      <div className={mode === "cowork" ? "work-main" : "contents"}>
+      {mode === "cowork" && <WorkContextBar context={workContext} project={project?.label} onChange={changeWorkContext}/>}
+      {mode === "cowork" && workContext !== "rooms" && <WindowRoomToolbar title={project?.label ?? t("work_project")} sidebarHidden={chrome.sidebarHidden} toolbarMode={chrome.toolbarMode} collapseLabel={t("sidebar_collapse")} expandLabel={t("sidebar_expand")} onToggleSidebar={chrome.onToggleSidebar}/>}
+      <section className="pixel-room-content flex min-w-0 flex-1 flex-col" style={mode === "cowork" && workContext !== "rooms" ? {display:"none"} : undefined} inert={mode === "cowork" && workContext !== "rooms" ? true : undefined}>
         {currentSessionId ? (currentSession?.collaboration.strategy === "team" ? <MultiAgentSession key={currentSessionId} chrome={chrome} /> : <SingleAgentSession key={currentSessionId} chrome={chrome} />) : currentRoomId ? (
           <>
             <WindowRoomToolbar
@@ -1935,8 +1488,27 @@ export default function ChatPage({ onOpenSettings, settingsOpen=false }: { onOpe
           </>
         )}
       </section>
-      {currentSession?.kind === "cowork" && dockMode !== "closed" && activeConversationId && (
-        <WorkspaceDock
+      {mode === "cowork" && <WorkProjectHub key={projectKey} workspaceId={projectId} context={workContext} onOpenRoom={openRooms}/>}
+      </div>
+      {workContext === "rooms" && currentSession?.kind === "cowork" && dockMode !== "closed" && activeConversationId && (
+        viewportWidth <= 980 ? <DetailPanel open drawer title={t("workspace_overview")} closeLabel={t("close")} onClose={()=>setDockMode("closed")}>
+          <div className="work-dock-drawer">        <WorkspaceDock
+          key={activeConversationId}
+          handshake={handshake}
+          workspaceId={activeSessionWorkspaceId}
+          mode={dockMode}
+          overview={<RoomOverview
+            agents={overviewAgents}
+            usage={usageSummaries}
+            onManageMembers={() => setShowMembers(true)}
+            onShowTasks={currentRoom ? () => setShowTasks((value) => !value) : undefined}
+            taskCount={tasks.length}
+          />}
+          onSelect={setDockMode}
+          onClose={() => setDockMode("closed")}
+          resize={{ size: effectiveDockWidth, min: 300, max: dockMax, label: t("resize_workspace_dock"), onResize: setDockWidth, onCommit: commitDockWidth }}
+        /></div>
+        </DetailPanel> :         <WorkspaceDock
           key={activeConversationId}
           handshake={handshake}
           workspaceId={activeSessionWorkspaceId}

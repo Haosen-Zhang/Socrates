@@ -1,0 +1,124 @@
+{
+  "generatedAt": "2026-11-07T13:12:19.036Z",
+  "controlledFixture": true,
+  "checks": [
+    {
+      "name": "Work opens the existing room without requiring a squad",
+      "ok": true
+    },
+    {
+      "name": "Tasks use actual Native and team command records",
+      "ok": true
+    },
+    {
+      "name": "Project navigation retains an accessible sidebar restore control",
+      "ok": true
+    },
+    {
+      "name": "Detail displays persisted run events and separates execution from acceptance",
+      "ok": true
+    },
+    {
+      "name": "A detail opens at its objective and facts, not at the bottom of its timeline",
+      "ok": true
+    },
+    {
+      "name": "Task details reuse keyboard panel resizing",
+      "ok": true
+    },
+    {
+      "name": "Refresh reloads timeline even when execution status is unchanged",
+      "ok": true
+    },
+    {
+      "name": "Room draft survives switching project context",
+      "ok": true
+    },
+    {
+      "name": "Selected activity and its reading position survive context changes",
+      "ok": true
+    },
+    {
+      "name": "Clicking the already selected sidebar room returns from Tasks",
+      "ok": true
+    },
+    {
+      "name": "Squads show an explicit availability boundary",
+      "ok": true
+    },
+    {
+      "name": "Clicking the same room also returns from Squads",
+      "ok": true
+    },
+    {
+      "name": "Another Work room does not inherit the first draft",
+      "ok": true
+    },
+    {
+      "name": "Returning to the first room restores its own draft",
+      "ok": true
+    },
+    {
+      "name": "A failed history read is not presented as an empty project",
+      "ok": true
+    },
+    {
+      "name": "Retry restores the real project records",
+      "ok": true
+    },
+    {
+      "name": "Narrow task detail is a modal drawer within the viewport",
+      "ok": true
+    },
+    {
+      "name": "Closing a narrow detail restores keyboard focus to its task",
+      "ok": true
+    },
+    {
+      "name": "A narrow Work room keeps its overview closed until explicitly opened",
+      "ok": true
+    },
+    {
+      "name": "The existing workspace overview is reused inside a focus-managed narrow drawer",
+      "ok": true
+    },
+    {
+      "name": "Closing workspace details restores focus to the overview trigger",
+      "ok": true
+    },
+    {
+      "name": "Chat has no Work project navigation",
+      "ok": true
+    },
+    {
+      "name": "Long Chat history remains windowed",
+      "ok": true
+    },
+    {
+      "name": "Earlier history can be expanded",
+      "ok": true
+    },
+    {
+      "name": "IME candidate confirmation does not submit a Chat command",
+      "ok": true
+    },
+    {
+      "name": "Chat draft and history reading position remain room-scoped",
+      "ok": true
+    },
+    {
+      "name": "Twenty streaming updates do not rerender the metadata sidebar or task list",
+      "ok": true
+    },
+    {
+      "name": "Navigation, details, search and IME did not dispatch any extra model call",
+      "ok": true
+    },
+    {
+      "name": "No renderer exception or external browser request",
+      "ok": true
+    }
+  ],
+  "errors": [],
+  "external": []
+}

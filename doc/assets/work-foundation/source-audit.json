@@ -1,0 +1,290 @@
+{
+  "scope": "RUN_SCOPE=M00-M01",
+  "checkedAt": "2026-11-07",
+  "socratesBaseSha": "b71a8265b9e296947c1f5ef7879f08feca899852",
+  "multicaPinnedSha": "a9434451e1c7c5a72798e0b65fdfb769a9249dab",
+  "multicaObservedMainSha": "4239ec11eaa67541c28bb20e836768263e363286",
+  "method": "GitHub connector blob reads pinned to exact commit; current main resolved via branches/main; temporary main clone used only to view matching image blobs",
+  "sourceCodeCopiedIntoSocrates": false,
+  "assetsCopiedIntoSocrates": false,
+  "files": [
+    {
+      "path": "LICENSE",
+      "blobSha": "9286fa5f8ecaf1132ed9c01ff52a262309c608aa",
+      "sizeBytes": 18131,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/LICENSE",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "AGENTS.md",
+      "blobSha": "515799d15cc46810f290f63cb24b885e48315297",
+      "sizeBytes": 13218,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/AGENTS.md",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "README.md",
+      "blobSha": "ab6a403f87124591cb29b4bf1ccd2e213ecc0b6d",
+      "sizeBytes": 17439,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/README.md",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "NOTICE",
+      "blobSha": "80abfee09c9638a6e0ad2f5dec974222e63d042c",
+      "sizeBytes": 645,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/NOTICE",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "packages/views/squads/components/squad-detail-page.tsx",
+      "blobSha": "6f358cd891a226ce55cff5961d19b3a32fd33cad",
+      "sizeBytes": 52450,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/packages/views/squads/components/squad-detail-page.tsx",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "packages/views/modals/create-squad.tsx",
+      "blobSha": "132bf50b407f6b1639033877bf077c5a4d346a12",
+      "sizeBytes": 22280,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/packages/views/modals/create-squad.tsx",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "packages/views/squads/components/squads-page.tsx",
+      "blobSha": "cf6002ea3a15cebc0937ea5ae676fddd5d9fa065",
+      "sizeBytes": 19862,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/packages/views/squads/components/squads-page.tsx",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "packages/views/issues/components/pickers/assignee-picker.tsx",
+      "blobSha": "0a379385c49c840f850e2e5f07ad677a30efca9b",
+      "sizeBytes": 13110,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/packages/views/issues/components/pickers/assignee-picker.tsx",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "packages/core/types/squad.ts",
+      "blobSha": "1dab68c7bb1c937ca43b1d5f0aa496aa579b056f",
+      "sizeBytes": 2846,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/packages/core/types/squad.ts",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "packages/core/agents/derive-presence.ts",
+      "blobSha": "6b5f0a6873aef80fb4b59fe05f3824f86a9a6af5",
+      "sizeBytes": 6274,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/packages/core/agents/derive-presence.ts",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "packages/core/agents/use-agent-presence.ts",
+      "blobSha": "a4d5fd774a2c4459c7b6178fdb69a50c304b4e4c",
+      "sizeBytes": 6669,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/packages/core/agents/use-agent-presence.ts",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "packages/views/issues/components/issue-run-timeline.ts",
+      "blobSha": "7a4c152255477b7e4211146b570544bbb4e905b3",
+      "sizeBytes": 17698,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/packages/views/issues/components/issue-run-timeline.ts",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "packages/views/issues/components/issue-runs-dialog.tsx",
+      "blobSha": "a51a3b78f5f148d80476fb9a3eccc399c452d6e2",
+      "sizeBytes": 45138,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/packages/views/issues/components/issue-runs-dialog.tsx",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "apps/docs/content/docs/squads.zh.mdx",
+      "blobSha": "77332a931a8a9c20f709e4d4f8884262ad27c280",
+      "sizeBytes": 7401,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/apps/docs/content/docs/squads.zh.mdx",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "apps/docs/content/docs/assigning-issues.zh.mdx",
+      "blobSha": "20d84f604e6663c1b1dde990b8017a1838f1b419",
+      "sizeBytes": 5337,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/apps/docs/content/docs/assigning-issues.zh.mdx",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "apps/docs/content/docs/mentioning-agents.zh.mdx",
+      "blobSha": "7e4be9618a6310c04179316a782fc02e3a393b49",
+      "sizeBytes": 5354,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/apps/docs/content/docs/mentioning-agents.zh.mdx",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "apps/docs/content/docs/tasks.zh.mdx",
+      "blobSha": "803d6f1da1971b023c12941d1cd9294c7875c4be",
+      "sizeBytes": 12659,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/apps/docs/content/docs/tasks.zh.mdx",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "packages/core/api/client.ts",
+      "blobSha": "5f8aa547531b0e229ab4a616feebe311835d1ef0",
+      "sizeBytes": 218006,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/packages/core/api/client.ts",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "server/cmd/server/router.go",
+      "blobSha": "f92744e804891300d6fcd8ce4142a0539af5e919",
+      "sizeBytes": 133765,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/server/cmd/server/router.go",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "server/internal/handler/issue.go",
+      "blobSha": "a8d3c0b1e8189f5d0fa6e858dafd277fa05bdd0d",
+      "sizeBytes": 192858,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/server/internal/handler/issue.go",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "server/internal/handler/issue_trigger.go",
+      "blobSha": "19bd3a119a47a870deb45c62ee724260f7a4358b",
+      "sizeBytes": 11691,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/server/internal/handler/issue_trigger.go",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "server/internal/handler/squad.go",
+      "blobSha": "aa2f21acf64a42b18a08988263a393942821556b",
+      "sizeBytes": 44855,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/server/internal/handler/squad.go",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "server/internal/handler/squad_briefing.go",
+      "blobSha": "7cf93c842747204bd6d1285efa5333af883b0d5c",
+      "sizeBytes": 22441,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/server/internal/handler/squad_briefing.go",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "server/internal/service/issue_trigger.go",
+      "blobSha": "902748b464a197b7eff904fa3a4a4d9ce95b58e4",
+      "sizeBytes": 9695,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/server/internal/service/issue_trigger.go",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "server/internal/service/task.go",
+      "blobSha": "34c2cff1a41c1ed26ab4c098c0cb1d1e8a604081",
+      "sizeBytes": 374990,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/server/internal/service/task.go",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "server/internal/handler/comment.go",
+      "blobSha": "009eb9d91c304d29c0aae0befc71fa3de4eb6565",
+      "sizeBytes": 174332,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/server/internal/handler/comment.go",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "server/internal/handler/daemon.go",
+      "blobSha": "6981cd47c6e669827a693fbae64f761b350b0b2c",
+      "sizeBytes": 298826,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/server/internal/handler/daemon.go",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "server/internal/daemon/daemon.go",
+      "blobSha": "f7c233548afa85a1602c59fdae1125b8ebd218a8",
+      "sizeBytes": 487367,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/server/internal/daemon/daemon.go",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "server/internal/daemon/client.go",
+      "blobSha": "0c0f5de0f2ab76bf846a3932cce0c7386b2aecd3",
+      "sizeBytes": 57677,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/server/internal/daemon/client.go",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "packages/core/realtime/use-realtime-sync.ts",
+      "blobSha": "00bb2d9d2d9e3b1d27b6b50f245c267d382e2ad7",
+      "sizeBytes": 88651,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/packages/core/realtime/use-realtime-sync.ts",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "packages/views/modals/run-confirm.tsx",
+      "blobSha": "f96bf954e0b41377918ce14f3652a0ed9bea5365",
+      "sizeBytes": 11814,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/packages/views/modals/run-confirm.tsx",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "packages/views/issues/actions/run-confirm-gate.ts",
+      "blobSha": "4d08034e73698b68c46205907ad9757697bd36ee",
+      "sizeBytes": 4369,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/packages/views/issues/actions/run-confirm-gate.ts",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "packages/ui/package.json",
+      "blobSha": "c3e1b7949d18c596d44e8912115ad4adbe8b56c3",
+      "sizeBytes": 2654,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/packages/ui/package.json",
+      "blobMatchesTree": true
+    },
+    {
+      "path": "pnpm-workspace.yaml",
+      "blobSha": "6b34e220ed7e33014e6bb111a5930efdd6c2eacf",
+      "sizeBytes": 1202,
+      "permalink": "https://github.com/multica-ai/multica/blob/a9434451e1c7c5a72798e0b65fdfb769a9249dab/pnpm-workspace.yaml",
+      "blobMatchesTree": true
+    }
+  ],
+  "images": [
+    {
+      "path": "apps/docs/public/images/docs/task-transcript.webp",
+      "blobSha": "239751e325ea3c8eb7c4b74d1d094ce4084f7459",
+      "sizeBytes": 27516,
+      "visuallyInspected": true,
+      "copiedIntoSocrates": false
+    },
+    {
+      "path": "apps/docs/public/images/docs/tutorial-squad-detail.webp",
+      "blobSha": "14574603f324405884b96d2222813ccda5790200",
+      "sizeBytes": 27486,
+      "visuallyInspected": true,
+      "copiedIntoSocrates": false
+    },
+    {
+      "path": "apps/docs/public/images/docs/tutorial-squad-dispatch.webp",
+      "blobSha": "54d5aa7b6db504445755d2e21ec4f6beec5e2e80",
+      "sizeBytes": 84228,
+      "visuallyInspected": true,
+      "copiedIntoSocrates": false
+    }
+  ],
+  "currentCheckedFiles": [
+    {
+      "path": "LICENSE",
+      "blobSha": "9286fa5f8ecaf1132ed9c01ff52a262309c608aa",
+      "sameAsPinned": true
+    },
+    {
+      "path": "AGENTS.md",
+      "blobSha": "c0df9bdf790723ad47e8411420948364c4754a84",
+      "sameAsPinned": false
+    },
+    {
+      "path": "README.md",
+      "blobSha": "ab6a403f87124591cb29b4bf1ccd2e213ecc0b6d",
+      "sameAsPinned": true
+    }
+  ]
+}
