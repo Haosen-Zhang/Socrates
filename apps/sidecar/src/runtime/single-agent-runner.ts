@@ -630,6 +630,8 @@ export class SingleAgentRunner {
     await repairToolHistory(this.db, this.memory, thread.id);
     const runId = crypto.randomUUID();
     const clientTurnKey = input.clientTurnKey ?? crypto.randomUUID();
+    const routingAttempt=this.routingAttempt(session.id,clientTurnKey);
+    if(routingAttempt&&(input.runtimeOptions?.costRootTaskId!==routingAttempt.root_task_id||input.runtimeOptions?.costRouteAttemptId!==routingAttempt.id))throw new Error("adaptive_recovery_required");
     const prepared = await this.memory.beginTurn({
       roomId: session.id,
       threadId: thread.id,
@@ -753,8 +755,9 @@ export class SingleAgentRunner {
       const snapshot = JSON.parse(agent.snapshot_json) as Record<string, unknown>;
       profile = input.runtimeOptions?.runProfile as RunProfile | undefined
         ?? resolveRunProfile(agent.agent_id, snapshot);
-      const capabilities = snapshot.modelCapabilities && typeof snapshot.modelCapabilities === "object"
-        ? snapshot.modelCapabilities as Record<string, unknown>
+      const capabilitySnapshot = input.runtimeOptions?.runProfile ? profile.modelCapabilities : snapshot.modelCapabilities;
+      const capabilities = capabilitySnapshot && typeof capabilitySnapshot === "object"
+        ? capabilitySnapshot as Record<string, unknown>
         : {};
       const resolution = capabilities.contextWindow && typeof capabilities.contextWindow === "object"
         ? capabilities.contextWindow as Record<string, unknown>
@@ -1086,7 +1089,7 @@ export class SingleAgentRunner {
       if (turnCompleted) throw error;
       const message = leaseLost ? "workspace_lease_lost" : error instanceof Error ? error.message : String(error);
       const activeRun = this.active.get(prepared.runId);
-      const status = input.signal?.aborted || activeRun?.cancelled ? "cancelled" : budgetExhausted || isCostBudgetPause(message) ? "interrupted" : "failed";
+      const status = input.signal?.aborted && input.signal.reason === "routing_shutdown" ? "interrupted" : input.signal?.aborted || activeRun?.cancelled ? "cancelled" : budgetExhausted || isCostBudgetPause(message) ? "interrupted" : "failed";
       const completedAt = new Date().toISOString();
       const partialContent = assistantText;
       assistantText = "";
@@ -1148,7 +1151,11 @@ export class SingleAgentRunner {
     }
   }
 
-  continuationInput(runId: string): AgentRunInput {
+  private routingAttempt(sessionId:string,clientTurnKey:string) {
+    return this.db.query<{id:string;root_task_id:string},[string,string]>("SELECT a.id,a.root_task_id FROM adaptive_attempts a JOIN room_commands c ON c.id=a.root_task_id WHERE c.room_id=? AND json_extract(a.attempt_json,'$.clientTurnKey')=?").get(sessionId,clientTurnKey);
+  }
+
+  continuationInput(runId: string, options:{allowInterrupted?:boolean;allowRouted?:boolean}={}): AgentRunInput {
     const row = this.db.query<{ session_id: string; prompt: string; status: string; error: string | null;
       thread_id: string; turn_id: string; client_turn_key: string; agent_id: string; context_json: string | null; runtime_kind: string | null }, [string]>(`
       SELECT agent_runs.session_id, agent_runs.prompt, agent_runs.status, agent_runs.error,
@@ -1158,7 +1165,9 @@ export class SingleAgentRunner {
       LEFT JOIN runtime_sessions ON runtime_sessions.id = agent_runs.runtime_session_id WHERE agent_runs.id = ?
     `).get(runId);
     if (!row) throw new Error("agent_run_not_found");
-    if (row.status !== "interrupted" || row.error !== "budget_exhausted" && !isCostBudgetPause(row.error)) throw new Error("agent_run_not_budget_stopped");
+    const routingAttempt=this.routingAttempt(row.session_id,row.client_turn_key);
+    if(routingAttempt&&!options.allowRouted)throw new Error("adaptive_recovery_required");
+    if (row.status !== "interrupted" || !(row.error === "budget_exhausted" || isCostBudgetPause(row.error) || options.allowInterrupted && ["routing_shutdown","sidecar_restarted"].includes(row.error ?? ""))) throw new Error("agent_run_not_budget_stopped");
     const context = row.context_json ? JSON.parse(row.context_json) as { runProfile?: RunProfile } : {};
     const parts = this.db.query<{ type: string; attachment_id: string | null; metadata_json: string | null }, [string]>(`
       SELECT message_parts.type, message_parts.attachment_id, message_parts.metadata_json FROM message_parts
@@ -1174,7 +1183,7 @@ export class SingleAgentRunner {
     return { sessionId: row.session_id, agentId: row.agent_id, prompt: row.prompt, threadId: row.thread_id,
       clientTurnKey: row.client_turn_key, runtimeKind: row.runtime_kind ?? "native_ai_sdk",
       attachmentIds, workspaceRefIds,
-      runtimeOptions: context.runProfile ? { runProfile: context.runProfile } : undefined };
+      runtimeOptions: {...(context.runProfile?{runProfile:context.runProfile}:{}),...(routingAttempt?{costRootTaskId:routingAttempt.root_task_id,costRouteAttemptId:routingAttempt.id}:{})} };
   }
 
   getRun(runId: string): AgentRunView | null {

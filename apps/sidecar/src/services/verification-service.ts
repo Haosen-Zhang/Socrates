@@ -15,7 +15,7 @@ import type { WorkspaceCommandRunner, StructuredCommandResult } from "../tools/w
 import { WorkspacePathPolicy } from "../workspace/path-policy";
 import { redactDiagnostic } from "../security/redaction";
 import { captureVerificationSnapshot, changedVerificationPaths, discoverVerificationChecks, protectedVerificationPaths, verificationPath } from "./verification-artifacts";
-import { parseVerificationCommand } from "./verification-evidence";
+import { parseVerificationCommand, stableVerificationDiagnostic } from "./verification-evidence";
 
 const RUNNER_VERSION = "socrates-verification/1";
 const ENVIRONMENT = { network: "denied", credentials: "not_inherited", cwd: "workspace_relative", shell: "false" };
@@ -97,7 +97,7 @@ export class VerificationService {
   view(target:VerificationTarget):VerificationView {
     const plan=this.latestPlan(target);
     if(!plan)return {target,plan:null,run:null,verificationStatus:"not_requested",outcome:"completed_unverified",acceptedUnverified:false,gatePassed:true};
-    const {policy,workspace}=this.scope(target,true);
+    const {policy,workspace}=this.scope(target,true,true);
     let run=this.latestRun(plan.id);
     if(run?.status==="passed" && run.mode==="final"){
       let reason:string|undefined;
@@ -115,8 +115,13 @@ export class VerificationService {
       gatePassed:final?.status==="passed" || acceptedUnverified};
     if(!target.workPackageId){
       const rows=this.db.query<{package_id:string},[string,string]>("SELECT DISTINCT package_id FROM verification_plans WHERE room_id=? AND root_task_id=? AND package_id!=''").all(target.roomId,target.rootTaskId);
+      const active=this.db.query<{task_id:string|null},[string]>("SELECT task_id FROM room_commands WHERE id=? AND EXISTS (SELECT 1 FROM adaptive_workflows WHERE root_task_id=room_commands.id)").get(target.rootTaskId);
       const unverified:string[]=[];
       for(const row of rows){
+        const owner=this.db.query<{task_id:string},[string]>("SELECT task_id FROM work_packages WHERE id=?").get(row.package_id);
+        // Earlier adaptive attempts remain auditable facts. Only the current
+        // child owns the completion gate; its predecessors cannot block it.
+        if(active&&owner&&owner.task_id!==active.task_id)continue;
         try{const child=this.view({...target,workPackageId:row.package_id});if(child.outcome!=="verified_success")unverified.push(row.package_id);if(!child.gatePassed)view.gatePassed=false;}
         catch{unverified.push(row.package_id);view.gatePassed=false;}
       }
@@ -167,7 +172,7 @@ export class VerificationService {
   async cancel(target:VerificationTarget,requestId=`cancel:${crypto.randomUUID()}`):Promise<VerificationView>{
     this.checkRequestId(requestId);
     const plan=this.latestPlan(target);if(!plan)return this.view(target);
-    this.scope(target,true);
+    this.scope(target,true,true);
     const fingerprint=hashToolInput({kind:"cancel",target});
     const previous=this.request(target.roomId,requestId,fingerprint) as {runId?:string}|null;
     if(previous){if(previous.runId)await this.active.get(previous.runId)?.promise;return this.view(target);}
@@ -261,7 +266,7 @@ export class VerificationService {
           this.commandEvidence(evidence,record,check,plan,workspace.identityHash,policy);
         }else this.assertionEvidence(evidence,check,policy);
         evidence.finishedAt=new Date().toISOString();evidence.durationMs=Date.parse(evidence.finishedAt)-Date.parse(evidence.startedAt);
-        if(evidence.status!=="passed")evidence.failureSignature=hashToolInput({reason:evidence.reason,exitCode:evidence.exitCode,diagnostics:evidence.diagnostics,artifact:run.snapshot.hash,check:check.id});
+        if(evidence.status!=="passed")evidence.failureSignature=hashToolInput({reason:evidence.reason,exitCode:evidence.exitCode,diagnostics:stableVerificationDiagnostic(evidence.diagnostics),artifact:run.snapshot.hash,check:check.id});
         this.db.query("INSERT INTO verification_evidence(id,run_id,check_id,evidence_json) VALUES(?,?,?,?)").run(evidence.id,run.id,check.id,JSON.stringify(evidence));
         run.evidence.push(evidence);this.persistRun(run,"verification.check_finished");
       }
@@ -330,7 +335,7 @@ export class VerificationService {
     evidence.diagnostics=redactDiagnostic(record.error ?? record.output?.preview ?? "No canonical command result");
   }
   private readOutputAll(scope:{sessionId:string;workspaceIdentity:string},ref:string){let offset=0,text="";while(true){const part=this.outputs.read(scope,ref,offset,32768);if(part.byteSize>2*1024*1024)throw new Error("verification_report_too_large");text+=part.text;if(!part.truncated)return text;offset=part.nextOffset;}}
-  private scope(target:VerificationTarget,allowDraft=false){
+  private scope(target:VerificationTarget,allowDraft=false,allowHistorical=false){
     if(!target||typeof target.roomId!=="string"||typeof target.rootTaskId!=="string"||!target.rootTaskId)throw new Error("verification_target_invalid");
     const room=this.sessions.get(target.roomId);if(!room||room.archived)throw new Error("verification_room_unavailable");
     if(room.kind!=="cowork"||!room.workspaceId)throw new Error("verification_work_room_required");
@@ -340,7 +345,12 @@ export class VerificationService {
       const task=this.db.query<{session_id:string},[string]>("SELECT session_id FROM multi_tasks WHERE id=?").get(target.rootTaskId);
       const run=this.db.query<{session_id:string},[string]>("SELECT session_id FROM agent_runs WHERE id=?").get(target.rootTaskId);
       if((command?.room_id ?? task?.session_id ?? run?.session_id)!==room.id)throw new Error("verification_target_not_found");
-      if(target.workPackageId){const item=this.db.query<{task_id:string},[string]>("SELECT task_id FROM work_packages WHERE id=?").get(target.workPackageId);if(!item||item.task_id!==(command?.task_id ?? target.rootTaskId))throw new Error("verification_package_not_found");}
+      if(target.workPackageId){
+        const item=this.db.query<{task_id:string},[string]>("SELECT task_id FROM work_packages WHERE id=?").get(target.workPackageId);
+        const historical=item&&this.db.query("SELECT id FROM adaptive_attempts WHERE root_task_id=? AND json_extract(attempt_json,'$.child.kind')='team' AND json_extract(attempt_json,'$.child.id')=?").get(target.rootTaskId,item.task_id);
+        if(!item||item.task_id!==(command?.task_id ?? target.rootTaskId)&&!historical)throw new Error("verification_package_not_found");
+        if(item.task_id!==(command?.task_id ?? target.rootTaskId)&&!allowHistorical)throw new Error("verification_target_retired");
+      }
     }
     return {room,workspace,policy:new WorkspacePathPolicy(workspace.canonicalPath)};
   }

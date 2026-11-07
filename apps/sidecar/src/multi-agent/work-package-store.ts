@@ -3,6 +3,7 @@ import { validateWorkPackages, type WorkPackageDefinition, type WorkPackageState
 
 export interface WorkPackageRecord extends WorkPackageDefinition {
   taskId: string;
+  routeDecisionId?: string;
   planVersion: number;
   state: WorkPackageState;
   attemptNo: number;
@@ -53,13 +54,14 @@ export class WorkPackageStore {
   replacePlan(taskId: string, version: number, definitions: WorkPackageDefinition[]): void {
     this.validateDefinitions(taskId, definitions);
     const task = this.db.query<{ session_id: string; config_json: string }, [string]>("SELECT session_id, config_json FROM multi_tasks WHERE id = ?").get(taskId)!;
-    const frozen = (JSON.parse(task.config_json) as { memberProfiles?: Record<string, Record<string, unknown>> }).memberProfiles;
+    const config = JSON.parse(task.config_json) as { memberProfiles?: Record<string, Record<string, unknown>>;routeDecisionId?:string };
+    const frozen = config.memberProfiles;
     const profile = (agentId: string | null) => agentId ? frozen?.[agentId] ?? JSON.parse(this.db.query<{ snapshot_json: string }, [string,string]>("SELECT snapshot_json FROM session_agents WHERE session_id = ? AND agent_id = ?").get(task.session_id, agentId)!.snapshot_json) as Record<string, unknown> : null;
     this.db.transaction(() => {
       this.db.query("DELETE FROM work_packages WHERE task_id = ?").run(taskId);
       const now = new Date().toISOString();
       for (const definition of definitions) {
-        const resolved = { ...definition, executorProfile: profile(definition.executorAgentId), reviewerProfile: profile(definition.reviewerAgentId), id: `${taskId}/${definition.id}`, dependencies: definition.dependencies.map((id) => `${taskId}/${id}`) };
+        const resolved = { ...definition, ...(config.routeDecisionId ? {routeDecisionId:config.routeDecisionId} : {}), executorProfile: profile(definition.executorAgentId), reviewerProfile: profile(definition.reviewerAgentId), id: `${taskId}/${definition.id}`, dependencies: definition.dependencies.map((id) => `${taskId}/${id}`) };
         this.db.query(`INSERT INTO work_packages (id, task_id, plan_version, definition_json, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
           .run(resolved.id, taskId, version, JSON.stringify(resolved), resolved.dependencies.length ? "waiting" : "ready", now, now);
       }

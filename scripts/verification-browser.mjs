@@ -98,6 +98,7 @@ try{
   const cancelStarted=Date.now();await stop.click();
   await until(async()=>Boolean((await api(targetPath(longPlan.target.rootTaskId))).run?.finishedAt),'long command cancelled');
   const cancelledView=await api(targetPath(longPlan.target.rootTaskId));
+  writeFileSync(`${out}/cancelled-command-view.json`,JSON.stringify(cancelledView,null,2));
   check('Stop terminates the real long command without waiting for its timeout',Date.now()-cancelStarted<10000&&cancelledView.run.outcome==='cancelled'&&cancelledView.run.status!=='passed');
   await drawer().getByText('Verification was stopped.',{exact:true}).first().waitFor();
   await page.screenshot({path:`${out}/cancelled-command.png`,animations:'disabled'});

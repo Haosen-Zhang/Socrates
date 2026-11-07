@@ -1,4 +1,5 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { adaptiveEvidenceContext } from "./adaptive-context";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
@@ -48,6 +49,10 @@ import { agentRoutes } from "../agents";
 import { VerificationService } from "./verification-service";
 import { taskVerificationTarget } from "./work-verification";
 import { verificationRoutes } from "../routes/verification";
+import { RoutePolicyService } from "./route-policy";
+import { AdaptiveWorkflowService } from "./adaptive-workflow";
+import { createAdaptiveHosts } from "./adaptive-hosts";
+import { routingRoutes } from "../routes/routing";
 
 export async function untilCostFlow(predicate: () => boolean, label: string, timeoutMs = 8_000): Promise<void> {
   const end = Date.now() + timeoutMs;
@@ -68,7 +73,7 @@ const PLAN: StructuredPlan = {
 };
 
 /** Real production services; only the Provider stream and disposable test files are controlled. */
-export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: boolean; reasoningPlanner?: boolean; writeApprovalFlow?: boolean; scopeExpansion?: boolean; invalidWriteHash?: boolean; automaticPricingView?: boolean } = {}) {
+export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: boolean; reasoningPlanner?: boolean; writeApprovalFlow?: boolean; scopeExpansion?: boolean; invalidWriteHash?: boolean; automaticPricingView?: boolean; routingFixture?:boolean } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "socrates-cost-flow-"));
   const workspacePath = join(directory, "workspace");
   mkdirSync(workspacePath);
@@ -80,10 +85,10 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
   const now = new Date().toISOString();
   db.query(`INSERT INTO providers(id,name,type,base_url,default_model,api_key_ref,enabled,created_at,updated_at)
     VALUES ('fixture-provider','Controlled fixture Provider','openai_compatible','https://fixture.invalid/v1','fixture-model-a','fixture-key',1,?,?)`).run(now, now);
-  const snapshots = ["a", "b"].map(suffix => ({ id: `fixture-${suffix}`, nickname: suffix === "a" ? "Fixture Builder" : "Fixture Reviewer", avatar: suffix === "a" ? "/avatars/owl-engineer.webp" : "/avatars/cat-astronaut.webp",
+  const snapshots = (options.routingFixture?["a","b","c"]:["a", "b"]).map(suffix => ({ id: `fixture-${suffix}`, nickname: suffix === "a" ? "Fixture Builder" : suffix === "b" ? "Fixture Reviewer" : "Fixture Specialist", avatar: suffix === "a" ? "/avatars/owl-engineer.webp" : "/avatars/cat-astronaut.webp",
     providerId: "fixture-provider", modelId: `fixture-model-${suffix}`, role: "Controlled fixture member", systemPrompt: "Operate only on synthetic test input.",
     reasoningEffort: "auto", configurationVersion: "fixture-v1", modelCapabilities: { textInput: true, imageInput: false, fileInput: false, toolCalling: true, streaming: true,
-      reasoningEfforts: ["auto"], runtimeKinds: ["native"], contextWindowTokens: 128000 } }));
+      reasoningEfforts: ["auto"], runtimeKinds: ["native"], contextWindowTokens: suffix === "c" ? 256000 : 128000 } }));
   for (const s of snapshots) db.query(`INSERT INTO agents(id,display_name,nickname,avatar,provider_id,model_id,role,system_prompt,reasoning_effort,model_capabilities_json,created_at,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(s.id, s.nickname, s.nickname, s.avatar, s.providerId, s.modelId, s.role, s.systemPrompt, s.reasoningEffort, JSON.stringify(s.modelCapabilities), now, now);
   const sessions = new SessionStore(db);
@@ -99,7 +104,7 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
   const outputs = new ToolOutputStore(db), leases = new WorkspaceLeaseManager(db, "cost-fixture-instance");
   const runtimes = new RuntimeManager(db, executionEvents), broker = new ModelInvocationBroker(db);
   for (const s of snapshots) broker.prices.save({ providerConnectionId: s.providerId, modelId: s.modelId, protocol: "openai_chat_completions", baseUrl: "https://fixture.invalid/v1",
-    currency: "USD", rates: { input: "1", output: "1", cacheRead: "0", cacheWrite: "0" }, source: "user_confirmed", sourceVersion: "synthetic-fixture/1",
+    currency: "USD", rates: { input: options.routingFixture && s.id === "fixture-c" ? "3" : "1", output: options.routingFixture && s.id === "fixture-c" ? "3" : "1", cacheRead: "0", cacheWrite: "0" }, source: "user_confirmed", sourceVersion: "synthetic-fixture/1",
     usageSemantics: { inputIncludesCacheRead: true, inputIncludesCacheWrite: true, outputIncludesReasoning: true } });
   if (options.automaticPricingView) {
     for (const p of [{ id: "pricing-openai", name: "Official OpenAI reference", baseUrl: "https://api.openai.com/v1", model: "gpt-5.6-luna" },
@@ -132,6 +137,14 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
   } : PLAN;
   const gateway: ModelGateway = broker.wrapGateway(async function* (request) {
     const purpose = request.invocation!.purpose;
+    let responsePlan=plan;
+    if(options.routingFixture && purpose === "plan"){
+      const task=tasks.get(request.invocation!.runId);
+      if(task?.config.routeDecisionId){
+        const executors=task.config.targetAgentIds ?? ["fixture-a"];
+        responsePlan={...PLAN,workPackages:executors.map((executorAgentId,index)=>({id:`delivery-${index}`,title:`Delivery ${index+1}`,objective:"Inspect and deliver synthetic output",input:"Write result.txt once if absent, otherwise inspect it.",dependencies:[],executorAgentId,reviewerAgentId:task.config.routingReviewerId ?? null,expectedFiles:["result.txt","context.txt"],acceptanceCriteria:["The controlled result exists"]}))};
+      }
+    }
     gatewayCalls.push({ purpose, agentId: request.invocation!.agentId, maxOutputTokens: request.maxOutputTokens });
     if (nextGatewayUnknown) {
       nextGatewayUnknown = false;
@@ -158,7 +171,7 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
       yield* sdk(request);
       return;
     }
-    yield { type: "delta", text: purpose === "plan" ? JSON.stringify(plan) : purpose === "review" ? JSON.stringify({ verdict: "approve", notes: "Controlled review of fixture output." }) : purpose === "summarize" ? "Controlled discussion summary." : "Controlled member response." };
+    yield { type: "delta", text: purpose === "plan" ? JSON.stringify(responsePlan) : purpose === "review" ? JSON.stringify({ verdict: "approve", notes: "Controlled review of fixture output." }) : purpose === "summarize" ? "Controlled discussion summary." : "Controlled member response." };
     yield { type: "done", usage: { ...TOKEN_USAGE }, requestId: `fixture-gateway-${gatewayCalls.length}`, finishReason: "stop" };
   });
   const controlledFetch = async (url: string, init?: RequestInit): Promise<Response> => {
@@ -167,11 +180,12 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
     const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ role: string; tool_call_id?: string }>; max_tokens?: number; tools?: unknown[] };
     const toolHistory = body.messages.some(message => message.role === "tool");
     nativeCalls.push({ model: body.model, toolHistory, maxOutputTokens: body.max_tokens });
-    const firstWorkerSample = body.model === "fixture-model-a" && !toolHistory && !!body.tools?.length;
+    const firstWorkerSample = (options.routingFixture || body.model === "fixture-model-a") && !toolHistory && !!body.tools?.length;
     let calls = firstWorkerSample ? [
       { id: "fixture-write", type: "function", function: { name: "write_file", arguments: JSON.stringify({ path: "result.txt", content: "Written once by controlled Native tool.\n" }) } },
       { id: "fixture-read", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "context.txt" }) } },
     ] : [];
+    if(options.routingFixture && existsSync(join(workspacePath,"result.txt")))calls=calls.filter(call=>call.function.name!=="write_file");
     if (options.writeApprovalFlow && body.model === "fixture-model-a" && body.tools?.length) {
       const paths = options.scopeExpansion ? ["result.txt", "second.txt", "outside-plan.txt"] : ["result.txt", "second.txt"];
       const index = paths.findIndex((_, i) => !body.messages.some(message => message.role === "tool" && message.tool_call_id === `approval-write-${i}`));
@@ -203,7 +217,7 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
     const registry = new ToolRegistry(definitions);
     return new NativeAgentRuntime({ sessionId: room.id, taskId: input.agentSessionId, agentId: input.agentId,
       workspaceId: selectedWorkspace?.id ?? "", workspaceIdentity: selectedWorkspace?.identityHash ?? `chat:${room.id}`,
-      system: `${profile.role}\n${profile.systemPrompt}`, registry, executor: new ToolExecutor(db, registry, approvals, undefined, executionEvents),
+      system: [profile.role,profile.systemPrompt,adaptiveEvidenceContext(input.runtimeOptions?.adaptiveHandoff)].filter(Boolean).join("\n\n"), registry, executor: new ToolExecutor(db, registry, approvals, undefined, executionEvents),
       allowedCapabilities: room.kind === "chat" ? [] : ["workspace_read", "workspace_write"],
       permissionForTool: definition => evaluatePermission({ action: definition.capability === "workspace_read" ? "workspace.read" : "workspace.write", resource: definition.name,
         risk: definition.risk, mode: "single_agent", phase: "executing", capabilityAllowed: room.kind !== "chat", policyVersion: room.approvalPolicy.version, approvalMode: room.approvalPolicy.mode, rules: [] }),
@@ -212,10 +226,15 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
         broker, invocation: { roomId: room.id, rootTaskId: String(input.runtimeOptions?.costRootTaskId ?? input.agentSessionId), runId: String(input.runtimeOptions?.costRunId ?? input.agentSessionId),
           agentId: input.agentId, providerConnectionId: profile.providerId, runProfileVersion: profile.configurationVersion, logicalStepId: input.agentSessionId,
           purpose: room.kind === "chat" ? "respond" : "execute", contextWindowTokens: profile.contextWindowTokens,
-          ...(typeof input.runtimeOptions?.costWorkPackageId === "string" ? { workPackageId: input.runtimeOptions.costWorkPackageId } : {}) } }) });
+          ...(typeof input.runtimeOptions?.costRouteAttemptId === "string" ? { routeAttemptId: input.runtimeOptions.costRouteAttemptId } : {}),
+        ...(typeof input.runtimeOptions?.costWorkPackageId === "string" ? { workPackageId: input.runtimeOptions.costWorkPackageId } : {}) } }) });
   });
   const attachments = new AttachmentResolver(db, directory);
-  const verification = new VerificationService(db,sessions,workspaces,leases,approvals,events,executionEvents,outputs);
+  let adaptive:AdaptiveWorkflowService;
+  const routes=new RoutePolicyService(db,sessions,{hasCredentials:(_id,ref)=>Boolean(secrets.get(ref))});
+  const verification = new VerificationService(db,sessions,workspaces,leases,approvals,events,executionEvents,outputs,{
+    onChanged:view=>{void adaptive?.notifyVerificationProgress(view.target.rootTaskId,`verification:${view.run?.id ?? view.plan?.id}:${view.verificationStatus}:${view.outcome}`).catch(()=>{});},
+  });
   const runner = new SingleAgentRunner(db, runtimes, approvals, executionEvents, attachments, undefined, leases,verification);
   const supervisor = new RunSupervisor(runner);
   const tasks = new MultiTaskStore(db);
@@ -228,6 +247,14 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
   const coordinator = new MultiAgentCoordinator(db, tasks, events, gateway, resolveAgent,undefined,verification);
   const execution = new ExecutionRunner(db, tasks, runtimes, leases, approvals, events, executionEvents,undefined,verification);
   const packages = new WorkPackageStore(db,item=>verification.view(taskVerificationTarget(db,item.taskId,item.id)).gatePassed), team = new TeamRunner(db, tasks, packages, execution, coordinator, events,undefined,verification);
+  adaptive=new AdaptiveWorkflowService(db,routes,verification,createAdaptiveHosts(db,routes,sessions,supervisor,runner,tasks,coordinator,team,verification,input=>{
+    const room=sessions.get(input.roomId)!;
+    const refs=[...new Set([...(input.workspaceRefIds??[]),...input.mentions.flatMap(mention=>mention.type==="file"?[mention.refId]:[])])];
+    return refs.length||input.attachmentIds?.length?resolveRoomFileContext(db,workspaces,attachments,room.workspaceId,refs,input.attachmentIds??[]).text:"";
+  }),{pollMs:10,onChanged:view=>{
+    const status=["completed","failed","cancelled"].includes(view.status)?view.status:view.status==="blocked"?"failed":["pending","running","assessing"].includes(view.status)?"running":"interrupted";
+    db.query("UPDATE sessions SET status=?,updated_at=? WHERE id=?").run(status,new Date().toISOString(),view.roomId);
+  }});
   const commands = new RoomCommandService(db, sessions, {
     startDirect: input => supervisor.start(input), getDirect: id => supervisor.get(id), cancelDirect: id => supervisor.cancel(id), isTeamActive: id => team.isActive(id),
     resolveFileContext: (workspaceId, refs, ids) => resolveRoomFileContext(db, workspaces, attachments, workspaceId, refs, ids),
@@ -238,10 +265,10 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
         clientRequestId, targetAgentIds, inputContext } });
       void coordinator.run(task.id).catch(() => {});
       return { taskId: task.id };
-    }, resolveAgent, gateway, verification,
+    }, resolveAgent, gateway, verification, routing:routes, adaptive,
   });
-  const costTasks = new CostTaskService(db, commands, supervisor, runner, tasks, coordinator, team, execution);
-  const quotes = new TaskQuoteService(db, sessions), usage = new UsageCollector(db);
+  const costTasks = new CostTaskService(db, commands, supervisor, runner, tasks, coordinator, team, execution,{routing:routes,adaptive});
+  const quotes = new TaskQuoteService(db, sessions,routes), usage = new UsageCollector(db);
   const config = new ConfigStore(join(directory, "config.toml"), secrets);
   config.update({ language: "en", theme: "dark", soundEnabled: false });
   const app = new Hono();
@@ -258,12 +285,13 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
   });
   app.route("/config", configRoutes(config)); app.route("/providers", providerRoutes(db, secrets, controlledFetch)); app.route("/agents", agentRoutes(db));
   app.route("/sessions", sessionRoutes(sessions, events, usage, workspaces)); app.route("/workspaces", workspaceRoutes(workspaces));
-  app.route("/room-commands", roomCommandRoutes(commands)); app.route("/multi", multiAgentRoutes(tasks, coordinator, execution, approvals, team));
+  app.route("/room-commands", roomCommandRoutes(commands)); app.route("/multi", multiAgentRoutes(tasks, coordinator, execution, approvals, team, adaptive));
   app.route("/verification",verificationRoutes(verification));
-  app.route("/agent", agentRunRoutes(supervisor, runner, approvals, executionEvents)); app.route("/cost", costRoutes(db, sessions, broker, quotes, costTasks, commands));
+  app.route("/routing",routingRoutes(routes,adaptive));
+  app.route("/agent", agentRunRoutes(supervisor, runner, approvals, executionEvents,(child,key)=>adaptive.notifyChildProgress(child,key).then(()=>{}))); app.route("/cost", costRoutes(db, sessions, broker, quotes, costTasks, commands));
   app.route("/content", contentRoutes(db, workspaces, attachments));
   app.get("/rooms", c => c.json([])); app.get("/mcp/servers", c => c.json([]));
-  return { directory, db, sessions, workspaces, workspace, roomIds: { work: work.id, chat: chat.id }, broker, commands, quotes, costTasks, tasks, coordinator, verification, packages,
+  return { directory, db, routes, adaptive, sessions, workspaces, workspace, roomIds: { work: work.id, chat: chat.id }, broker, commands, quotes, costTasks, tasks, coordinator, verification, packages,
     execution, team, runtimes, approvals, runner, supervisor, app, token, headers, gatewayCalls, nativeCalls,
-    async close() { await verification.shutdown(); await commands.shutdown(); await team.shutdown(); await execution.shutdown(); await supervisor.shutdown(); db.close(); rmSync(directory, { recursive: true, force: true }); } };
+    async close() { await adaptive.shutdown(); await verification.shutdown(); await commands.shutdown(); await team.shutdown(); await execution.shutdown(); await supervisor.shutdown(); db.close(); rmSync(directory, { recursive: true, force: true }); } };
 }

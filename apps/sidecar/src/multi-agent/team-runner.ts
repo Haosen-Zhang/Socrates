@@ -90,9 +90,14 @@ export class TeamRunner {
         this.packages.cancelQueued(taskId);
         if (!["cancelled", "completed", "failed"].includes(current.state)) this.tasks.transition(taskId, { type: "cancel", reason: "user_cancelled" });
       } else if (all.every((item) => item.state === "completed")) {
-        const verification = await this.verification?.verify(taskVerificationTarget(this.db, taskId), {
-          runId: `team:${taskId}:${task.attemptNo}`, agentId: task.config.synthesizerId, signal: active.controller.signal,
-        });
+        const target=taskVerificationTarget(this.db,taskId);
+        const currentEvidence=this.verification?.view(target);
+        // view() rechecks artifact/contract hashes. Resuming an approved local
+        // check must not mint another operation or ask for the same approval.
+        const verification=currentEvidence?.plan && currentEvidence.gatePassed && (currentEvidence.verificationStatus==="passed" || currentEvidence.acceptedUnverified)
+          ? currentEvidence : await this.verification?.verify(target, {
+            runId: `team:${taskId}:${task.attemptNo}`, agentId: task.config.synthesizerId, signal: active.controller.signal,
+          });
         // Integration may itself alter generated files. Old local passes must
         // not survive a changed snapshot just because their executors stopped.
         this.packages.reconcileVerification(taskId);

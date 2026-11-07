@@ -71,18 +71,16 @@ describe("session routes", () => {
     );
     expect((await restored.json()).collaboration.strategy).toBe("team");
 
-    const unavailable = await app.request(`/sessions/${created.id}/collaboration`, {
+    const adaptive = await app.request(`/sessions/${created.id}/collaboration`, {
       method: "PUT",
       body: JSON.stringify({
         collaboration: { ...created.collaboration, strategy: "adaptive" },
       }),
     });
-    expect(unavailable.status).toBe(409);
-    expect(await unavailable.json()).toEqual({
-      error: "collaboration_strategy_unavailable",
-    });
+    expect(adaptive.status).toBe(200);
+    expect((await adaptive.json()).collaboration.strategy).toBe("adaptive");
 
-    const unavailableRouting = await app.request(`/sessions/${created.id}/collaboration`, {
+    const customRouting = await app.request(`/sessions/${created.id}/collaboration`, {
       method: "PUT",
       body: JSON.stringify({
         collaboration: {
@@ -97,10 +95,8 @@ describe("session routes", () => {
         },
       }),
     });
-    expect(unavailableRouting.status).toBe(409);
-    expect(await unavailableRouting.json()).toEqual({
-      error: "routing_runtime_unavailable",
-    });
+    expect(customRouting.status).toBe(200);
+    expect((await customRouting.json()).collaboration.assignment.routing.mode).toBe("manual");
   });
 
   it("rejects room creation when configured defaults exceed backend capabilities", async () => {
@@ -114,7 +110,7 @@ describe("session routes", () => {
         new EventStore(db),
         undefined,
         new WorkspaceManager(db, managedRoot),
-        () => ({ ...DEFAULT_COLLABORATION_SETTINGS, strategy: "adaptive" }),
+        () => ({ ...DEFAULT_COLLABORATION_SETTINGS, planConfirmation:{mode:"coordinator",reviewerAgentId:null} }),
       ),
     );
     const response = await app.request("/sessions", {
@@ -130,7 +126,7 @@ describe("session routes", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
-      error: "collaboration_strategy_unavailable",
+      error: "plan_confirmation_unavailable",
     });
   });
 

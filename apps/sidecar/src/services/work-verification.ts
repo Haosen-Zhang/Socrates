@@ -11,6 +11,6 @@ export interface WorkVerification {
 export function taskVerificationTarget(db: Database, taskId: string, workPackageId?: string): VerificationTarget {
   const task = db.query<{session_id:string;config_json:string},[string]>("SELECT session_id,config_json FROM multi_tasks WHERE id=?").get(taskId);
   if (!task) throw new Error("multi_task_not_found");
-  const config = JSON.parse(task.config_json) as {clientRequestId?:string};
-  return {roomId:task.session_id,rootTaskId:config.clientRequestId ?? taskId,...(workPackageId ? {workPackageId} : {})};
+  const config = JSON.parse(task.config_json) as {clientRequestId?:string;costRootTaskId?:string};
+  return {roomId:task.session_id,rootTaskId:config.costRootTaskId ?? config.clientRequestId ?? taskId,...(workPackageId ? {workPackageId} : {})};
 }

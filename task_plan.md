@@ -168,5 +168,7 @@ Current result: output is managed by the application; users configure money. Exi
 - [x] Reproduce long Work result overflow, fix root flex constraint, pass 17 actual browser checks and all 1016 tests/types/build/lint.
 - [x] P03: freeze and persist verification plans/snapshots/evidence; run checks through existing tool permission/approval/leases; gate package dependencies; expose results and recovery UI.
 - [x] P03: validate false success, zero tests, stale artifact/contract change, permissions/timeouts/restart, single/team/integration; record stage evidence.
-- [ ] P04: deterministic candidate/features/whole-workflow pricing and presets, persistent LangGraph flow through existing hosts, bounded evidence-based retry/escalation, UI and compatibility.
-- [ ] Complete all gates, real UI checks and progress/reuse documentation; preserve user data and do not push automatically.
+- [x] P04: deterministic candidate/features/whole-workflow pricing and presets, persistent LangGraph flow through existing hosts, bounded evidence-based retry/escalation, UI and compatibility.
+- [x] Complete all gates, real UI checks and progress/reuse documentation; preserve user data and do not push automatically.
+
+Final result (2026-11-08): 1,167 tests / 0 failures, 203 files, 23,146 assertions; types/build/lint passed. Actual Chrome: routing 25, verification 19, scrolling 17 checks passed. Local branch `codex/cost-aware-p03-p04`; runtime/data preserved. See `implementation-progress.md`, `doc/cost-aware-routing.md` and the sanitized validation record for exact evidence, limits and P05–P08 dependencies. No live model, private-data upload, push or release.

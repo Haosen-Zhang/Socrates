@@ -146,7 +146,7 @@ export class ExecutionRunner {
       const handle = await this.runtimes.open({ runtimeKind: "native_ai_sdk", agentSessionId: runId,
         sessionId: task.sessionId, agentId: input.agentId, workspaceId: workspace.workspace_id,
         runtimeOptions: { sandbox: "workspace-write", runProfile: profile, costRunId: runId,
-          costRootTaskId: task.config.clientRequestId ?? task.id, costWorkPackageId: input.packageId } });
+          costRootTaskId: task.config.costRootTaskId ?? task.config.clientRequestId ?? task.id, costWorkPackageId: input.packageId, costRouteAttemptId:task.config.adaptiveAttemptId } });
       active.runtimeSessionId = handle.id;
       controller.signal.throwIfAborted();
       const preamble: ConversationStoredMessage[] = previous.length ? [{ ...userContext, messageId: `${runId}:continuation`,
@@ -305,7 +305,7 @@ export class ExecutionRunner {
         runtimeKind: "native_ai_sdk", agentSessionId: `${taskId}:${task.attemptNo}:execution`,
         sessionId: task.sessionId, agentId: task.executionAgentId!, workspaceId: session.workspace_id,
         runtimeOptions: { sandbox: "workspace-write", runProfile: profile, costRunId: taskId,
-          costRootTaskId: task.config.clientRequestId ?? taskId },
+          costRootTaskId: task.config.costRootTaskId ?? task.config.clientRequestId ?? taskId, costRouteAttemptId:task.config.adaptiveAttemptId },
       });
       runtimeSessionId = handle.id;
       active.runtimeSessionId = runtimeSessionId;

@@ -16,6 +16,7 @@ export interface RoomCommandInput {
   workspaceRefIds?: string[];
   quoteId?: string;
   verificationPlanId?: string;
+  routingCandidateId?: string;
   maxOutputTokens?: number;
   budget?: { mode: "strict_admission" | "soft_limit" | "tracking_only"; limitAtomic: string };
 }

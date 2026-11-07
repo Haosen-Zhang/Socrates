@@ -76,6 +76,7 @@ function memberSystem(agent: OrchestrationAgent, instructions: string): string {
 
 export class MultiAgentCoordinator {
   private readonly controllers = new Map<string, AbortController>();
+  private readonly completions = new Map<string, { promise: Promise<void>; resolve: () => void }>();
   private readonly compaction: ContextCompactionService;
 
   constructor(
@@ -97,6 +98,7 @@ export class MultiAgentCoordinator {
     emit = this.durableEmitter(taskId, emit);
     const controller = new AbortController();
     this.controllers.set(taskId, controller);
+    this.trackCompletion(taskId);
     try {
       const task = this.store.get(taskId);
       if (!task || !["preparing", "discussing", "synthesizing"].includes(task.state)) throw new Error("multi_task_not_runnable");
@@ -112,13 +114,13 @@ export class MultiAgentCoordinator {
         await this.stateEvent(taskId, task.sessionId, "discussing", emit);
       }
       const collabRow = this.db.query<{ collaboration_json: string | null }, [string]>("SELECT collaboration_json FROM sessions WHERE id = ?").get(task.sessionId);
-      const rawCollaboration = collabRow?.collaboration_json
+      const rawCollaboration = task.config.frozenCollaboration ?? (collabRow?.collaboration_json
         ? JSON.parse(collabRow.collaboration_json) as unknown
-        : null;
+        : null);
       const collab = normalizeCollaborationSettings(rawCollaboration);
       const completed: Array<{ agentId: string; agentName: string; round: number; content: string }> = [];
       let ordinal = 0;
-      const legacyUnconfigured = !collabRow?.collaboration_json;
+      const legacyUnconfigured = !task.config.frozenCollaboration && !collabRow?.collaboration_json;
       const legacyShape = rawCollaboration !== null
         && typeof rawCollaboration === "object"
         && !("discussion" in rawCollaboration);
@@ -244,6 +246,7 @@ export class MultiAgentCoordinator {
       else await emit(message === "multi_task_cancelled" ? { type: "task_cancelled", taskId } : { type: "task_failed", taskId, message });
     } finally {
       this.controllers.delete(taskId);
+      this.complete(taskId);
     }
   }
 
@@ -287,10 +290,22 @@ export class MultiAgentCoordinator {
   }
 
   private async waitUntilStopped(taskId: string): Promise<void> {
-    for (let attempt = 0; this.controllers.has(taskId) && attempt < 200; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    if (this.controllers.has(taskId)) throw new Error("multi_task_pause_in_progress");
+    await this.wait(taskId);
+  }
+
+  /** Join the actual owner, including its final history/usage writes. */
+  async wait(taskId: string): Promise<void> { await this.completions.get(taskId)?.promise; }
+
+  private trackCompletion(taskId: string): void {
+    let resolve!: () => void;
+    const promise = new Promise<void>(done => { resolve = done; });
+    this.completions.set(taskId, { promise, resolve });
+  }
+
+  private complete(taskId: string): void {
+    const completion = this.completions.get(taskId);
+    this.completions.delete(taskId);
+    completion?.resolve();
   }
 
   async replan(taskId: string, instruction: string, emit: (event: MultiAgentEvent) => void | Promise<void> = () => {}): Promise<void> {
@@ -300,9 +315,10 @@ export class MultiAgentCoordinator {
     if (!task || task.state !== "revising_plan" || !parent) throw new Error("multi_task_not_revising");
     const controller = new AbortController();
     this.controllers.set(taskId, controller);
+    this.trackCompletion(taskId);
     emit = this.durableEmitter(taskId, emit);
     try {
-      const synthesizerId = this.effectiveSynthesizerId(task.config, this.collaborationFor(task.sessionId));
+      const synthesizerId = this.effectiveSynthesizerId(task.config, task.config.frozenCollaboration ?? this.collaborationFor(task.sessionId));
       const last = this.db.query<{ last: number }, [string]>("SELECT COALESCE(MAX(participant_index),-1) AS last FROM multi_turns WHERE task_id=? AND phase='synthesizing'").get(taskId)!.last;
       const ordinal = Math.max((task.discussionCutoff ?? 0) + parent.version * 2, last + 1);
       this.db.transaction(() => {
@@ -317,7 +333,7 @@ export class MultiAgentCoordinator {
         this.store.transition(taskId, { type: controller.signal.aborted ? "cancel" : reason.startsWith("cost_budget_") || reason === "provider_outcome_unknown" || reason === "multi_turn_outcome_unknown" ? "pause" : "fail", reason });
       }
       throw error;
-    } finally { this.controllers.delete(taskId); }
+    } finally { this.controllers.delete(taskId); this.complete(taskId); }
   }
 
   private async runPendingRevision(taskId: string, signal: AbortSignal, emit: (event: MultiAgentEvent) => void | Promise<void>): Promise<void> {
@@ -430,14 +446,14 @@ export class MultiAgentCoordinator {
       modelId: item.snapshot.modelId, capabilities: item.snapshot.modelCapabilities ?? null,
       executionAllowed: (!allowed || allowed.has(item.agentId)) && this.executionAvailable(sessionId, item.agentId, item.snapshot),
     }));
-    return `\nThis is a TEAM execution task. Include a nonempty workPackages array alongside steps. Split the objective into useful packages and assign each to an eligible room member using their stable agentId. Use different members for different packages when appropriate. Do not invent price or model capabilities. Only executionAllowed members may execute. Each package MUST have this shape: {"id":"stable-local-id","title":"...","objective":"...","input":"task details","dependencies":["other-package-id"],"executorAgentId":"member-id","reviewerAgentId":null,"expectedFiles":["relative/path"],"acceptanceCriteria":["checkable condition"]}. Dependencies must form a DAG. A reviewer must differ from the executor. Known room roster: ${JSON.stringify(roster)}`;
+    return `\nThis is a TEAM execution task. Include a nonempty workPackages array alongside steps. Split the objective into useful packages and assign each to an eligible room member using their stable agentId. Use different members for different packages when appropriate. Do not invent price or model capabilities. Only executionAllowed members may execute. Each package MUST have this shape: {"id":"stable-local-id","title":"...","objective":"...","input":"task details","dependencies":["other-package-id"],"executorAgentId":"member-id","reviewerAgentId":null,"expectedFiles":["relative/path"],"acceptanceCriteria":["checkable condition"]}. Dependencies must form a DAG. A reviewer must differ from the executor. ${config.routeDecisionId ? `Frozen routing requires reviewerAgentId=${JSON.stringify(config.routingReviewerId ?? null)} on every package. Do not change this assignment.` : ""} Known room roster: ${JSON.stringify(roster)}`;
   }
 
   private validAssignments(plan: StructuredPlan, config: MultiTaskConfig, sessionId: string): boolean {
     if (!config.teamExecution && !plan.workPackages) return true;
     if (validateWorkPackages(plan.workPackages, this.snapshots(sessionId, config.memberProfiles).map((s) => s.agentId)).length) return false;
     const snapshots = new Map(this.snapshots(sessionId, config.memberProfiles).map((s) => [s.agentId, s.snapshot]));
-    return plan.workPackages!.every((p) => (!config.targetAgentIds?.length || config.targetAgentIds.includes(p.executorAgentId)) && this.executionAvailable(sessionId, p.executorAgentId, snapshots.get(p.executorAgentId)!));
+    return plan.workPackages!.every((p) => (!config.routeDecisionId || p.reviewerAgentId === (config.routingReviewerId ?? null)) && (!config.targetAgentIds?.length || config.targetAgentIds.includes(p.executorAgentId)) && this.executionAvailable(sessionId, p.executorAgentId, snapshots.get(p.executorAgentId)!));
   }
 
   private executionAvailable(sessionId: string, agentId: string, snapshot: Record<string, unknown>): boolean {
@@ -465,7 +481,7 @@ export class MultiAgentCoordinator {
       const task = this.store.get(taskId)!;
       const profile = task.config.memberProfiles?.[agent.id] ?? this.snapshots(task.sessionId).find(s => s.agentId === agent.id)?.snapshot;
       for await (const event of this.gateway({ providerType: agent.providerType, baseUrl: agent.baseUrl, apiKey: agent.apiKey, modelId: agent.modelId, system, temperature: agent.temperature, reasoningEffort: agent.reasoningEffort, messages, signal, maxOutputTokens,
-        invocation: { roomId: task.sessionId, rootTaskId: task.config.clientRequestId ?? taskId, runId: taskId, logicalStepId,
+        invocation: { roomId: task.sessionId, rootTaskId: task.config.costRootTaskId ?? task.config.clientRequestId ?? taskId, runId: taskId, logicalStepId, routeAttemptId: task.config.adaptiveAttemptId,
           agentId: agent.id, providerConnectionId: agent.providerConnectionId ?? String(profile?.providerId ?? ""),
           runProfileVersion: agent.runProfileVersion ?? String(profile?.configurationVersion ?? profile?.updatedAt ?? "legacy"), purpose,
           contextWindowTokens: agent.contextWindowTokens, catalogContextWindow: agent.catalogContextWindow, ...(workPackageId ? { workPackageId } : {}) },
@@ -475,7 +491,7 @@ export class MultiAgentCoordinator {
         else error = event.message;
       }
     } catch (cause) {
-      error = signal.aborted ? "multi_task_cancelled" : cause instanceof Error && cause.message.startsWith("cost_budget_") ? cause.message : "provider_outcome_unknown";
+      error = signal.aborted ? "multi_task_cancelled" : cause instanceof Error && /^(?:cost_budget_|routing_)/.test(cause.message) ? cause.message : "provider_outcome_unknown";
     }
     if (!completed && !error) error = "provider_outcome_unknown";
     return { content, usage, error, receivedDelta, finishReason, outputTokenLimit, outputTokenCeiling };

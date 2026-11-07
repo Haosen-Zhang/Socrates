@@ -2,6 +2,14 @@ import type { CheckEvidence, VerificationCheck } from "@socrates/core";
 import type { StructuredCommandResult } from "../tools/workspace-command-runner";
 
 type Parsed = Pick<CheckEvidence, "status" | "reason" | "counts">;
+/** Durations and wall-clock timestamps do not establish changed failure
+ * conditions. Retain the raw diagnostic in evidence; normalize only its key. */
+export function stableVerificationDiagnostic(value:string|undefined):string|undefined {
+  return value?.replace(/\u001b\[[0-9;]*m/g,"")
+    .replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/g,"<timestamp>")
+    .replace(/\b\d+(?:\.\d+)?\s?(?:ms|milliseconds|seconds|sec)\b/g,"<duration>")
+    .replace(/\[\d+(?:\.\d+)?s\]/g,"[<duration>]");
+}
 /** Parse runner summaries, never the executor's narrative. Exit state and test
  * counts are separate conditions; missing/unsupported reports remain unknown. */
 export function parseVerificationCommand(check: Extract<VerificationCheck, { kind: "command" }>, result: StructuredCommandResult, output?: string): Parsed {

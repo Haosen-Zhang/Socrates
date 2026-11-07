@@ -4,6 +4,7 @@ import {
   COLLABORATION_RUNTIME_CAPABILITIES,
   TOOL_APPROVAL_CAPABILITIES,
   type ApprovalDecision,
+  type AdaptiveChildRef,
 } from "@socrates/core";
 import type { ApprovalManager } from "../approvals/manager";
 import type { RunSupervisor } from "../runtime/run-supervisor";
@@ -17,6 +18,7 @@ export function agentRunRoutes(
   runner: SingleAgentRunner,
   approvals: ApprovalManager,
   events: ExecutionEventStore,
+  onProgress?: (child:AdaptiveChildRef,requestId:string)=>Promise<void>,
 ): Hono {
   const app = new Hono();
   app.get("/capabilities", (c) => c.json({
@@ -103,11 +105,14 @@ export function agentRunRoutes(
       return c.json({ error: "invalid_approval_decision" }, 400);
     }
     try {
-      return c.json(await runner.decide(c.req.param("id"), {
+      const pending=approvals.recoverPending().pending.find(item=>item.id===c.req.param("id"));
+      const result=await runner.decide(c.req.param("id"), {
         decision: body.decision as ApprovalDecision,
         clientDecisionKey: body.clientDecisionKey,
         reason: typeof body.reason === "string" ? body.reason : undefined,
-      }));
+      });
+      if(pending)await onProgress?.({kind:"single",id:pending.taskId},`tool:${body.clientDecisionKey}`);
+      return c.json(result);
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : "approval_decision_failed" }, 409);
     }

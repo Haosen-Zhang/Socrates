@@ -1,3 +1,4 @@
+import { adaptiveEvidenceContext } from "./services/adaptive-context";
 import { Hono } from "hono";
 import { VerificationService } from "./services/verification-service";
 import { taskVerificationTarget } from "./services/work-verification";
@@ -58,6 +59,10 @@ import { ModelInvocationBroker } from "./services/model-invocation-broker";
 import { TaskQuoteService } from "./services/task-quotes";
 import { costRoutes } from "./routes/cost";
 import { CostTaskService } from "./services/cost-task-service";
+import { RoutePolicyService } from "./services/route-policy";
+import { AdaptiveWorkflowService } from "./services/adaptive-workflow";
+import { createAdaptiveHosts } from "./services/adaptive-hosts";
+import { routingRoutes } from "./routes/routing";
 
 // 父进程（Tauri）异常退出（如 SIGKILL/SIGTERM 未走优雅关闭）时自动退出，避免孤儿进程占着端口
 let stopManagedServices: () => Promise<void> = async () => {};
@@ -155,7 +160,7 @@ runtimes.register("native_ai_sdk", (input) => {
     agentId: input.agentId,
     workspaceId: workspace?.id ?? "",
     workspaceIdentity: workspace?.identityHash ?? `chat:${session.id}`,
-    system: [profile.role, profile.systemPrompt].filter(Boolean).join("\n\n"),
+    system: [profile.role, profile.systemPrompt,adaptiveEvidenceContext(input.runtimeOptions?.adaptiveHandoff)].filter(Boolean).join("\n\n"),
     registry,
     executor,
     stream: createAiSdkNativeStream(model, undefined, { providerType: provider.type, modelId: profile.modelId, baseUrl: provider.base_url,
@@ -164,6 +169,7 @@ runtimes.register("native_ai_sdk", (input) => {
         runId: String(input.runtimeOptions?.costRunId ?? input.agentSessionId), agentId: input.agentId,
         providerConnectionId: profile.providerId, runProfileVersion: profile.configurationVersion,
         logicalStepId: input.agentSessionId, purpose: session.kind === "chat" ? "respond" : "execute",
+        ...(typeof input.runtimeOptions?.costRouteAttemptId === "string" ? { routeAttemptId: input.runtimeOptions.costRouteAttemptId } : {}),
         ...(typeof input.runtimeOptions?.costWorkPackageId === "string" ? { workPackageId: input.runtimeOptions.costWorkPackageId } : {}),
         contextWindowTokens: profile.contextWindowTokens,
         ...(profile.modelCapabilities.contextWindow?.catalogValue && profile.modelCapabilities.contextWindow.catalogProviderId && profile.modelCapabilities.contextWindow.catalogRevision
@@ -194,7 +200,11 @@ runtimes.register("native_ai_sdk", (input) => {
     },
   });
 });
-const verification = new VerificationService(db,sessions,workspaces,leases,approvals,events,executionEvents,toolOutputs);
+let adaptive: AdaptiveWorkflowService;
+const routing = new RoutePolicyService(db,sessions,{hasCredentials:(_id,ref)=>{try{return Boolean(secrets.get(ref));}catch{return false;}}});
+const verification = new VerificationService(db,sessions,workspaces,leases,approvals,events,executionEvents,toolOutputs,{
+  onChanged:view=>{void adaptive?.notifyVerificationProgress(view.target.rootTaskId,`verification:${view.run?.id ?? view.plan?.id}:${view.verificationStatus}:${view.outcome}`).catch(()=>{});},
+});
 verification.recoverInterrupted();
 const agentRuns = new SingleAgentRunner(db, runtimes, approvals, executionEvents, attachments, history, leases, verification);
 const runSupervisor = new RunSupervisor(agentRuns);
@@ -230,6 +240,15 @@ const workPackages = new WorkPackageStore(db,item=>verification.view(taskVerific
 workPackages.recoverInterrupted();
 const teamRunner = new TeamRunner(db, multiTasks, workPackages, executionRunner, multiCoordinator, events, history, verification);
 executionRunner.reconcileDurableTurnEvents();
+adaptive = new AdaptiveWorkflowService(db,routing,verification,createAdaptiveHosts(db,routing,sessions,runSupervisor,agentRuns,multiTasks,multiCoordinator,teamRunner,verification,input=>{
+  const room=sessions.get(input.roomId)!;
+  const refs=[...new Set([...(input.workspaceRefIds??[]),...input.mentions.flatMap(mention=>mention.type==="file"?[mention.refId]:[])])];
+  return refs.length||input.attachmentIds?.length?resolveRoomFileContext(db,workspaces,attachments,room.workspaceId,refs,input.attachmentIds??[]).text:"";
+}),{onChanged:view=>{
+  const status=["completed","failed","cancelled"].includes(view.status)?view.status:view.status==="blocked"?"failed":["pending","running","assessing"].includes(view.status)?"running":"interrupted";
+  db.query("UPDATE sessions SET status=?,updated_at=? WHERE id=?").run(status,new Date().toISOString(),view.roomId);
+}});
+adaptive.recoverInterrupted();
 const commands = new RoomCommandService(db, sessions, {
   startDirect: (input) => runSupervisor.start(input),
   getDirect: (id) => runSupervisor.get(id),
@@ -248,10 +267,10 @@ const commands = new RoomCommandService(db, sessions, {
     void multiCoordinator.run(task.id).catch(() => {});
     return { taskId: task.id };
   },
-  resolveAgent: resolveMultiAgent, gateway, verification,
+  resolveAgent: resolveMultiAgent, gateway, verification, routing, adaptive,
 }, history);
 commands.recoverInterrupted();
-const costTasks = new CostTaskService(db, commands, runSupervisor, agentRuns, multiTasks, multiCoordinator, teamRunner, executionRunner);
+const costTasks = new CostTaskService(db, commands, runSupervisor, agentRuns, multiTasks, multiCoordinator, teamRunner, executionRunner,{routing,adaptive});
 
 app.get("/health", (c) => c.json({ ok: true }));
 app.route("/config", configRoutes(config));
@@ -275,11 +294,12 @@ app.route(
 );
 app.route("/room-commands", roomCommandRoutes(commands));
 app.route("/verification",verificationRoutes(verification));
-app.route("/cost", costRoutes(db, sessions, invocationBroker, new TaskQuoteService(db, sessions), costTasks, commands));
-app.route("/agent", agentRunRoutes(runSupervisor, agentRuns, approvals, executionEvents));
+app.route("/routing",routingRoutes(routing,adaptive));
+app.route("/cost", costRoutes(db, sessions, invocationBroker, new TaskQuoteService(db, sessions,routing), costTasks, commands));
+app.route("/agent", agentRunRoutes(runSupervisor, agentRuns, approvals, executionEvents, (child,key)=>adaptive.notifyChildProgress(child,key).then(()=>{})));
 app.route("/content", contentRoutes(db, workspaces, attachments));
 app.route("/mcp", mcpRoutes(mcpStore, mcp));
-app.route("/multi", multiAgentRoutes(multiTasks, multiCoordinator, executionRunner, approvals, teamRunner));
+app.route("/multi", multiAgentRoutes(multiTasks, multiCoordinator, executionRunner, approvals, teamRunner, adaptive));
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -291,6 +311,7 @@ const server = Bun.serve({
 if (server.port === undefined) throw new Error("TCP server has no port");
 
 stopManagedServices = async () => {
+  await adaptive.shutdown();
   await verification.shutdown();
   await commands.shutdown();
   await teamRunner.shutdown();

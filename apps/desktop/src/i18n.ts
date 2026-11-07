@@ -1,6 +1,7 @@
 /** 零依赖 i18n：字典 + {var} 插值。sidecar 返回的错误文案暂不翻译（#19 注明）。 */
 import { COST_TRANSLATIONS } from "./cost/strings";
 import { WORK_TRANSLATIONS } from "./work/strings";
+import { ROUTING_TRANSLATIONS } from "./routing/strings";
 import { VERIFICATION_TRANSLATIONS } from "./verification/strings";
 export type Lang = "zh-CN" | "zh-TW" | "en";
 
@@ -1662,7 +1663,7 @@ const en: Dict = {
   status_cancelled: "Cancelled",
 };
 
-const DICTS: Record<Lang, Dict> = { "zh-CN": { ...zhCN, ...COST_TRANSLATIONS["zh-CN"], ...WORK_TRANSLATIONS["zh-CN"], ...VERIFICATION_TRANSLATIONS["zh-CN"] }, "zh-TW": { ...zhTW, ...COST_TRANSLATIONS["zh-TW"], ...WORK_TRANSLATIONS["zh-TW"], ...VERIFICATION_TRANSLATIONS["zh-TW"] }, en: { ...en, ...COST_TRANSLATIONS.en, ...WORK_TRANSLATIONS.en, ...VERIFICATION_TRANSLATIONS.en } };
+const DICTS: Record<Lang, Dict> = { "zh-CN": { ...zhCN, ...COST_TRANSLATIONS["zh-CN"], ...WORK_TRANSLATIONS["zh-CN"], ...VERIFICATION_TRANSLATIONS["zh-CN"], ...ROUTING_TRANSLATIONS["zh-CN"] }, "zh-TW": { ...zhTW, ...COST_TRANSLATIONS["zh-TW"], ...WORK_TRANSLATIONS["zh-TW"], ...VERIFICATION_TRANSLATIONS["zh-TW"], ...ROUTING_TRANSLATIONS["zh-TW"] }, en: { ...en, ...COST_TRANSLATIONS.en, ...WORK_TRANSLATIONS.en, ...VERIFICATION_TRANSLATIONS.en, ...ROUTING_TRANSLATIONS.en } };
 
 export function tr(lang: Lang, key: string, vars?: Record<string, string | number>): string {
   let s = DICTS[lang][key] ?? zhCN[key] ?? key;

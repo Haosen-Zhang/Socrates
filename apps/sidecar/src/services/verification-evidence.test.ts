@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { parseVerificationCommand } from "./verification-evidence";
+import { parseVerificationCommand, stableVerificationDiagnostic } from "./verification-evidence";
 
 const command = { executable: "bun", argv: ["test"], cwd: ".", exitCode: 0, signal: null,
   stdout: "", stderr: "", stdoutPreview: "", stderrPreview: "", captureAvailable: true,
@@ -32,4 +32,11 @@ test("TAP plan and numbered records must agree, with executed assertions", () =>
 test("a timeout or signal cannot pass even with a successful-looking report", () => {
   expect(parseVerificationCommand(check, { ...command, timedOut: true, stderr: "1 pass\n0 fail\nRan 1 test across 1 file." }).reason).toBe("verification_timeout");
   expect(parseVerificationCommand(check, { ...command, signal: "SIGTERM" }).status).toBe("inconclusive");
+});
+test("failure signatures ignore runner timing but preserve assertion values and frames", () => {
+  const left="Expected: 42\nReceived: 0\n at result.test.ts:12\n(fail) result [11.23ms]\nRan 1 test across 1 file. [0.12s]\n2026-11-08T01:23:45.123Z";
+  const right=left.replace("11.23ms","9.11ms").replace("0.12s","0.09s").replace("01:23:45.123Z","01:23:46.456Z");
+  expect(stableVerificationDiagnostic(left)).toBe(stableVerificationDiagnostic(right));
+  expect(stableVerificationDiagnostic(left)).not.toBe(stableVerificationDiagnostic(left.replace("Received: 0","Received: 1")));
+  expect(stableVerificationDiagnostic(left)).toContain("result.test.ts:12");
 });

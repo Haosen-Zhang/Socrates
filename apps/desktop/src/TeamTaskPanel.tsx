@@ -86,7 +86,7 @@ export default function TeamTaskPanel({
                 aria-label={`${t("package_owner")}: ${item.title}`}
                 className="pixel-input px-2 py-1"
                 disabled={
-                  task.state !== "awaiting_plan_approval" ||
+                  !!task.config?.routeDecisionId || task.state !== "awaiting_plan_approval" ||
                   pendingPackages[item.id]
                 }
                 value={item.executorAgentId}
@@ -145,7 +145,7 @@ export default function TeamTaskPanel({
             {item.result && (
               <p className="mt-2 whitespace-pre-wrap text-xs">{item.result}</p>
             )}
-            <VerificationPanel roomId={session.id} rootTaskId={task.config?.clientRequestId ?? task.id} workPackageId={item.id}/>
+            <VerificationPanel roomId={session.id} rootTaskId={task.config?.costRootTaskId ?? task.config?.clientRequestId ?? task.id} workPackageId={item.id}/>
             {item.failureReason && (
               <p role="alert" className="mt-2 text-xs text-red-700">
                 {t(item.failureReason)}
@@ -169,7 +169,7 @@ export default function TeamTaskPanel({
                 </label>
               </div>
             )}
-            {["failed", "budget_stopped"].includes(item.state) && (
+            {!task.config?.routeDecisionId && ["failed", "budget_stopped"].includes(item.state) && (
               <button
                 className="pixel-button mt-2 px-3 py-1 text-xs"
                 disabled={retryInput === null || pendingPackages[item.id]}

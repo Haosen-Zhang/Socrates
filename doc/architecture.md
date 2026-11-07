@@ -1,5 +1,7 @@
 # Socrates 软件架构总览
 
+> 2026-11-08 增补：P03 真实产物验收与 P04 成本路由已接生产。Work 选择自动预设/Custom 后由持久 LangGraph 父工作流调度现有 Native/Team 子执行器；旧 single/team 与 Chat 保持原路径。冻结决策、状态与权限边界见 [成本路由与验证](cost-aware-routing.md)。
+
 > 事无巨细版：从进程拓扑、前端 UI 策略，到运行时骨架、房间/多 Agent 编排、执行内核与安全边界。
 > 描述当前实现。2026-11-05 更新：Chat / Work、结构化房间命令与持久工作包已接通；房间异步归属、历史版本、团队实时事件和回退生命周期修复见 [可靠性验收](chat-work-reliability-repair-acceptance.md)。初版验收见 [本轮验收](chat-work-collaboration-acceptance.md)。
 > 2026-11-06：P00–P02 新增统一逐调用费用账本、连接级价格快照、任务报价与美元预算暂停/增额/恢复；当前验证与限制见 [implementation-progress.md](../implementation-progress.md)，权威边界见 [ADR 0009](../docs/adr/0009-model-invocation-cost-and-budget-authority.md)。

@@ -7,10 +7,14 @@ import type { MultiTaskConfig, MultiTaskStore } from "../multi-agent/task-store"
 import type { ExecutionRunner } from "../runtime/execution-runner";
 import type { TeamRunner } from "../multi-agent/team-runner";
 
+import type { AdaptiveWorkflowService } from "../services/adaptive-workflow";
+
 const TOOL_DECISIONS = new Set<ApprovalDecision>(["allow_once", "allow_session", "deny"]);
 
-export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentCoordinator, execution: ExecutionRunner, approvals: ApprovalManager, team?: TeamRunner): Hono {
+export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentCoordinator, execution: ExecutionRunner, approvals: ApprovalManager, team?: TeamRunner, adaptive?:AdaptiveWorkflowService): Hono {
   const app = new Hono();
+  const notify=(id:string,key:string)=>adaptive?.notifyChildProgress({kind:"team",id},key);
+  const routedRoot=(id:string)=>store.get(id)?.config.routeDecisionId?store.get(id)?.config.costRootTaskId:undefined;
   const executionFailed = (id: string, error: unknown) => {
     // A failure before a runner acquires ownership still needs a recoverable
     // projection. Once running, the runner records its own terminal outcome.
@@ -46,6 +50,10 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
   app.post("/sessions/:sessionId/tasks", async (c) => {
     const body = await c.req.json().catch(() => null) as { prompt?: unknown; config?: unknown } | null;
     if (!body || typeof body.prompt !== "string" || !body.config || typeof body.config !== "object") return c.json({ error: "multi_task_input_invalid" }, 400);
+    const publicConfig=body.config as Record<string,unknown>;
+    // These fields are internal authority minted by RoomCommandService and
+    // AdaptiveWorkflowService. The legacy public endpoint cannot forge them.
+    if(["routeDecisionId","adaptiveAttemptId","allowedAgentIds","routingReviewerId","frozenCollaboration","costRootTaskId"].some(key=>key in publicConfig))return c.json({error:"multi_task_internal_routing_config"},400);
     let task;
     try { task = await coordinator.create({ sessionId: c.req.param("sessionId"), prompt: body.prompt, config: body.config as MultiTaskConfig }); }
     catch (error) { return c.json({ error: error instanceof Error ? error.message : "multi_task_create_failed" }, 400); }
@@ -67,12 +75,14 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
           version: body.version, hash: body.hash, content: body.content as StructuredPlan,
           clientDecisionKey: body.clientDecisionKey, reason: typeof body.reason === "string" ? body.reason : undefined });
         if (!decision.replayed) void executeTask(c.req.param("id"));
+        await notify(c.req.param("id"),`plan:${body.clientDecisionKey}`);
         return c.json({ decision, plan });
       }
       if (!["approve_exact_plan", "request_replan", "reject"].includes(body.decision)) return c.json({ error: "plan_decision_invalid" }, 400);
       const decision = store.decidePlan({ taskId: c.req.param("id"), version: body.version, hash: body.hash, clientDecisionKey: body.clientDecisionKey, decision: body.decision as "approve_exact_plan" | "request_replan" | "reject", reason: typeof body.reason === "string" ? body.reason : undefined });
       if (!decision.replayed && body.decision === "approve_exact_plan") void executeTask(c.req.param("id"));
       if (!decision.replayed && body.decision === "request_replan") void coordinator.replan(c.req.param("id"), typeof body.reason === "string" ? body.reason : "Please revise the plan.").catch(() => {});
+      await notify(c.req.param("id"),`plan:${body.clientDecisionKey}`);
       return c.json(decision);
     } catch (error) {
       const message = error instanceof Error ? error.message : "plan_decision_failed";
@@ -82,13 +92,17 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
   app.post("/approvals/:id/decision", async (c) => {
     const body = await c.req.json().catch(() => null) as { decision?: unknown; clientDecisionKey?: unknown; reason?: unknown } | null;
     if (!body || typeof body.decision !== "string" || !TOOL_DECISIONS.has(body.decision as ApprovalDecision) || typeof body.clientDecisionKey !== "string") return c.json({ error: "invalid_approval_decision" }, 400);
-    try { return c.json(await execution.decide(c.req.param("id"), { decision: body.decision as ApprovalDecision, clientDecisionKey: body.clientDecisionKey, reason: typeof body.reason === "string" ? body.reason : undefined })); }
+    try { const pending=approvals.recoverPending().pending.find(item=>item.id===c.req.param("id"));const result=await execution.decide(c.req.param("id"), { decision: body.decision as ApprovalDecision, clientDecisionKey: body.clientDecisionKey, reason: typeof body.reason === "string" ? body.reason : undefined });
+      if(pending){const task=store.list(pending.sessionId??"").find(item=>item.id===pending.taskId||team?.list(item.id).some(pkg=>pkg.runId===pending.taskId));if(task)await notify(task.id,`tool:${body.clientDecisionKey}`);}
+      return c.json(result); }
     catch (error) { return c.json({ error: error instanceof Error ? error.message : "approval_decision_failed" }, 409); }
   });
   app.post("/tasks/:id/cancel", async (c) => {
     const task = store.get(c.req.param("id"));
     if (!task) return c.json({ error: "multi_task_not_found" }, 404);
     try {
+      const root=routedRoot(task.id);
+      if(root&&adaptive){await adaptive.cancel(root,`cancel-child:${task.id}`);return c.json({ok:true});}
       if (team?.hasPackages(task.id)) await team.cancel(task.id);
       else if (task.state === "executing" || task.state === "awaiting_tool_approval") await execution.cancel(task.id);
       else coordinator.cancel(task.id);
@@ -102,6 +116,7 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
       if (team?.hasPackages(task.id)) await team.pause(task.id);
       else if (task.state === "executing" || task.state === "awaiting_tool_approval") await execution.pause(task.id);
       else coordinator.pause(task.id);
+      await notify(task.id,`pause-child:${task.id}:${Date.now()}`);
       return c.json({ ok: true, task: store.get(task.id) });
     } catch (error) { return c.json({ error: error instanceof Error ? error.message : "multi_pause_failed" }, 409); }
   });
@@ -110,6 +125,8 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
     if (!task) return c.json({ error: "multi_task_not_found" }, 404);
     if (task.state !== "paused" || !task.resumeFrom) return c.json({ error: "multi_task_not_paused" }, 409);
     try {
+      const root=routedRoot(task.id);
+      if(root&&adaptive){await adaptive.resume(root,`resume-child:${task.id}:${Date.now()}`);return c.json({accepted:true},202);}
       if (team?.hasPackages(task.id)) { team.resumeInBackground(task.id); return c.json({ accepted: true }, 202); }
       if (task.resumeFrom === "executing" || task.resumeFrom === "awaiting_tool_approval") return c.json({ error: "execution_resume_requires_manual_review" }, 409);
       else await coordinator.resumeInBackground(task.id);
@@ -117,6 +134,7 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
     } catch (error) { return c.json({ error: error instanceof Error ? error.message : "multi_resume_failed" }, 409); }
   });
   app.post("/tasks/:id/packages/:packageId/retry", async (c) => {
+    if(routedRoot(c.req.param("id")))return c.json({error:"adaptive_recovery_required"},409);
     if (!team?.hasPackages(c.req.param("id"))) return c.json({ error: "team_work_packages_required" }, 404);
     const body = await c.req.json().catch(() => null) as { confirmOutcomeUnknown?: unknown } | null;
     try {
@@ -140,6 +158,7 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
     } catch (error) { return c.json({ error: error instanceof Error ? error.message : "work_package_assignment_invalid" }, 400); }
   });
   app.post("/tasks/:id/retry", async (c) => {
+    if(routedRoot(c.req.param("id")))return c.json({error:"adaptive_recovery_required"},409);
     const task = store.get(c.req.param("id"));
     if (!task) return c.json({ error: "multi_task_not_found" }, 404);
     if (team?.hasPackages(task.id)) return c.json({ error: "work_package_retry_required" }, 409);

@@ -131,6 +131,7 @@ export type GatewayRequest = {
 export interface GatewayInvocationContext {
   roomId: string;
   rootTaskId: string;
+  routeAttemptId?: string;
   runId: string;
   agentId: string;
   providerConnectionId: string;

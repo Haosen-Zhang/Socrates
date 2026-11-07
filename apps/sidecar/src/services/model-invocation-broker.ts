@@ -6,6 +6,7 @@ import {
   type ReasoningEffort,
 } from "@socrates/core";
 import { CostLedger, BudgetLedger } from "./cost-ledger";
+import { assertRoutingCallSlot, frozenInvocationRoute } from "./routing-admission";
 import { PricingStore } from "./pricing-store";
 import { EventStore } from "../store/event-store";
 import { recordServiceEvent } from "./reuse/local-trace";
@@ -60,7 +61,8 @@ export class ModelInvocationBroker {
     const outputTokenCeiling = options.maxOutputTokens ?? MAX_AUTOMATIC_OUTPUT_TOKENS;
     const maxOutputTokens = Math.min(request.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS, outputTokenCeiling);
     if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > 32_768) throw new Error("invalid_output_cap");
-    const price = this.prices.resolveAutomatic({ providerConnectionId: context.providerConnectionId, modelId: request.modelId,
+    const route = frozenInvocationRoute(this.db,context,request);
+    const price = route ? route.members[context.agentId]!.price : this.prices.resolveAutomatic({ providerConnectionId: context.providerConnectionId, modelId: request.modelId,
       protocol: modelProtocol(request.providerType, request.baseUrl), baseUrl: request.baseUrl });
     const modalities = unsupportedInputModalities(request.payload);
     const applicablePrice = modalities.length ? null : price;
@@ -68,9 +70,13 @@ export class ModelInvocationBroker {
       ...context, invocationId: crypto.randomUUID(), modelId: request.modelId,
       attemptNo: context.attemptNo ?? 1, traceId: context.rootTaskId, spanId: crypto.randomUUID(),
     };
-    this.ledger.begin(identity, applicablePrice?.id ?? null);
+    this.db.transaction(()=>{
+      if(route)assertRoutingCallSlot(this.db,route);
+      this.ledger.begin(identity, applicablePrice?.id ?? null);
+    }).immediate();
     const account = this.budgets.get(context.rootTaskId);
     if (account) {
+      let admissionDetails: Record<string, unknown> = {};
       try {
         let admissionMode = account.mode, ancestorId = account.parentId;
         let aggregateRoot = account.rootTaskId;
@@ -101,7 +107,9 @@ export class ModelInvocationBroker {
           && !modalities.length
           && price !== null && price.source !== "preset_estimate" && (!price.validUntil || Date.parse(price.validUntil) > Date.now());
         const estimatedInput = Math.max(1, new TextEncoder().encode(JSON.stringify(request.payload)).byteLength + 512);
-        const bound = requestCostUpperBound(applicablePrice, admissionMode === "strict_admission" && trustedCap ? catalog!.tokens : estimatedInput, maxOutputTokens);
+        const inputTokenBound = admissionMode === "strict_admission" && trustedCap ? catalog!.tokens : estimatedInput;
+        const bound = requestCostUpperBound(applicablePrice, inputTokenBound, maxOutputTokens);
+        admissionDetails = { inputTokenBound, maxOutputTokens, priceSnapshotId: applicablePrice?.id ?? null };
         if (admissionMode !== "tracking_only" && (!bound || bound.currency !== "USD")) throw new Error("cost_budget_price_unknown");
         this.budgets.reserve(identity.invocationId, context.rootTaskId, bound?.atomic ?? "0", {
           strictEligible: Boolean(trustedCap && price && bound), reason: "cost_budget_strict_bound_unavailable",
@@ -110,7 +118,7 @@ export class ModelInvocationBroker {
         const reason = isCostBudgetPause(error) ? (error as Error).message : `cost_budget_${error instanceof Error ? error.message : "admission_failed"}`;
         this.ledger.finish(identity.invocationId, { outcome: "not_sent" });
         this.budgets.block(context.rootTaskId, reason, { ...this.budgets.latestBlocked(context.rootTaskId)?.details,
-          invocationId: identity.invocationId, logicalStepId: context.logicalStepId, agentId: context.agentId, modelId: request.modelId, purpose: context.purpose });
+          ...admissionDetails, invocationId: identity.invocationId, logicalStepId: context.logicalStepId, agentId: context.agentId, modelId: request.modelId, purpose: context.purpose });
         this.event(identity, "budget.blocked", { reason });
         throw new StructuredExecutionError({ code: reason, message: reason, category: "invalid_request", phase: "provider_connect", retryable: false });
       }
@@ -120,6 +128,7 @@ export class ModelInvocationBroker {
     try {
       request.signal?.throwIfAborted();
       this.assertCurrentPermission(context, request);
+      frozenInvocationRoute(this.db,context,request);
       this.ledger.markSent(identity.invocationId);
       this.event(identity, "pricing.snapshot_selected", { priceSnapshotId: applicablePrice?.id ?? null });
       for await (const part of open({ maxOutputTokens, outputTokenCeiling })) {
