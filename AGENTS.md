@@ -23,6 +23,7 @@ TypeScript 单栈，Bun workspaces，三个包：
 ## 开发流程
 
 - **一票一分支**：从 `main` 切分支实现一个 issue → PR → 合并；不要直接改 `main`。
+- **完成后自动提交 PR**：按用户授权，每次完成代码修改并通过验证后，提交并推送当前 `codex/*` 分支、创建或更新 PR，无需再次询问；合并与发布仍由用户决定。
 - **合并前必须绿**：`bun test`（core + sidecar）、`bun run typecheck`、`bun run --cwd apps/desktop build` 三者都通过。
 - 非平凡逻辑留一个可运行的 `*.test.ts`（bun test，无框架）。
 
