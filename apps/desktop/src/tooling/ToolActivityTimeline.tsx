@@ -1,4 +1,4 @@
-import type { ApprovalDecision } from "@socrates/core";
+import { canAllowSessionApproval, type ApprovalDecision } from "@socrates/core";
 import { useState } from "react";
 import PixelIcon from "../PixelIcon";
 import { useT, type PendingApproval } from "../store";
@@ -149,7 +149,7 @@ export function ApprovalShelf({
                 <button type="button" disabled={busy || decidingId !== null} className="pixel-button pixel-button--primary" onClick={() => decide(approval.id, "allow_once")}>
                   {t("approval_allow_once")}
                 </button>
-                {!approval.freshHumanRequired && (
+                {canAllowSessionApproval(approval) && (
                   <button type="button" disabled={busy || decidingId !== null} className="pixel-button" onClick={() => decide(approval.id, "allow_session")}>
                     {t("approval_allow_session")}
                   </button>

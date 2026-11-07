@@ -1,8 +1,16 @@
-import type {
-  CollaborationRuntimeCapabilities,
-  ExecutionStrategy,
-  TaskState,
+import {
+  resolveCollaborationDefaults,
+  type RoomCollaborationSettings,
+  type RoomShape,
+  type CollaborationRuntimeCapabilities,
+  type ExecutionStrategy,
+  type TaskState,
 } from "@socrates/core";
+
+/** Old Chat rooms can have empty discussion defaults until discussion is enabled. */
+export function createCollaborationDraft(room: RoomShape & { primaryAgentId: string }, settings: RoomCollaborationSettings): RoomCollaborationSettings {
+  return resolveCollaborationDefaults(settings, room, room.primaryAgentId);
+}
 
 const STRATEGIES: ExecutionStrategy[] = ["single", "adaptive", "team"];
 

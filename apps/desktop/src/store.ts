@@ -36,6 +36,8 @@ import {
 import { relativeWorkspacePath } from "./workspace/workspacePath";
 import { resolveActiveWorkspace } from "./workspace/projectSelection";
 import { sidecarFetch, requireOk, streamSseEvents } from "./transport";
+import { commandCostBody } from "./cost/client";
+import type { CostOptions } from "./cost/ui-state";
 import { decodeExecutionEvent } from "./protocol";
 import { commitApprovalPolicyUpdate } from "./approvalPolicyUi";
 import {
@@ -94,6 +96,8 @@ export type PendingApproval = {
   taskId?: string;
   risk: ToolRisk;
   freshHumanRequired: boolean;
+  sessionId?: string;
+  toolGeneration?: number;
   status: "pending" | "allowed" | "denied" | "expired";
 };
 export type UsageSummaryView = { agentId: string | null; current: NormalizedUsage; cumulative: NormalizedUsage; records: number };
@@ -170,14 +174,14 @@ export type Store = {
   lastStoppedRunId: string | null;
   roomNavigation: RoomNavigation;
   roomProjections: Record<string, RoomProjection>;
-  pendingRoomRequests:Record<string,{fingerprint:string;clientRequestId:string}>;
+  pendingRoomRequests:Record<string,{fingerprint:string;clientRequestId:string;costOptions?:CostOptions}>;
   approvalDecisionKeys:Record<string,{decision:ApprovalDecision;key:string}>;
   composerDrafts: Record<string, string>;
   composerMentions: Record<string, SelectedMention[]>;
   setComposerMentions: (roomId:string,mentions:SelectedMention[]) => void;
   setComposerDraft: (roomId: string, text: string) => void;
   setAppMode: (mode: "chat" | "cowork") => Promise<void>;
-  sendRoomCommand: (content: string, mentions: RoomMention[], intent: RoomCommandIntent, clientRequestId?: string, roomId?: string) => Promise<boolean>;
+  sendRoomCommand: (content: string, mentions: RoomMention[], intent: RoomCommandIntent, clientRequestId?: string, roomId?: string, costOptions?: CostOptions) => Promise<boolean>;
   continueAgentRun: () => Promise<void>;
   applyMemberTemplate: (sessionId: string, agentId: string) => Promise<void>;
   retryWorkPackage: (taskId: string, packageId: string, confirmOutcomeUnknown?:boolean) => Promise<void>;
@@ -664,7 +668,7 @@ export const useStore = create<Store>((set, get) => {
         void get().resumeAgentRun(sessionId,started.runId);
       } catch(error) {if(roomView(sessionId).historyGeneration === generation) updateRoom(sessionId,{agentRunning:false,agentError:error instanceof Error ? error.message : String(error)});}
     },
-    sendRoomCommand: async (content, mentions, intent, clientRequestId, targetRoomId) => {
+    sendRoomCommand: async (content, mentions, intent, clientRequestId, targetRoomId, costOptions) => {
       const roomId = targetRoomId ?? get().currentSessionId;
       if (!roomId) return false;
       const view = roomView(roomId);
@@ -672,13 +676,28 @@ export const useStore = create<Store>((set, get) => {
       const generation = view.historyGeneration;
       const attachments = view.draftAttachments.map(item=>item.id);
       const workspaceRefs = view.draftWorkspaceRefs.map(item=>item.id);
-      const fingerprint=JSON.stringify({content,mentions,intent,attachments,workspaceRefs});
+      const requestedCostBody = commandCostBody(costOptions);
+      const semanticCostBody = { ...requestedCostBody };
+      delete semanticCostBody.quoteId;
+      const fingerprint=JSON.stringify({content,mentions,intent,attachments,workspaceRefs,...semanticCostBody});
       const pending=get().pendingRoomRequests[roomId];
-      clientRequestId ??= pending?.fingerprint === fingerprint ? pending.clientRequestId : crypto.randomUUID();
-      set(state=>({pendingRoomRequests:{...state.pendingRoomRequests,[roomId]:{fingerprint,clientRequestId:clientRequestId!}}}));
+      const retryingPending = pending?.fingerprint === fingerprint && (clientRequestId === undefined || clientRequestId === pending.clientRequestId);
+      const costBody = retryingPending && pending.costOptions ? commandCostBody(pending.costOptions) : requestedCostBody;
+      clientRequestId ??= retryingPending ? pending.clientRequestId : crypto.randomUUID();
+      set(state=>({pendingRoomRequests:{...state.pendingRoomRequests,[roomId]:{fingerprint,clientRequestId:clientRequestId!,costOptions:costBody}}}));
       updateRoom(roomId,{activeRoomCommandId:`pending:${clientRequestId}`,agentRunning:true,lastStoppedRunId:null,agentError:null,agentEvents:[],agentStreamText:"",historyRevision:view.historyRevision+1,taskRequestVersion:view.taskRequestVersion+1,multiStreamAgentId:mentions.find(mention=>mention.type==="agent")?.type === "agent" ? (mentions.find(mention=>mention.type==="agent") as {agentId:string}).agentId : get().sessions.find(session=>session.id===roomId)?.primaryAgentId ?? null});
       try {
-        const started = await requireOk<{kind:"direct"|"discussion"|"team";runId?:string;taskId?:string;commandId:string}>(await sidecarFetch(hs(),"/room-commands",{method:"POST",body:JSON.stringify({roomId,clientRequestId,content,mentions,intent,attachmentIds:attachments,workspaceRefIds:workspaceRefs})}));
+        const response = await sidecarFetch(hs(),"/room-commands",{method:"POST",body:JSON.stringify({roomId,clientRequestId,content,mentions,intent,attachmentIds:attachments,workspaceRefIds:workspaceRefs,...costBody})});
+        if (!response.ok) {
+          const rejected = await response.json() as { error?: string };
+          // These errors prove that this quote was rejected before dispatch.
+          // A dropped response retains the original quote and request identity.
+          if (["quote_stale", "quote_expired", "quote_required_for_budget"].includes(rejected.error ?? "")) {
+            set(state=>{const pendingRoomRequests={...state.pendingRoomRequests};if(pendingRoomRequests[roomId]?.clientRequestId === clientRequestId) delete pendingRoomRequests[roomId];return {pendingRoomRequests};});
+          }
+          throw new Error(rejected.error ?? `request failed (${response.status})`);
+        }
+        const started = await response.json() as {kind:"direct"|"discussion"|"team";runId?:string;taskId?:string;commandId:string};
         if (roomView(roomId).historyGeneration !== generation) return false;
         set(state=>{const pendingRoomRequests={...state.pendingRoomRequests};delete pendingRoomRequests[roomId];return {pendingRoomRequests};});
         updateRoom(roomId, current => ({activeRoomCommandId:started.commandId, draftAttachments: current.draftAttachments.filter(item => !attachments.includes(item.id)), draftWorkspaceRefs: current.draftWorkspaceRefs.filter(item => !workspaceRefs.includes(item.id))}));

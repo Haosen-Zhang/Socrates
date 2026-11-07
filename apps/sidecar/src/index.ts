@@ -51,6 +51,10 @@ import { UsageCollector } from "./services/usage-collector";
 import { ModelCatalog } from "./model-catalog";
 import { HistoryStore } from "./store/history-store";
 import { join } from "node:path";
+import { ModelInvocationBroker } from "./services/model-invocation-broker";
+import { TaskQuoteService } from "./services/task-quotes";
+import { costRoutes } from "./routes/cost";
+import { CostTaskService } from "./services/cost-task-service";
 
 // 父进程（Tauri）异常退出（如 SIGKILL/SIGTERM 未走优雅关闭）时自动退出，避免孤儿进程占着端口
 let stopManagedServices: () => Promise<void> = async () => {};
@@ -86,7 +90,12 @@ const config = new ConfigStore(undefined, secrets);
 // 所有出站请求（连接测试/列模型/模型调用）都按 config.toml 的代理设置走
 const proxiedFetch = makeProxiedFetch(() => config.getResolved());
 const modelCatalog = new ModelCatalog(defaultDataDir(), proxiedFetch);
-const gateway = makeAiSdkGateway(proxiedFetch);
+const invocationBroker = new ModelInvocationBroker(db, id => {
+  const provider = db.query<{ api_key_ref: string }, [string]>("SELECT api_key_ref FROM providers WHERE id=?").get(id);
+  if (!provider || !secrets.get(provider.api_key_ref)) throw new Error("invocation_credentials_unavailable");
+});
+invocationBroker.budgets.recoverInterrupted();
+const gateway = invocationBroker.wrapGateway(makeAiSdkGateway(proxiedFetch));
 const workspaces = new WorkspaceManager(db);
 const sessions = new SessionStore(db, history);
 const events = new EventStore(db);
@@ -146,11 +155,28 @@ runtimes.register("native_ai_sdk", (input) => {
     system: [profile.role, profile.systemPrompt].filter(Boolean).join("\n\n"),
     registry,
     executor,
-    stream: createAiSdkNativeStream(model, undefined, { providerType: provider.type, modelId: profile.modelId, temperature: profile.temperature, reasoningEffort: profile.reasoningEffort }),
+    stream: createAiSdkNativeStream(model, undefined, { providerType: provider.type, modelId: profile.modelId, baseUrl: provider.base_url,
+      temperature: profile.temperature, reasoningEffort: profile.reasoningEffort, broker: invocationBroker,
+      invocation: { roomId: input.sessionId, rootTaskId: String(input.runtimeOptions?.costRootTaskId ?? input.agentSessionId),
+        runId: String(input.runtimeOptions?.costRunId ?? input.agentSessionId), agentId: input.agentId,
+        providerConnectionId: profile.providerId, runProfileVersion: profile.configurationVersion,
+        logicalStepId: input.agentSessionId, purpose: session.kind === "chat" ? "respond" : "execute",
+        ...(typeof input.runtimeOptions?.costWorkPackageId === "string" ? { workPackageId: input.runtimeOptions.costWorkPackageId } : {}),
+        contextWindowTokens: profile.contextWindowTokens,
+        ...(profile.modelCapabilities.contextWindow?.catalogValue && profile.modelCapabilities.contextWindow.catalogProviderId && profile.modelCapabilities.contextWindow.catalogRevision
+          ? { catalogContextWindow: { tokens: profile.modelCapabilities.contextWindow.catalogValue, providerId: profile.modelCapabilities.contextWindow.catalogProviderId,
+            revision: profile.modelCapabilities.contextWindow.catalogRevision } } : {}) } }),
     allowedCapabilities,
     permissionForTool: (definition) => {
       const currentSession = sessions.get(input.sessionId);
       if (!currentSession) throw new Error("native_session_not_found");
+      const costBudget = invocationBroker.budgets.get(String(input.runtimeOptions?.costRootTaskId ?? input.agentSessionId));
+      if (definition.capability === "mcp" && costBudget && costBudget.mode !== "tracking_only") {
+        // No external tool has a verified monetary tariff yet. With a task
+        // budget it must never silently escape the coverage shown in the quote.
+        return { effect: "deny", reasonCode: "cost_budget_unpriced_external_tool", policyVersion: currentSession.approvalPolicy.version,
+          freshHumanRequired: false, risk: definition.risk, matchedRuleIds: [] };
+      }
       return evaluatePermission({
         action: actionFor(definition),
         resource: definition.name,
@@ -186,6 +212,10 @@ const resolveMultiAgent = (agentId: string, snapshot: Record<string, unknown>): 
     reasoningEffort: profile.reasoningEffort,
     contextWindowTokens: profile.contextWindowTokens,
     providerType: provider.type, baseUrl: provider.base_url, apiKey,
+    providerConnectionId: profile.providerId, runProfileVersion: profile.configurationVersion,
+    ...(profile.modelCapabilities.contextWindow?.catalogValue && profile.modelCapabilities.contextWindow.catalogProviderId && profile.modelCapabilities.contextWindow.catalogRevision
+      ? { catalogContextWindow: { tokens: profile.modelCapabilities.contextWindow.catalogValue, providerId: profile.modelCapabilities.contextWindow.catalogProviderId,
+        revision: profile.modelCapabilities.contextWindow.catalogRevision } } : {}),
   };
 };
 const multiCoordinator = new MultiAgentCoordinator(db, multiTasks, events, gateway, resolveMultiAgent, history);
@@ -216,6 +246,7 @@ const commands = new RoomCommandService(db, sessions, {
   resolveAgent: resolveMultiAgent, gateway,
 }, history);
 commands.recoverInterrupted();
+const costTasks = new CostTaskService(db, commands, runSupervisor, agentRuns, multiTasks, multiCoordinator, teamRunner, executionRunner);
 
 app.get("/health", (c) => c.json({ ok: true }));
 app.route("/config", configRoutes(config));
@@ -238,6 +269,7 @@ app.route(
   }),
 );
 app.route("/room-commands", roomCommandRoutes(commands));
+app.route("/cost", costRoutes(db, sessions, invocationBroker, new TaskQuoteService(db, sessions), costTasks, commands));
 app.route("/agent", agentRunRoutes(runSupervisor, agentRuns, approvals, executionEvents));
 app.route("/content", contentRoutes(db, workspaces, attachments));
 app.route("/mcp", mcpRoutes(mcpStore, mcp));

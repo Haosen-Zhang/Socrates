@@ -11,6 +11,9 @@ export interface ApprovalRecord extends ApprovalEvidence {
   decision: ApprovalDecision;
   risk: ToolRisk;
   freshHumanRequired: boolean;
+  kind?: string;
+  sessionId?: string;
+  toolGeneration?: number;
 }
 
 export function approvalMatchesExecution(approval: ApprovalRecord, execution: ApprovalEvidence): boolean {
@@ -21,6 +24,14 @@ export function approvalMatchesExecution(approval: ApprovalRecord, execution: Ap
     && approval.policyVersion === execution.policyVersion;
 }
 
+const SESSION_WORKSPACE_WRITERS = new Set(["write_file", "create_directory", "copy_path", "create_archive", "create_document", "create_spreadsheet"]);
+
+export function canAllowSessionApproval(approval: Pick<ApprovalRecord, "risk" | "freshHumanRequired" | "kind" | "sessionId" | "toolGeneration">): boolean {
+  return !approval.freshHumanRequired && (approval.risk === "low" || approval.risk === "medium"
+    || approval.risk === "high" && SESSION_WORKSPACE_WRITERS.has(approval.kind ?? "") && Boolean(approval.sessionId)
+      && Number.isSafeInteger(approval.toolGeneration) && approval.toolGeneration! > 0);
+}
+
 export function canPersistApprovalGrant(approval: ApprovalRecord): boolean {
-  return approval.decision === "allow_session" && !approval.freshHumanRequired && (approval.risk === "low" || approval.risk === "medium");
+  return approval.decision === "allow_session" && canAllowSessionApproval(approval);
 }

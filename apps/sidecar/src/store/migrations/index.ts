@@ -21,5 +21,8 @@ import { roomCommandsMigration } from "./020_room_commands";
 import { teamWorkPackagesMigration } from "./021_team_work_packages";
 
 import { legacyRoomSessionsMigration } from "./022_legacy_room_sessions";
+import { costAccountingMigration } from "./023_cost_accounting";
+import { costAccountingCompletionMigration } from "./024_cost_accounting_completion";
+import { sessionToolApprovalsMigration } from "./025_session_tool_approvals";
 
-export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration, usageAndRecoveryMigration, projectConversationOrganizationMigration, roomKindMigration, phase1RuntimeMigration, conversationMemoryMigration, roomApprovalPolicyMigration, managedWorkspacesMigration, collaborationSettingsMigration, modelCatalogProvenanceMigration, historyProjectionMigration, executionEventAuthorityMigration, toolAttemptsMigration, toolResultArtifactsMigration, roomCommandsMigration, teamWorkPackagesMigration, legacyRoomSessionsMigration] as const;
+export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration, usageAndRecoveryMigration, projectConversationOrganizationMigration, roomKindMigration, phase1RuntimeMigration, conversationMemoryMigration, roomApprovalPolicyMigration, managedWorkspacesMigration, collaborationSettingsMigration, modelCatalogProvenanceMigration, historyProjectionMigration, executionEventAuthorityMigration, toolAttemptsMigration, toolResultArtifactsMigration, roomCommandsMigration, teamWorkPackagesMigration, legacyRoomSessionsMigration, costAccountingMigration, costAccountingCompletionMigration, sessionToolApprovalsMigration] as const;

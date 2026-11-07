@@ -33,6 +33,8 @@ export interface MultiTaskConfig {
   executionAgentId: string;
   effortByAgent?: Record<string, string>;
   fallbackOrderByAgent?: Record<string, string[]>;
+  /** Durable user-requested revision boundary; never replaced by the initial plan on resume. */
+  pendingRevision?: { instruction: string; parentVersion: number; ordinal: number; synthesizerId: string };
 }
 
 type MultiTaskCreateProjection = {
@@ -92,7 +94,7 @@ export class MultiTaskStore {
       : crypto.randomUUID();
     const previous = this.get(id);
     if (previous) {
-      if (previous.prompt !== input.prompt.trim() || JSON.stringify({ ...previous.config, contextMessageCursor: undefined, memberProfiles: undefined }) !== JSON.stringify({ ...input.config, contextMessageCursor: undefined, memberProfiles: undefined })) throw new Error("client_request_id_conflict");
+      if (previous.prompt !== input.prompt.trim() || JSON.stringify({ ...previous.config, contextMessageCursor: undefined, memberProfiles: undefined, pendingRevision: undefined }) !== JSON.stringify({ ...input.config, contextMessageCursor: undefined, memberProfiles: undefined, pendingRevision: undefined })) throw new Error("client_request_id_conflict");
       return previous;
     }
     const attemptId = crypto.randomUUID();
@@ -125,7 +127,7 @@ export class MultiTaskStore {
     const existing = this.db.query<TaskRow, [string]>("SELECT * FROM multi_tasks WHERE id = ?").get(input.id);
     if (existing) {
       if (existing.session_id !== input.sessionId || existing.prompt !== input.prompt
-        || existing.config_json !== JSON.stringify(input.config) || existing.execution_agent_id !== input.config.executionAgentId) {
+        || JSON.stringify({ ...JSON.parse(existing.config_json) as MultiTaskConfig, pendingRevision: undefined }) !== JSON.stringify({ ...input.config, pendingRevision: undefined }) || existing.execution_agent_id !== input.config.executionAgentId) {
         throw new Error("multi_task_projection_conflict");
       }
     } else {
@@ -173,6 +175,13 @@ export class MultiTaskStore {
       this.applyTransition(id, event);
       return this.get(id)!;
     }).immediate();
+  }
+
+  setPendingRevision(id: string, pendingRevision: MultiTaskConfig["pendingRevision"] | null): void {
+    const task = this.get(id); if (!task) throw new Error("multi_task_not_found");
+    const config = { ...task.config };
+    if (pendingRevision) config.pendingRevision = pendingRevision; else delete config.pendingRevision;
+    this.db.query("UPDATE multi_tasks SET config_json=?,updated_at=? WHERE id=?").run(JSON.stringify(config), new Date().toISOString(), id);
   }
 
   resumeNewAttempt(id: string, options: { allowOutcomeUnknown?: boolean } = {}): MultiTaskRecord {

@@ -7,6 +7,7 @@ import AgentEditor from "./AgentEditor";
 import RoomComposer from "./RoomComposer";
 import ModeSegmented from "./sidebar/ModeSegmented";
 import TeamTaskPanel from "./TeamTaskPanel";
+import RoomCostPanel from "./cost/RoomCostPanel";
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import Markdown from "react-markdown";
@@ -15,7 +16,7 @@ import { MD_COMPONENTS } from "./markdownLink";
 import { useThrottledValue } from "./useThrottledValue";
 import { DEFAULT_WINDOW_SIZE, expandWindow, windowTail } from "./listWindow";
 import { useTransientFlag } from "./useTransientFlag";
-import { agentLabel, normalizeCollaborationSettings, validateCollaborationSettings, type Agent,
+import { agentLabel, canAllowSessionApproval, validateCollaborationSettings, type Agent,
   type ConversationSession, type RoomCollaborationSettings, type WorkspaceRecord,
   type SessionMessage, type StoredMessage, type TaskSummary,
 } from "@socrates/core";
@@ -44,7 +45,7 @@ import { approvalModeOptions } from "./approvalPolicyUi";
 import ApprovalPolicySegmented from "./ApprovalPolicySegmented";
 import { resolveSidebarRevealPath, revealResolvedSidebarTarget } from "./sidebar/revealInFinder";
 import { agentRunErrorKey } from "./agentRunErrorUi";
-import { canEditCollaboration, collaborationStrategyOptions } from "./collaborationSettingsUi";
+import { canEditCollaboration, collaborationStrategyOptions, createCollaborationDraft } from "./collaborationSettingsUi";
 import { taskStatusKey } from "./taskSurface";
 import WindowRoomToolbar from "./window/WindowRoomToolbar";
 import PanelResizeHandle from "./layout/PanelResizeHandle";
@@ -459,6 +460,7 @@ function SingleAgentSession({ chrome }: { chrome: RoomChromeControls }) {
       {queued && <p role="status" className="mx-4 mb-2 text-xs text-amber-700">{t("workspace_writer_queued")}</p>}
       {agentError && <div role="alert" className="mx-4 mb-2 text-xs text-red-700">{agentError === "budget_exhausted" ? t("budget_exhausted") : t(agentRunErrorKey(agentError))}{agentError === "budget_exhausted" && <button className="pixel-button ml-2 px-3 py-1" onClick={()=>void continueAgentRun()}>{t("continue_task")}</button>}</div>}
       <ApprovalShelf approvals={pendingApprovals} activities={toolActivities} workspaceLabel={workspaceLabel} busy={false} onDecision={decideAgentApproval}/>
+      {session && <RoomCostPanel key={`cost-${session.id}`} roomId={session.id} />}
       {session && !session.archived && <RoomComposer key={session.id} session={session} running={agentRunning} onOpenSettings={()=>setShowCollab(true)}/>}
         {session?.kind === "cowork" && (
           <div className="approval-policy-row mt-2 flex min-w-0 items-center gap-2 px-1 text-[11px] text-neutral-600">
@@ -573,10 +575,10 @@ function MultiAgentSession({ chrome }: { chrome: RoomChromeControls }) {
     {session?.archived && <ArchivedRoomNotice session={session}/>}
     <RoomTimeline roomId={currentSessionId ?? ""} className="flex-1 space-y-4 overflow-y-auto p-4">
       {agentError && <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{t(agentRunErrorKey(agentError))}</div>}
-      {multiError && <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{multiError}</div>}
+      {multiError && <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{t(multiError)}</div>}
       {/* 执行是脱离 SSE 的后台任务，失败原因不会走 task_failed 事件——直接读 terminalReason 展示 */}
       {!multiError && currentMultiTask?.state === "failed" && currentMultiTask.terminalReason && (
-        <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{t("multi_failed_reason", { reason: currentMultiTask.terminalReason })}</div>
+        <div role="alert" className="border border-red-300 bg-red-50 p-3 text-xs text-red-700">{t("multi_failed_reason", { reason: t(currentMultiTask.terminalReason) })}</div>
       )}
       {currentMultiTask?.state === "paused" && currentMultiTask.outcomeUnknown && <div role="alert" className="border border-amber-400 bg-amber-50 p-3 text-xs text-amber-900">{t("multi_outcome_unknown")}</div>}
       {currentMultiTask?.state === "paused" && currentMultiTask.requiresExecutionReview && <div role="alert" className="border border-amber-400 bg-amber-50 p-3 text-xs text-amber-900">{t("multi_execution_review")}</div>}
@@ -608,11 +610,12 @@ function MultiAgentSession({ chrome }: { chrome: RoomChromeControls }) {
       {currentMultiTask?.pendingApprovals.map((approval) => <section key={approval.id} className="pixel-approval-card p-4">
         <div className="flex items-center justify-between"><strong>{approval.kind}</strong><span className="pixel-chip">{approval.risk}</span></div>
         <p className="my-2 text-xs text-neutral-600">{approval.kind === "plan_scope_expansion" ? t("multi_scope_expansion") : t("multi_tool_approval_hint")}</p>
-        <div className="flex gap-2"><button className="pixel-button pixel-button--primary px-3 py-1.5 text-xs" onClick={() => void decideMultiApproval(approval.id, "allow_once")}>{t("approval_allow_once")}</button>{!approval.freshHumanRequired && <button className="pixel-button px-3 py-1.5 text-xs" onClick={() => void decideMultiApproval(approval.id, "allow_session")}>{t("approval_allow_session")}</button>}<button className="pixel-button px-3 py-1.5 text-xs text-red-700" onClick={() => void decideMultiApproval(approval.id, "deny")}>{t("approval_deny")}</button></div>
+        <div className="flex gap-2"><button className="pixel-button pixel-button--primary px-3 py-1.5 text-xs" onClick={() => void decideMultiApproval(approval.id, "allow_once")}>{t("approval_allow_once")}</button>{canAllowSessionApproval(approval) && <button className="pixel-button px-3 py-1.5 text-xs" onClick={() => void decideMultiApproval(approval.id, "allow_session")}>{t("approval_allow_session")}</button>}<button className="pixel-button px-3 py-1.5 text-xs text-red-700" onClick={() => void decideMultiApproval(approval.id, "deny")}>{t("approval_deny")}</button></div>
       </section>)}
       {currentMultiTask && session && <TeamTaskPanel task={currentMultiTask} session={session}/>}
 
     </RoomTimeline>
+    {session && <RoomCostPanel key={`cost-${session.id}`} roomId={session.id} />}
     {terminal && session && !session.archived && <RoomComposer key={session.id} session={session} running={multiRunning || agentRunning} onOpenSettings={()=>setShowCollab(true)}/> }
     {showRoster && session && <SessionMembersDialog session={session} onClose={()=>setShowRoster(false)}/>}
     {showCollab && session && <CoworkRoomSettingsDialog session={session} onClose={() => setShowCollab(false)} />}
@@ -1121,11 +1124,7 @@ function RoomMembersDialog({
 }
 
 /**
- * Co-work 房间协作设置（C5）。
- *
- * 只把**运行时真实生效**的项做成开关：Boss 统筹（Boss 整合计划、默认不执行）与
- * 审批方式（人工 / 执行者自检 / 指定审核者，后两者会真跑一次审核 Agent）。
- * 讨论与监督暂未接入运行时，显式标注「尚未接入」而不是造假开关。
+ * Chat / Work 房间协作设置，仅开放运行时已支持的选项。
  * 跨字段合法性用 core 的 validateCollaborationSettings 统一裁决，前后端同一份判断。
  */
 function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationSession; onClose: () => void }) {
@@ -1142,7 +1141,10 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
   );
   const t = useT();
   const dialog = useAnimatedDialogClose(onClose);
-  const [draft, setDraft] = useState<RoomCollaborationSettings>(() => normalizeCollaborationSettings(session.collaboration));
+  const [draft, setDraft] = useState<RoomCollaborationSettings>(() => createCollaborationDraft({
+    kind: session.kind, workspaceId: session.workspaceId, primaryAgentId: session.primaryAgentId,
+    agentIds: session.agents.map(member => member.agentId),
+  }, session.collaboration));
   const [primaryAgentId, setPrimaryAgentId] = useState(session.primaryAgentId);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1382,7 +1384,7 @@ function CoworkRoomSettingsDialog({ session, onClose }: { session: ConversationS
         </div>
 
         </>}
-        {error && <p className="mt-3 text-sm text-red-700">{t(error)}</p>}
+        {(error || problems[0]) && <p role="alert" className="mt-3 text-sm text-red-700">{t(error ?? problems[0])}</p>}
         <div className="mt-5 flex justify-between gap-2">
           <button
             className="pixel-button px-3 py-2 text-sm"

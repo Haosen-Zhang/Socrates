@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { ModelGateway, OrchestrationAgent } from "@socrates/core";
+import { DEFAULT_COLLABORATION_SETTINGS, type ModelGateway, type OrchestrationAgent } from "@socrates/core";
 import { openDb } from "../db";
 import { EventStore } from "../store/event-store";
 import { MultiAgentCoordinator, parseVerdict } from "./coordinator";
@@ -26,6 +26,130 @@ describe("review verdict parsing", () => {
 });
 
 describe("MultiAgentCoordinator", () => {
+  it("does not issue a repair after restarting from a persisted truncated Manager turn", async () => {
+    const { db, store, coordinator, calls } = setup([]);
+    db.query("UPDATE sessions SET collaboration_json=? WHERE id='s'").run(JSON.stringify(DEFAULT_COLLABORATION_SETTINGS));
+    const task = await coordinator.create({ sessionId: "s", prompt: "work", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a", teamExecution: true } });
+    store.transition(task.id, { type: "prepared_multi" });
+    store.transition(task.id, { type: "discussion_complete" });
+    const turn = store.beginTurn({ taskId: task.id, stableKey: `${task.id}:1:synthesizing:0:0`, phase: "synthesizing", round: 0, participantIndex: 0, agentId: "a", snapshot: {} });
+    store.completeTurn(turn.id, '{"objective":"incomplete', { inputTokens: 10, outputTokens: 1024 });
+    new EventStore(db).append({ eventId: `multi-plan-finish:${turn.id}`, sessionId: "s", taskId: task.id, type: "multi.plan_output_finished", payload: { turnId: turn.id, finishReason: "length" } });
+    await coordinator.run(task.id);
+    expect(store.get(task.id)).toMatchObject({ state: "failed", terminalReason: "structured_plan_output_truncated" });
+    expect(calls()).toBe(0);
+    expect(store.getPlan(task.id)).toBeNull();
+    db.close();
+  });
+
+  it("uses the specific schema errors when repairing a complete but invalid Manager output", async () => {
+    const { db, store } = setup([]);
+    db.query("UPDATE sessions SET collaboration_json=? WHERE id='s'").run(JSON.stringify(DEFAULT_COLLABORATION_SETTINGS));
+    const plan = { objective: "verify", summary: "safe", steps: [{ id: "1", title: "check", description: "test", files: [], commands: [], risks: [], verification: ["test"] }], evidence: [] };
+    const invalid = { ...plan, steps: [{ ...plan.steps[0], commands: null }] };
+    const requests: string[] = [];
+    const gateway: ModelGateway = async function* (request) {
+      requests.push(request.system ?? "");
+      yield { type: "delta", text: JSON.stringify(requests.length === 1 ? invalid : plan) };
+      yield { type: "done", usage: { inputTokens: 10, outputTokens: 100 }, finishReason: "stop" };
+    };
+    const resolve = (id: string): OrchestrationAgent => ({ id, nickname: id, modelId: "fixture", role: "", systemPrompt: "", providerType: "openai_compatible", baseUrl: "http://fixture", apiKey: "fixture" });
+    const coordinator = new MultiAgentCoordinator(db, store, new EventStore(db), gateway, resolve);
+    const task = await coordinator.create({ sessionId: "s", prompt: "work", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a" } });
+    await coordinator.run(task.id);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toContain("plan_step_commands_invalid:0");
+    expect(store.get(task.id)?.state).toBe("awaiting_plan_approval");
+    db.close();
+  });
+
+  it("reports a length-limited Manager response once instead of paying for an identical repair", async () => {
+    const { db, store } = setup([]);
+    db.query("UPDATE sessions SET collaboration_json=? WHERE id='s'").run(JSON.stringify(DEFAULT_COLLABORATION_SETTINGS));
+    let calls = 0;
+    const gateway: ModelGateway = async function* () {
+      calls++;
+      yield { type: "done", usage: { inputTokens: 1020, outputTokens: 1024, reasoningTokens: 1024 }, finishReason: "length" };
+    };
+    const resolve = (id: string): OrchestrationAgent => ({ id, nickname: id, modelId: "reasoning-fixture", role: "", systemPrompt: "", providerType: "openai_compatible", baseUrl: "http://fixture", apiKey: "fixture" });
+    const coordinator = new MultiAgentCoordinator(db, store, new EventStore(db), gateway, resolve);
+    const task = await coordinator.create({ sessionId: "s", prompt: "work", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "a", executionAgentId: "a", teamExecution: true } });
+    await coordinator.run(task.id);
+    expect(store.get(task.id)).toMatchObject({ state: "failed", terminalReason: "structured_plan_output_truncated" });
+    expect(calls).toBe(1);
+    expect(store.getPlan(task.id)).toBeNull();
+    expect(store.usageSummaries(task.id)[0]?.current.outputTokens).toBe(1024);
+    db.close();
+  });
+
+  it("does not reuse a prior automatic revision turn for a different explicit user revision", async () => {
+    const initial = { objective: "initial", summary: "safe", steps: [{ id: "1", title: "verify", description: "tests", files: [], commands: [], risks: [], verification: ["tests"] }], evidence: [] };
+    const automatic = { ...initial, objective: "prior automatic revision" }, userRevision = { ...initial, objective: "new user revision" };
+    const { db, store, coordinator, calls } = setup([JSON.stringify(initial), JSON.stringify(userRevision)]);
+    db.query("UPDATE sessions SET collaboration_json=? WHERE id='s'").run(JSON.stringify(DEFAULT_COLLABORATION_SETTINGS));
+    const task = await coordinator.create({ sessionId: "s", prompt: "work", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });
+    await coordinator.run(task.id);
+    const prior = store.beginTurn({ taskId: task.id, stableKey: `${task.id}:automatic-revision`, phase: "synthesizing", round: 0, participantIndex: 4, agentId: "b", snapshot: {} });
+    store.completeTurn(prior.id, JSON.stringify(automatic), { inputTokens: 1, outputTokens: 2 });
+    const parent = await store.addPlan({ taskId: task.id, content: automatic, createdBy: "b", parentVersion: 1 });
+    store.decidePlan({ taskId: task.id, version: parent.version, hash: parent.contentHash, clientDecisionKey: "collision-replan", decision: "request_replan" });
+    await coordinator.replan(task.id, "Apply the distinct user-requested revision");
+    expect(store.getPlan(task.id)).toMatchObject({ version: 3, parentVersion: 2, content: { objective: "new user revision" } });
+    expect(calls()).toBe(2);
+    db.close();
+  });
+  it("persists a budget-blocked user replan and resumes its original instruction after a new coordinator is created", async () => {
+    const initial = JSON.stringify({ objective: "initial", summary: "safe", steps: [{ id: "1", title: "verify", description: "tests", files: [], commands: [], risks: [], verification: ["tests"] }], evidence: [] });
+    const revised = JSON.stringify({ objective: "requested revision", summary: "keep the API", steps: [{ id: "1", title: "verify", description: "tests", files: [], commands: [], risks: [], verification: ["tests"] }], evidence: [] });
+    const { db, store, coordinator, calls } = setup(["A", "B", initial]);
+    const task = await coordinator.create({ sessionId: "s", prompt: "work", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });
+    await coordinator.run(task.id);
+    const parent = store.getPlan(task.id)!;
+    store.decidePlan({ taskId: task.id, version: parent.version, hash: parent.contentHash, clientDecisionKey: "replan-cost", decision: "request_replan" });
+    const requests: string[] = [];
+    let blocked = true;
+    const gateway: ModelGateway = async function* (request) { requests.push(JSON.stringify(request.messages)); if (blocked) throw new Error("cost_budget_insufficient"); yield { type: "delta", text: revised }; yield { type: "done", usage: { inputTokens: 1, outputTokens: 2 } }; };
+    const resolve = (id: string): OrchestrationAgent => ({ id, nickname: id, modelId: id, role: "", systemPrompt: "", providerType: "openai_compatible", baseUrl: "http://fixture", apiKey: "fixture" });
+    const replanner = new MultiAgentCoordinator(db, store, new EventStore(db), gateway, resolve);
+    await expect(replanner.replan(task.id, "Preserve backward compatibility and revise the API implementation")).rejects.toThrow("cost_budget_insufficient");
+    expect(store.get(task.id)).toMatchObject({ state: "paused", resumeFrom: "synthesizing", config: { pendingRevision: { parentVersion: 1, instruction: "Preserve backward compatibility and revise the API implementation" } } });
+    blocked = false;
+    const recovered = new MultiTaskStore(db), resumed = new MultiAgentCoordinator(db, recovered, new EventStore(db), gateway, resolve);
+    await resumed.resumeInBackground(task.id);
+    for (let i = 0; i < 100 && recovered.get(task.id)?.state !== "awaiting_plan_approval"; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(recovered.get(task.id)?.state).toBe("awaiting_plan_approval");
+    expect(recovered.getPlan(task.id)).toMatchObject({ version: 2, parentVersion: 1, content: { objective: "requested revision" } });
+    expect(recovered.get(task.id)?.config.pendingRevision).toBeUndefined();
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toContain("Preserve backward compatibility and revise the API implementation");
+    expect(calls()).toBe(3);
+    db.close();
+  });
+
+  it("replays a persisted revised plan after a crash without reissuing the completed Manager request or adding a new version", async () => {
+    const initial = { objective: "initial", summary: "safe", steps: [{ id: "1", title: "verify", description: "tests", files: [], commands: [], risks: [], verification: ["tests"] }], evidence: [] };
+    const revised = { ...initial, objective: "persisted revised plan" };
+    const { db, store, coordinator, calls } = setup(["A", "B", JSON.stringify(initial)]);
+    const task = await coordinator.create({ sessionId: "s", prompt: "work", config: { speakingOrder: ["a", "b"], maxRounds: 1, synthesizerId: "b", executionAgentId: "a" } });
+    await coordinator.run(task.id);
+    const parent = store.getPlan(task.id)!;
+    store.decidePlan({ taskId: task.id, version: parent.version, hash: parent.contentHash, clientDecisionKey: "crash-replan", decision: "request_replan" });
+    const config = { ...store.get(task.id)!.config, pendingRevision: { instruction: "Use the revised implementation", parentVersion: 1, ordinal: 4, synthesizerId: "b" } };
+    db.query("UPDATE multi_tasks SET config_json=? WHERE id=?").run(JSON.stringify(config), task.id);
+    store.transition(task.id, { type: "synthesize_revision" });
+    const turn = store.beginTurn({ taskId: task.id, stableKey: `${task.id}:1:synthesizing:0:4`, phase: "synthesizing", round: 0, participantIndex: 4, agentId: "b", snapshot: {} });
+    store.completeTurn(turn.id, JSON.stringify(revised), { inputTokens: 1, outputTokens: 2 });
+    await store.addPlan({ taskId: task.id, content: revised, createdBy: "b", parentVersion: 1 });
+    store.recoverInterrupted();
+    await coordinator.resumeInBackground(task.id);
+    for (let i = 0; i < 100 && store.get(task.id)?.state !== "awaiting_plan_approval"; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(store.get(task.id)?.state).toBe("awaiting_plan_approval");
+    expect(store.getPlan(task.id)).toMatchObject({ version: 2, parentVersion: 1, content: { objective: "persisted revised plan" } });
+    expect(calls()).toBe(3);
+    expect(store.get(task.id)?.config.pendingRevision).toBeUndefined();
+    db.close();
+  });
+
   it("pauses an incomplete provider stream instead of publishing a successful discussion turn", async () => {
     const { db, store } = setup([]);
     const gateway: ModelGateway = async function* () { yield { type: "delta", text: "partial" }; };

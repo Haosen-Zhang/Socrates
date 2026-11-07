@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { isCostBudgetPause } from "../services/model-invocation-broker";
 import { toolWithinPlanScope, executionEventToRuntimeEvent, type ApprovalDecision, type RuntimeEvent, type StructuredPlan, type ConversationStoredMessage, type ReasoningEffort } from "@socrates/core";
 import type { ApprovalManager, DurableApprovalDecision } from "../approvals/manager";
 import type { EventStore } from "../store/event-store";
@@ -83,7 +84,7 @@ export class ExecutionRunner {
         return projected?.type === "text_delta" ? [projected.text] : [];
       }).join("");
       if (terminal.type === "run.completed") return { status: "completed", runId, result };
-      if (terminal.type === "run.interrupted") return { status: "budget_stopped", runId, result, reason: "budget_exhausted" };
+      if (terminal.type === "run.interrupted") return { status: "budget_stopped", runId, result, reason: (terminal.payload as { reason?: string }).reason ?? "budget_exhausted" };
       return { status: terminal.type === "run.cancelled" ? "cancelled" : "failed", runId, result,
         reason: terminal.type === "run.failed" ? (terminal.payload as { error: string }).error : "user_cancelled" };
     }
@@ -137,7 +138,8 @@ export class ExecutionRunner {
         content: input.prompt, parts: [{ type: "text", text: input.prompt }] };
       const handle = await this.runtimes.open({ runtimeKind: "native_ai_sdk", agentSessionId: runId,
         sessionId: task.sessionId, agentId: input.agentId, workspaceId: workspace.workspace_id,
-        runtimeOptions: { sandbox: "workspace-write", runProfile: profile } });
+        runtimeOptions: { sandbox: "workspace-write", runProfile: profile, costRunId: runId,
+          costRootTaskId: task.config.clientRequestId ?? task.id, costWorkPackageId: input.packageId } });
       active.runtimeSessionId = handle.id;
       controller.signal.throwIfAborted();
       const preamble: ConversationStoredMessage[] = previous.length ? [{ ...userContext, messageId: `${runId}:continuation`,
@@ -170,12 +172,17 @@ export class ExecutionRunner {
             if (!call) throw new Error("approval_without_tool_call");
             const inScope = toolWithinPlanScope(input.plan, call);
             const approval = this.approvals.request({ taskId: runId, kind: inScope ? call.name : "plan_scope_expansion",
+              sessionId: task.sessionId, toolGeneration: event.toolGeneration,
               subjectId: `${runId}:${event.requestId}`, inputHash: hashToolInput(call.input), workspaceIdentity: workspace.identity_hash,
               attemptId: runId, policyVersion: event.policyVersion ?? 1, risk: event.risk ?? "high",
               freshHumanRequired: !inScope || event.freshHumanRequired === true });
             this.executionEvents.append({ ...identity, eventId: `approval:${approval.id}`, type: "approval.requested", payload: {
               requestId: approval.id, subjectId: approval.subjectId, callId: event.callId, kind: approval.kind,
               risk: approval.risk, policyVersion: approval.policyVersion, freshHumanRequired: approval.freshHumanRequired } });
+            if (this.approvals.hasSessionGrant(approval)) {
+              await this.decide(approval.id, { clientDecisionKey: `session-grant:${approval.id}`, decision: "allow_once", reason: "session_grant" });
+              return;
+            }
             await emit({ ...event, requestId: approval.id });
             return;
           }
@@ -194,12 +201,13 @@ export class ExecutionRunner {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const cancelled = controller.signal.aborted || active.cancelled;
+      const costStopped = !cancelled && isCostBudgetPause(error);
       await persistText();
       this.executionEvents.append({ ...identity, eventId: `turn-${cancelled ? "cancelled" : "failed"}:${runId}`,
         type: cancelled ? "turn.cancelled" : "turn.failed", payload: cancelled ? { reason } : { error: reason } });
       this.executionEvents.append({ ...identity, eventId: `run-${cancelled ? "cancelled" : "failed"}:${runId}`,
-        type: cancelled ? "run.cancelled" : "run.failed", payload: cancelled ? { reason } : { error: reason } });
-      return { status: cancelled ? "cancelled" : "failed", runId, result, reason };
+        type: cancelled ? "run.cancelled" : costStopped ? "run.interrupted" : "run.failed", payload: cancelled || costStopped ? { reason } : { error: reason } });
+      return { status: cancelled ? "cancelled" : costStopped ? "budget_stopped" : "failed", runId, result, reason };
     } finally {
       input.signal?.removeEventListener("abort", abort);
       if (renewal) clearInterval(renewal);
@@ -285,7 +293,8 @@ export class ExecutionRunner {
       const handle = await this.runtimes.open({
         runtimeKind: "native_ai_sdk", agentSessionId: `${taskId}:${task.attemptNo}:execution`,
         sessionId: task.sessionId, agentId: task.executionAgentId!, workspaceId: session.workspace_id,
-        runtimeOptions: { sandbox: "workspace-write", runProfile: profile },
+        runtimeOptions: { sandbox: "workspace-write", runProfile: profile, costRunId: taskId,
+          costRootTaskId: task.config.clientRequestId ?? taskId },
       });
       runtimeSessionId = handle.id;
       active.runtimeSessionId = runtimeSessionId;
@@ -334,6 +343,7 @@ export class ExecutionRunner {
             const inScope = toolWithinPlanScope(plan.content, call);
             const approval = this.approvals.request({
               taskId, kind: inScope ? call.name : "plan_scope_expansion", subjectId: `${taskId}:${event.requestId}`,
+              sessionId: task.sessionId, toolGeneration: event.toolGeneration,
               inputHash: hashToolInput(call.input), workspaceIdentity: workspace.identity_hash,
               attemptId: this.tasks.currentAttemptId(taskId), policyVersion: event.policyVersion ?? 1,
               risk: inScope && call.name !== "file_change" ? event.risk ?? "medium" : "high",
@@ -341,6 +351,10 @@ export class ExecutionRunner {
             });
             this.tasks.transition(taskId, { type: "tool_approval_required" });
             this.events.append({ eventId: `multi-tool-approval:${approval.id}`, sessionId: task.sessionId, taskId, type: "approval.requested", payload: approval });
+            if (this.approvals.hasSessionGrant(approval)) {
+              await this.decide(approval.id, { clientDecisionKey: `session-grant:${approval.id}`, decision: "allow_once", reason: "session_grant" });
+              return;
+            }
             await emit({ ...event, requestId: approval.id, risk: approval.risk, kind: approval.kind });
             return;
           }
@@ -369,7 +383,7 @@ export class ExecutionRunner {
       }
     } catch (error) {
       const current = this.tasks.get(taskId);
-      if (current && !["failed", "cancelled", "completed", "paused"].includes(current.state)) this.tasks.transition(taskId, { type: "fail", reason: error instanceof Error ? error.message : String(error) });
+      if (current && !["failed", "cancelled", "completed", "paused"].includes(current.state)) this.tasks.transition(taskId, { type: isCostBudgetPause(error) ? "pause" : "fail", reason: error instanceof Error ? error.message : String(error) });
       const terminal = this.tasks.get(taskId);
       if (!turnStarted || terminal?.state === "completed") throw error;
       const cancelled = terminal?.state === "cancelled";

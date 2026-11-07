@@ -11,6 +11,24 @@ import { SingleAgentRunner } from "../runtime/single-agent-runner";
 import { RunSupervisor } from "../runtime/run-supervisor";
 import { RoomCommandService } from "./room-command-service";
 
+test("a stale quote cannot start a room command or create public history", async () => {
+  const db = openDb(":memory:");
+  const sessions = new SessionStore(db);
+  const room = sessions.create({ mode: "chat", title: "Quote", primaryAgentId: "a",
+    agents: [{ agentId: "a", snapshot: { providerId: "mock", modelId: "mock-model" }, executionEligible: true }] });
+  let dispatched = false;
+  const commands = new RoomCommandService(db, sessions, { startDirect: async () => { dispatched = true; return { runId: "bad" }; }, getDirect: () => null,
+    createTeam: async () => ({ taskId: "unused" }), gateway: async function* () {}, resolveAgent: id => ({ id, nickname: id,
+      modelId: "mock-model", role: "", systemPrompt: "", providerType: "openai_compatible", baseUrl: "", apiKey: "test" }) });
+  try {
+    await expect(commands.submit({ roomId: room.id, clientRequestId: "stale", content: "hello", intent: "respond", mentions: [],
+      quoteId: "missing-quote", maxOutputTokens: 100 })).rejects.toThrow("quote_stale");
+    expect(dispatched).toBe(false);
+    expect(commands.list(room.id)).toHaveLength(0);
+    expect(sessions.listMessages(room.id)).toHaveLength(0);
+  } finally { db.close(); }
+});
+
 test("room command starts real supervised member pipeline once and preserves default", async () => {
   const db = openDb(":memory:");
   const sessions = new SessionStore(db), events = new ExecutionEventStore(db), approvals = new ApprovalManager(db);

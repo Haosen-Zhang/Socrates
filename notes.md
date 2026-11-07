@@ -77,3 +77,59 @@ Final evidence: doc/chat-work-collaboration-acceptance.md; /tmp/socrates-tests-d
 - Final Chrome UI: 28 passing checks, zero exceptions. Production Native runtime and history used with controlled external model stream. Live Provider/native Tauri window not exercised.
 - Cross-review added fixes for continued-run and Team-child rewind ownership, cached removed run lookup, stale Continue UI, frozen tool capability during edited approval, and recoverable reviewer failure stream finality.
 - Preview/test harness issues resolved: missing MCP server endpoint, missing file-context resolver, HMR duplicate module state, asynchronous UI waits and confirmation clicks. No user data involved.
+
+
+---
+
+# Cost-aware implementation notes
+
+## Baseline
+- Current branch: codex/readme-persona-studio, e374dd3; prompt reference: 8f5fa212 (Alpha.1).
+- Preserve pre-existing .reasonix metadata modification and all untracked prompt/Playwright artifacts.
+- Architecture is three TypeScript workspaces, Bun/Hono/SQLite sidecar, React/Zustand frontend.
+- Native runtime already disables SDK retries and tracks ProviderAttempts. Gateway disables internal retries too.
+- UsageCollector already aggregates failed/budget-stopped work package attempts, but cost/currency remain null.
+- LangGraph prototype is not a production orchestration owner; adaptive routing remains out of this run's scope.
+
+## Sources
+- Socrates_Alpha1_CostAware_Implementation_Prompt.md: master, foundation, P00-P02, T01/T02, reuse references.
+- AGENTS.md; doc/architecture.md; doc/native-runtime-and-langgraph-roadmap.md.
+
+## Shared contracts
+core cost.ts owns Money/PriceSnapshot/InvocationIdentity/CostSummary/BudgetSummary. Price keys use canonical gateway modelProtocol. Root owns broker/orchestration/routes/quotes; billing worker owned 023/ledger/pricing, UI worker owns frontend, reuse worker owns gateway + reproducible fixture/spikes.
+
+## Implementation evidence
+- Baseline local tests: 881 pass, 4 macOS nested-sandbox skips, 0 fail; baseline typecheck passes.
+- Real controlled team: Manager + 3 Native samples + 2 reviews, six priced invocations = USD 0.000900 under synthetic rates. Builtin write_file remains one operation after monetary pause/resume; leases released.
+- Direct Chat and discussion+summary share broker, continuation retains user message/root. Unknown Native usage survives DB reopening, no automatic replay after topup.
+- Real Chrome initial 12 checks passed; output/playwright/cost-aware holds screenshots and JSON evidence. No paid Provider/external browser request.
+- Independent review fixed strict parent under-reservation, per-request price validity, persisted user replan boundary, monetary interrupted-package recovery, cross-currency invoice escape and uncertain submit identity.
+- Final evidence belongs to implementation-progress.md; provisional counts above are not substituted for the final full gates.
+
+## Follow-up startup failure
+- Root cause reproduced: applied early 023 checksum c31ffcef versus edited complete checksum 04bbe3e3; local schema lacked the later tables/column.
+- Original 023 frozen, additions in 024; known complete variant recognized only with its schema, no metadata overwrite or arbitrary checksum bypass.
+- Local database upgraded after consistent backup; 12 protected tables unchanged (4 sessions, 8 messages), with no history-file rewrite or credential/model access.
+- Real child-process startup regression verifies handshake and authenticated room/cost bootstrap using an early-023 temporary database.
+- Current verification: 975/0/0 tests, typecheck/build green. Native development process ran, but CUA cannot target the unbundled binary. Evidence: output/validation/sidecar-startup-fix/.
+
+## Follow-up Chat settings / automatic output
+- Chat default discussion order was empty; opening the editor now resolves defaults against actual members while retaining explicit subsets/order. Save validation is visible.
+- Actual reported Manager calls had `length` with output 1024 / reasoning 1024 and 1008, yielding 0 and 37 content characters. Fixed the low default and identical-cap repair behavior.
+- User explicitly wants no token-limit decisions. Composer/resume show monetary controls only. Automatic planning can expand 8192→32768 within its one repair and the broker's per-request monetary admission; legacy explicit caps stay binding. Finished-turn metadata and usage are atomic and restart-safe.
+- Actual SDK controlled SSE proves automatic expansion, budget pause, topup and same-root resume without repeating the completed first call. No execution precedes plan approval.
+- Final: 983 tests / 0 failures, typecheck/build pass, 32 Chrome checks pass with zero renderer/external requests. Evidence: output/validation/collaboration-regression/. Actual data was read only; no paid call, upload or push.
+
+## Write/session-permission repair (2026-11-07)
+- Actual approved writes failed with WORKSPACE_FILE_CHANGED because the target was absent and the model supplied invented / empty-file preimage hashes. Null now means atomic create-only; real hash conflicts remain guarded with actionable feedback.
+- UI showed session permission for high-risk writers while the manager rejected it; saved grants had no runtime consumer. Shared eligibility now permits scoped non-destructive built-in writers and excludes fresh/destructive/command/scope-expansion requests.
+- Migration 025 appends request room/generation scope; grants bind workspace/tool/generation/risk/policy/expiry and are consumed only after exact plan-scope checks. Legacy unscoped grants are retained without expanding access.
+- Actual SDK and Chrome controlled fixtures verify corrected writes, one session decision, an automatic second write, and fresh confirmation for the third plan expansion.
+- Final: 990/0 tests, 22,258 assertions, typecheck/build and 8/8 browser checks. Real data read only; no model charge, upload or push. Evidence: output/validation/write-permission/.
+
+## Automatic pricing defaults (2026-11-07)
+- Finished usage was recorded but prices were unknown; generic “awaiting reconciliation” and invoice forms made manual entry look mandatory.
+- Add automatic exact-endpoint official references for configured OpenAI/DeepSeek models and explicitly estimated unknown/proxy presets. No per-message online price call; no universal price endpoint assumed. Rates are versioned, source-linked and user-overridable once per model.
+- Known and estimated totals remain separate. Soft budgets consume booked estimates; strict admission rejects unverified generic presets. Frozen invocation prices remain immutable; current-reference historical views do not settle old uncertainty or rewrite facts.
+- Real-data isolated copy: 26/26 calls estimated, all 15 protected table hashes unchanged. Actual database read only; private copy cleaned after derived evidence capture.
+- Final: 998/0 tests, 22,294 assertions, typecheck/build and 11 Chrome checks. Sources/limits: doc/automatic-model-pricing.md. Evidence: output/validation/automatic-pricing/. No paid inference, credential use, upload or push.

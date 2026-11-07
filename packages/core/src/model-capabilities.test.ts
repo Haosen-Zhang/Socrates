@@ -65,4 +65,12 @@ describe("model capabilities", () => {
       defaultEffort: "auto",
     });
   });
+
+  it("exposes documented GPT-6 efforts without offering disabled/minimal on Sol 6.1 or Astra", () => {
+    expect(resolveReasoningProfile("openai_compatible", "gpt-6.1-sol").efforts).toEqual(["auto", "low", "medium", "high", "xhigh", "max"]);
+    expect(resolveReasoningProfile("openai_compatible", "openai/gpt-6-astra").efforts).toEqual(["auto", "low", "medium", "high", "xhigh", "max"]);
+    expect(resolveReasoningProfile("openai_compatible", "gpt-6.1-terra").efforts).toEqual(["auto", "disabled", "low", "medium", "high", "xhigh", "max"]);
+    expect(resolveReasoningProfile("openai_compatible", "gpt-6-sol").efforts).toEqual(["auto", "disabled", "low", "medium", "high", "xhigh", "max"]);
+    expect(resolveReasoningProfile("openai_compatible", "gpt-6-luna").family).toBe("openai");
+  });
 });

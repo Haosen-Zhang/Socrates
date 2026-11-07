@@ -10,6 +10,8 @@
 
 ## 📌 进度更新（2026-11-05）
 
+2026-11-06 补充：成本感知 P00 已用现有 LangGraph.js 完成 Bun SQLite checkpoint、跨进程中断/恢复、取消和任务幂等实验。官方原生 SQLite saver 在当前 Node 26 环境构建失败，经过测试的 Bun 存储适配见 [复用决定](cost-aware-reuse.md)。这属于兼容性验证；生产团队的唯一编排所有者仍为现有 Coordinator/TeamRunner，adaptive 工作流留在 P04。逐调用成本与预算已通过独立 broker 接通 Native/Gateway，不以图编排迁移为前置。
+
 - ✅ **Phase 1 基本达成**：#77 移除了整个 Codex 依赖，执行改走自研 `native_ai_sdk` 运行时 +
   workspace-write 内建工具（`write_file`/`run_shell`），用**你配的 provider key**，不再依赖 codex 登录/额度。
   `execution-runner` 的 `runtimeKind` 现在是 `native_ai_sdk`。

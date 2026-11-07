@@ -132,6 +132,8 @@ export class WorkPackageStore {
             AND type IN ('run.completed','run.failed','run.cancelled','run.interrupted') ORDER BY seq DESC LIMIT 1
         `).get(item.run_id) : null;
         const payload = terminal ? JSON.parse(terminal.payload_json) as { error?: string; reason?: string } : {};
+        const budgetReason = terminal?.type === "run.interrupted" && typeof payload.reason === "string"
+          && (payload.reason === "budget_exhausted" || payload.reason.startsWith("cost_budget_")) ? payload.reason : null;
         const definition = JSON.parse(item.definition_json) as WorkPackageDefinition;
         const result = item.run_id ? this.db.query<{ content: string }, [string]>(`
           SELECT content FROM session_messages WHERE run_id = ? AND role = 'assistant' AND kind = 'text'
@@ -139,9 +141,9 @@ export class WorkPackageStore {
         `).all(item.run_id).map((message) => message.content).join("") || item.result : item.result;
         const status = terminal?.type === "run.completed" ? "completed"
           : terminal?.type === "run.cancelled" ? "cancelled"
-            : terminal?.type === "run.interrupted" && payload.reason === "budget_exhausted" ? "budget_stopped" : "failed";
+            : budgetReason ? "budget_stopped" : "failed";
         const state = status === "completed" && definition.reviewerAgentId ? "awaiting_review" : status;
-        const reason = status === "completed" ? null : status === "budget_stopped" ? "budget_exhausted"
+        const reason = status === "completed" ? null : status === "budget_stopped" ? budgetReason
           : terminal?.type === "run.failed" ? payload.error ?? "execution_failed"
             : terminal?.type === "run.cancelled" ? payload.reason ?? "user_cancelled" : "execution_outcome_unknown";
         this.db.query("UPDATE work_packages SET state = ?, result = ?, failure_reason = ?, updated_at = ? WHERE id = ?")
