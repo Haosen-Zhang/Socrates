@@ -89,3 +89,10 @@ bun run typecheck
 Gateway, GPT-6 capabilities and reuse checks passed 19 tests / 0 failures after the raw cache-write and FTS5 cases were added. No live OpenAI/Anthropic/custom Provider request was verified. Runtime/tool permissions, quotes, money, budgets and production pause/resume are separately tested through the owning Socrates services; passing these compatibility spikes alone does not establish P01/P02 acceptance.
 
 The 2026-11-07 pricing follow-up retains the actual frozen models.dev import and custom-override path. It additionally uses verified official public billing facts as a versioned offline reference for the user's configured OpenAI/DeepSeek models, with an explicitly estimated preset for other connections/models. This is called by the existing production quote/broker/ledger services and exercised through real HTTP/browser flows; it is not a second pricing gateway or an installed-only adapter. Current coverage, sources and limits are in [automatic-model-pricing.md](automatic-model-pricing.md).
+
+
+## P03–P04 production extension (2026-11-08)
+
+The P00 decisions above retain their historical validation scope. P03 now invokes Ajv 8.20.0 (MIT) for real local JSON Schema evidence, while reusing ToolExecutor, exact ApprovalManager decisions, SupervisedCommandRunner, leases and output storage. P04 now registers `AdaptiveWorkflowService` in the real sidecar and uses the existing LangGraph `StateGraph`/interrupt/Command/checkpointer path to orchestrate frozen Native/Team children. This is actual production invocation, not an installed or unused adapter. The experimental LangGraph Agent runtime is still not a second sampling/tool owner.
+
+Production identity, stage admission, restart/cancellation and UI evidence are documented in [P03–P04 implementation](cost-aware-routing.md) and `implementation-progress.md`. The official native SQLite saver remains rejected for the demonstrated compatibility reason; no new dependency stack or Multica code was imported.

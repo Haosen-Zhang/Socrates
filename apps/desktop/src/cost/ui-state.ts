@@ -26,6 +26,7 @@ export function formatAtomic(value: string | null | undefined, currency = "USD",
 export function quoteBinding(input: {
   roomId: string; content: string; mentions: RoomMention[]; intent: string;
   attachmentIds?: string[]; workspaceRefIds?: string[]; maxOutputTokens?: number;
+  verificationPlanId?: string; routingCandidateId?: string;
   budget?: CostOptions["budget"];
 }, configuration: unknown): string {
   return JSON.stringify({ ...input, content: input.content.trim(), configuration });

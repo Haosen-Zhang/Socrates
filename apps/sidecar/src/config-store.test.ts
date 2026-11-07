@@ -98,31 +98,15 @@ describe("ConfigStore", () => {
     }
   });
 
-  it("rejects global defaults that the backend cannot execute", () => {
+  it("accepts routed defaults while retaining unsupported approval capability gates", () => {
     const path = tmpPath();
     try {
       const store = new ConfigStore(path);
-      expect(() => store.update({
-        collaborationDefaults: {
-          ...store.get().collaborationDefaults,
-          strategy: "adaptive",
-        },
-      })).toThrow("collaboration_strategy_unavailable");
-      expect(store.get().collaborationDefaults.strategy).toBe("single");
-      expect(() => store.update({
-        collaborationDefaults: {
-          ...store.get().collaborationDefaults,
-          assignment: {
-            ...store.get().collaborationDefaults.assignment,
-            routing: {
-              ...store.get().collaborationDefaults.assignment.routing,
-              mode: "manual",
-            },
-          },
-        },
-      })).toThrow("routing_runtime_unavailable");
-    } finally {
-      rmSync(path, { force: true });
-    }
+      store.update({collaborationDefaults:{...store.get().collaborationDefaults,strategy:"adaptive"}});
+      expect(store.get().collaborationDefaults.strategy).toBe("adaptive");
+      store.update({collaborationDefaults:{...store.get().collaborationDefaults,assignment:{...store.get().collaborationDefaults.assignment,routing:{...store.get().collaborationDefaults.assignment.routing,mode:"manual"}}}});
+      expect(store.get().collaborationDefaults.assignment.routing.mode).toBe("manual");
+      expect(()=>store.update({collaborationDefaults:{...store.get().collaborationDefaults,planConfirmation:{mode:"coordinator",reviewerAgentId:null}}})).toThrow("plan_confirmation_unavailable");
+    } finally {rmSync(path,{force:true});}
   });
 });

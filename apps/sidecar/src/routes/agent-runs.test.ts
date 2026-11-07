@@ -30,9 +30,9 @@ describe("agent runtime capability handshake", () => {
         freshHumanRisks: ["destructive"],
       },
       collaboration: {
-        supportedStrategies: ["single", "team"],
+        supportedStrategies: ["single", "adaptive", "team"],
         discussion: true,
-        routing: false,
+        routing: true,
         planConfirmation: ["user"],
       },
     });

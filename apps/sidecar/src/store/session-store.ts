@@ -272,12 +272,16 @@ export class SessionStore {
     return command ? (JSON.parse(command.payload_json).profiles as Array<Record<string, unknown>>).find((profile) => profile.agentId === message.author_id) : undefined;
   }
 
+  private hasUnfinishedRouting(sessionId:string):boolean {
+    return Boolean(this.db.query("SELECT root_task_id FROM adaptive_workflows WHERE room_id=? AND status NOT IN ('completed','failed','blocked','cancelled') LIMIT 1").get(sessionId));
+  }
+
   bindWorkspace(sessionId: string, workspaceId: string | null): ConversationSession {
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
     const shapeErrors = validateRoomShape({ kind: session.kind, workspaceId, agentIds: session.agents.map((a) => a.agentId) });
     if (shapeErrors.length) throw new Error(shapeErrors[0]);
-    if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) {
+    if (this.hasUnfinishedRouting(sessionId) || !["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) {
       throw new Error("active_session_workspace_locked");
     }
     if (workspaceId) {
@@ -467,7 +471,7 @@ export class SessionStore {
   archive(sessionId: string, archived: boolean): ConversationSession {
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
-    if (archived && !["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) {
+    if (archived && (this.hasUnfinishedRouting(sessionId) || !["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status))) {
       throw new Error("active_session_archive_locked");
     }
     this.db.query("UPDATE sessions SET archived = ?, updated_at = ? WHERE id = ?").run(archived ? 1 : 0, new Date().toISOString(), sessionId);
@@ -477,7 +481,7 @@ export class SessionStore {
   async remove(sessionId: string, withinTransaction?: () => void): Promise<void> {
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
-    if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) throw new Error("active_session_delete_locked");
+    if (this.hasUnfinishedRouting(sessionId) || !["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) throw new Error("active_session_delete_locked");
     const stagedHistory = this.history ? await this.history.stageSessionDeletion(sessionId) : null;
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -515,7 +519,7 @@ export class SessionStore {
   async rewind(sessionId: string, messageId: string): Promise<void> {
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
-    if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) throw new Error("active_session_rewind_locked");
+    if (this.hasUnfinishedRouting(sessionId) || !["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) throw new Error("active_session_rewind_locked");
     const target = this.db.query<{
       rid: number;
       created_at: string;

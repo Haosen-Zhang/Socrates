@@ -29,6 +29,8 @@ describe("cost input and quote ownership", () => {
     expect(quoteBinding(request, { modelId: "model-b" })).not.toBe(first);
     expect(quoteBinding({ ...request, workspaceRefIds: ["file"] }, { modelId: "model-a" })).not.toBe(first);
     expect(quoteBinding({ ...request, mentions: [{ type: "agent", agentId: "other" }] }, { modelId: "model-a" })).not.toBe(first);
+    expect(quoteBinding({ ...request, verificationPlanId: "plan-v2" }, { modelId: "model-a" })).not.toBe(first);
+    expect(quoteBinding({ ...request, routingCandidateId: "reviewed-workflow" }, { modelId: "model-a" })).not.toBe(first);
   });
 
   it("does not authorize a stale or expired quote for a budgeted send", () => {

@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { MAX_AUTOMATIC_OUTPUT_TOKENS, atomic, resolveRoomCommand, requestCostUpperBound, type RoomCommandInput } from "@socrates/core";
+import { MAX_AUTOMATIC_OUTPUT_TOKENS, atomic, isRoutingEnabled, resolveRoomCommand, requestCostUpperBound, type RoomCommandInput } from "@socrates/core";
 import type { SessionStore } from "../store/session-store";
 import { PricingStore } from "./pricing-store";
+import type { RoutePolicyService, RoutePreview } from "./route-policy";
 import { modelProtocol } from "./model-invocation-broker";
 
 export type QuoteInput = Omit<RoomCommandInput, "clientRequestId" | "quoteId">;
@@ -11,6 +12,7 @@ export interface TaskQuote {
   heuristic: true; lowAtomic: string | null; highAtomic: string | null; currency: "USD";
   stages: Array<{ stage: string; lowAtomic: string | null; highAtomic: string | null; assumptions: string[] }>;
   unknowns: string[]; maxOutputTokens: number; priceSnapshotIds: string[];
+  route?: RoutePreview;
   inputBytes: number; inputTokensEstimate: number; policyVersion: string;
 }
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -18,11 +20,11 @@ const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(valu
 /** No model calls or network: quotes are heuristic, bound to actual room/configuration revisions. */
 export class TaskQuoteService {
   private readonly prices: PricingStore;
-  constructor(private readonly db: Database, private readonly sessions: SessionStore) { this.prices = new PricingStore(db); }
+  constructor(private readonly db: Database, private readonly sessions: SessionStore, private readonly routing?: RoutePolicyService) { this.prices = new PricingStore(db); }
 
   quote(input: QuoteInput): TaskQuote {
     const binding = this.binding(input);
-    const { room, resolved, providers, snapshots, inputBytes, maxOutputTokens } = binding;
+    const { room, resolved, providers, snapshots, inputBytes, maxOutputTokens, route } = binding;
     const unknowns: string[] = [];
     if ([...snapshots.values()].some(price => price?.estimateReason)) unknowns.push("prices_are_reference_estimates");
     const stage = (name: string, ids: string[], lowCalls: number, highCalls: number, assumptions: string[]) => {
@@ -38,7 +40,10 @@ export class TaskQuoteService {
       return { stage: name, lowAtomic: known ? low.toString() : null, highAtomic: known ? high.toString() : null, assumptions };
     };
     const stages: TaskQuote["stages"] = [];
-    if (resolved.kind === "team") {
+    if (route) {
+      stages.push(...(route.selected?.stages ?? [{stage:"execution",lowAtomic:null,highAtomic:null,assumptions:["routing_no_feasible_candidate"]}]));
+      unknowns.push("routing_rules_only_no_measured_success_probability");
+    } else if (resolved.kind === "team") {
       const manager = room.collaboration.assignment.coordinatorAgentId ?? room.primaryAgentId;
       const rounds = room.collaboration.discussion.enabled ? room.collaboration.discussion.maxRounds : 0;
       stages.push(stage("planning", [manager], 1, 2, ["Manager 规划 1 次；包含最多一次 JSON 修复"]));
@@ -51,7 +56,7 @@ export class TaskQuoteService {
       const summarizer = room.collaboration.discussion.summaryAgentId;
       if (summarizer && resolved.agentIds.includes(summarizer)) stages.push(stage("summary", [summarizer], 1, 1, ["配置的总结成员单独计费"]));
     } else stages.push(stage("execution", resolved.agentIds, 1, room.kind === "chat" ? 1 : 8, ["UTF-8 字节启发式，包含公开历史、角色提示与所选附件；工具 schema/后续结果另有不确定性"]));
-    stages.push(stage("retry_allowance", providers.map(p => p.agentId), 0, 4, ["每次采样最多 5 个可观测尝试；未知结果不会自动退款，此处为启发式余量"]));
+    if (!route) stages.push(stage("retry_allowance", providers.map(p => p.agentId), 0, 4, ["每次采样最多 5 个可观测尝试；未知结果不会自动退款，此处为启发式余量"]));
     stages.push({ stage: "paid_tools", lowAtomic: "0", highAtomic: "0", assumptions: ["本地工具无模型收费；外部 MCP/其他付费工具未定价，预算模式下会拒绝执行"] });
     const total = (key: "lowAtomic" | "highAtomic") => stages.every(s => s[key] !== null) ? stages.reduce((sum, s) => sum + BigInt(s[key]!), 0n).toString() : null;
     if (input.attachmentIds?.length || input.workspaceRefIds?.length || input.mentions.some(m => m.type === "file")) unknowns.push("selected_files_and_multimodal_content_may_change_usage");
@@ -61,7 +66,8 @@ export class TaskQuoteService {
       createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(), kind: resolved.kind,
       heuristic: true, lowAtomic: total("lowAtomic"), highAtomic: total("highAtomic"), currency: "USD", stages,
       unknowns: [...new Set(unknowns)], maxOutputTokens, priceSnapshotIds: [...new Set([...snapshots.values()].flatMap(s => s ? [s.id] : []))],
-      inputBytes, inputTokensEstimate: Math.ceil(inputBytes / 3), policyVersion: "local_heuristic/1" };
+      ...(route ? { route } : {}),
+      inputBytes, inputTokensEstimate: Math.ceil(inputBytes / 3), policyVersion: route?.policyVersion ?? "local_heuristic/1" };
     this.db.query("INSERT INTO cost_quotes(id,room_id,input_hash,quote_json,created_at,expires_at) VALUES (?,?,?,?,?,?)")
       .run(quote.id, room.id, quote.inputHash, JSON.stringify(quote), quote.createdAt, quote.expiresAt);
     return quote;
@@ -86,8 +92,14 @@ export class TaskQuoteService {
       if (!["strict_admission", "soft_limit", "tracking_only"].includes(input.budget.mode)) throw new Error("invalid_budget_mode");
       atomic(input.budget.limitAtomic);
     }
-    const resolved = resolveRoomCommand({ ...room, agentIds: room.agents.map(a => a.agentId) }, input);
-    const members = resolved.kind === "team" ? room.agents : room.agents.filter(a => resolved.agentIds.includes(a.agentId));
+    let resolved = resolveRoomCommand({ ...room, agentIds: room.agents.map(a => a.agentId) }, input);
+    let route: RoutePreview | undefined;
+    if (isRoutingEnabled(room,input) && resolved.kind !== "discussion") {
+      if (!this.routing) throw new Error("routing_runtime_unavailable");
+      route=this.routing.preview(input);
+      if(route.selected)resolved=route.selected.resolved;
+    }
+    const members = route ? room.agents.filter(a=>route!.allowedAgentIds.includes(a.agentId)) : resolved.kind === "team" ? room.agents : room.agents.filter(a => resolved.agentIds.includes(a.agentId));
     const providers = members.map(member => {
       const id = String(member.snapshot.providerId ?? "");
       const provider = this.db.query<{ type: "anthropic" | "openai_compatible"; base_url: string; enabled: number }, [string]>("SELECT type,base_url,enabled FROM providers WHERE id=?").get(id);
@@ -107,13 +119,13 @@ export class TaskQuoteService {
       return { id, ...attachment };
     });
     const messages = this.sessions.listMessages(room.id);
-    const basis = { roomId: input.roomId, content: input.content, mentions: input.mentions, intent: input.intent,
+    const basis = { routingBinding: route?.bindingHash ?? null, verificationPlanId:input.verificationPlanId ?? null, routingCandidateId:input.routingCandidateId ?? null, roomId: input.roomId, content: input.content, mentions: input.mentions, intent: input.intent,
       maxOutputTokens, budget: input.budget ?? null, members, collaboration: room.collaboration, kind: room.kind,
       primaryAgentId: room.primaryAgentId, providers: providers.map(p => ({ id: p.id, provider: p.provider })),
       prices: [...snapshots.values()].map(s => s?.id ?? null), refs, attachments,
       history: messages.map(m => ({ id: m.id, content: m.content, status: m.status })) };
     const inputBytes = new TextEncoder().encode(JSON.stringify({ request: input.content, messages, members })).byteLength
       + attachments.reduce((n, a) => n + a.byte_size, 0) + refs.reduce((n, r) => n + (r.snapshot_size ?? 0), 0);
-    return { room, resolved, providers, snapshots, inputBytes, maxOutputTokens, hash: hash(basis) };
+    return { room, resolved, route, providers, snapshots, inputBytes, maxOutputTokens, hash: hash(basis) };
   }
 }

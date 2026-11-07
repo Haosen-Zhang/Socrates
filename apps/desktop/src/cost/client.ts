@@ -1,4 +1,5 @@
 import type { CostOptions } from "./ui-state";
+import type { RoutePreview } from "@socrates/core";
 import { requireOk, sidecarFetch, type Handshake } from "../transport";
 
 export interface TaskQuoteView {
@@ -6,6 +7,7 @@ export interface TaskQuoteView {
   lowAtomic: string | null; highAtomic: string | null; currency: string;
   stages: Array<{ stage: string; lowAtomic: string | null; highAtomic: string | null; assumptions: string[] }>;
   unknowns: string[]; maxOutputTokens: number; priceSnapshotIds: string[];
+  route?: RoutePreview;
 }
 
 class CostApiRejection extends Error {

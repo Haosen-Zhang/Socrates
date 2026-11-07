@@ -169,6 +169,6 @@ describe("collaboration settings v2", () => {
           automaticPolicy: "quality",
         },
       },
-    }))).toContain("routing_runtime_unavailable");
+    }),{supportedStrategies:["single","team"],discussion:true,routing:false,planConfirmation:["user"]})).toContain("routing_runtime_unavailable");
   });
 });

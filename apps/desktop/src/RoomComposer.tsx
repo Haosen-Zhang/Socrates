@@ -12,6 +12,8 @@ import PixelIcon from "./PixelIcon";
 import ResizableComposer from "./composer/ResizableComposer";
 import AttachmentTray from "./attachments/AttachmentTray";
 import ComposerCostControls from "./cost/ComposerCostControls";
+import VerificationControls from "./verification/VerificationControls";
+import RoutingPresetControls from "./routing/RoutingPresetControls";
 import { quoteBinding, submittedCostOptions, type BoundCostOptions } from "./cost/ui-state";
 
 /** Mentions are created only by explicit menu selection; plain @ text is inert. */
@@ -37,6 +39,7 @@ export default function RoomComposer({
     updateCollaboration,
     draftAttachments,
     draftWorkspaceRefs,
+    adaptiveStatus,
   } = useStorePick(
     "composerDrafts",
     "setComposerDraft",
@@ -50,6 +53,7 @@ export default function RoomComposer({
     "updateCollaboration",
     "draftAttachments",
     "draftWorkspaceRefs",
+    "adaptiveStatus",
   );
   const t = useT();
   const composing = useRef(false);
@@ -59,7 +63,10 @@ export default function RoomComposer({
   const query = roomMentionQuery(draft);
   const [error, setError] = useState<string | null>(null);
   const [cost, setCost] = useState<BoundCostOptions | null>(null);
+  const [verificationPlanId,setVerificationPlanId]=useState<string | undefined>();
+  const [routingCandidateId, setRoutingCandidateId] = useState<string | undefined>();
   const work = session.kind === "cowork";
+  const waitingStatus = work && adaptiveStatus && ["awaiting_approval", "awaiting_plan", "awaiting_verification", "paused_budget", "interrupted"].includes(adaptiveStatus) ? adaptiveStatus : null;
   const behavior =
     session.collaboration.strategy === "team"
       ? "team"
@@ -68,6 +75,8 @@ export default function RoomComposer({
         : work
           ? "execute"
           : "respond";
+  const routeInputIdentity = JSON.stringify([session.id, session.collaboration, draft, selected, verificationPlanId, draftAttachments.map(item => item.id), draftWorkspaceRefs.map(item => item.id)]);
+  useEffect(() => { setRoutingCandidateId(undefined); }, [routeInputIdentity]);
   useEffect(() => {
     if (work && query !== null)
       void searchWorkspacePaths(query).catch((cause) =>
@@ -106,6 +115,7 @@ export default function RoomComposer({
       costOptions = cost ? submittedCostOptions(cost, quoteBinding({ roomId: session.id, content: prompt, mentions,
         intent: behavior === "team" ? "execute" : behavior,
         attachmentIds: draftAttachments.map(item => item.id), workspaceRefIds: draftWorkspaceRefs.map(item => item.id),
+        ...(work && behavior !== "discuss" && verificationPlanId ? { verificationPlanId } : {}), ...(routingCandidateId ? { routingCandidateId } : {}),
         ...(cost.options.maxOutputTokens !== undefined ? { maxOutputTokens: cost.options.maxOutputTokens } : {}), ...(cost.options.budget ? { budget: cost.options.budget } : {}),
       }, session)) : undefined;
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return; }
@@ -119,6 +129,8 @@ export default function RoomComposer({
       undefined,
       session.id,
       costOptions,
+      behavior !== "discuss" ? verificationPlanId : undefined,
+      behavior !== "discuss" ? routingCandidateId : undefined,
     );
     if (!ok) {
       if (!(useStore.getState().composerDrafts[session.id] ?? "")) {
@@ -139,7 +151,6 @@ export default function RoomComposer({
           ...config.assignment,
           coordinatorAgentId:
             config.assignment.coordinatorAgentId ?? session.primaryAgentId,
-          callableAgentIds: ids,
         },
         discussion: {
           ...config.discussion,
@@ -309,7 +320,10 @@ export default function RoomComposer({
       )}
       {work && <AttachmentTray />}
       <ComposerCostControls session={session} content={draft} mentions={retainSelectedMentions(draft.trim(), selected).map(item => item.mention)}
-        intent={behavior === "team" ? "execute" : behavior} attachmentIds={draftAttachments.map(item => item.id)} workspaceRefIds={draftWorkspaceRefs.map(item => item.id)} disabled={running} onChange={setCost} />
+        intent={behavior === "team" ? "execute" : behavior} attachmentIds={draftAttachments.map(item => item.id)} workspaceRefIds={draftWorkspaceRefs.map(item => item.id)} disabled={running} onChange={setCost}
+        verificationPlanId={work && behavior !== "discuss" ? verificationPlanId : undefined} routingCandidateId={routingCandidateId} onCandidateChange={setRoutingCandidateId}
+        leading={work && behavior !== "discuss" ? <RoutingPresetControls key={session.id} session={session} disabled={running} /> : undefined}
+        trailing={work && behavior !== "discuss" ? <VerificationControls roomId={session.id} disabled={running} onPlanChange={setVerificationPlanId} /> : undefined} />
       <ResizableComposer label={t("composer_resize")}>
         <span className="pixel-composer-chevron mt-1 shrink-0 self-start">
           ›
@@ -319,7 +333,7 @@ export default function RoomComposer({
           className="pixel-composer-input min-h-16 flex-1 resize-none bg-transparent p-2 text-sm outline-none"
           value={draft}
           disabled={running}
-          placeholder={running ? t("replying") : t("mention_placeholder")}
+          placeholder={running ? t(waitingStatus ? `route_status_${waitingStatus}` : "replying") : t("mention_placeholder")}
           onChange={(event) => updateDraft(event.target.value)}
           onCompositionStart={() => {
             composing.current = true;

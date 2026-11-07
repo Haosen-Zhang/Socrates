@@ -43,3 +43,13 @@ it("allows a new quote identity after the server definitively rejects a stale qu
   expect(bodies[1].quoteId).toBe("fresh");
   expect(bodies[1].clientRequestId).not.toBe(bodies[0].clientRequestId);
 });
+
+it("binds explicit routing candidates and verification plans to the retry identity",async()=>{
+  const bodies:Array<Record<string,unknown>>=[];
+  useStore.setState({...useStore.getInitialState(),handshake:{port:1,token:"test-only"},currentSessionId:"room-a",sessions:[{id:"room-a",kind:"cowork",archived:false}] as ConversationSession[]});
+  globalThis.fetch=(async(_input:RequestInfo|URL,init?:RequestInit)=>{bodies.push(JSON.parse(String(init?.body)));throw Error("response lost");}) as unknown as typeof fetch;
+  for(const candidate of ["direct:a","direct:a","team:a:b"])await useStore.getState().sendRoomCommand("task",[],"execute",undefined,"room-a",{quoteId:"quote"},"verified-plan",candidate);
+  expect(bodies[0]).toMatchObject({verificationPlanId:"verified-plan",routingCandidateId:"direct:a"});
+  expect(bodies[1].clientRequestId).toBe(bodies[0].clientRequestId);
+  expect(bodies[2].clientRequestId).not.toBe(bodies[0].clientRequestId);
+});

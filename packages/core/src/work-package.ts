@@ -11,7 +11,7 @@ export interface WorkPackageDefinition {
   acceptanceCriteria: string[];
 }
 
-export type WorkPackageState = "waiting" | "ready" | "running" | "awaiting_approval" | "awaiting_review" | "completed" | "failed" | "cancelled" | "budget_stopped";
+export type WorkPackageState = "waiting" | "ready" | "running" | "awaiting_approval" | "awaiting_verification" | "awaiting_review" | "completed" | "failed" | "cancelled" | "budget_stopped";
 
 export function validateWorkPackages(raw: unknown, memberIds?: readonly string[]): string[] {
   if (!Array.isArray(raw) || raw.length < 1 || raw.length > 50) return ["work_packages_invalid"];

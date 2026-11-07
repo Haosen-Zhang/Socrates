@@ -109,6 +109,13 @@ export class RunSupervisor {
     entry.controller.abort("user_cancelled");
   }
 
+  async wait(runId:string):Promise<void> { await this.runs.get(runId)?.completion.catch(()=>{}); }
+
+  async interrupt(runId:string):Promise<void> {
+    const entry=this.runs.get(runId);
+    if(entry&&!entry.result){entry.controller.abort("routing_shutdown");await entry.completion.catch(()=>{});}
+  }
+
   async shutdown(): Promise<void> {
     const pending: Promise<AgentRunResult>[] = [];
     for (const entry of this.runs.values()) {

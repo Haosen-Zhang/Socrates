@@ -251,7 +251,7 @@ macSandboxIt("verifies an actual project with installed bun test, npm script and
   const root = realpathSync(tmpdir()) + `/socrates-project-validation-${crypto.randomUUID()}`;
   mkdirSync(root);
   writeFileSync(`${root}/validation.test.ts`, "import {test,expect} from 'bun:test'; test('local',()=>expect(2+2).toBe(4));");
-  writeFileSync(`${root}/package.json`, JSON.stringify({ scripts: { verify: "node verify.cjs" } }));
+  writeFileSync(`${root}/package.json`, JSON.stringify({ scripts: { verify: "node verify.cjs", test: "bun test validation.test.ts" } }));
   writeFileSync(`${root}/verify.cjs`, "console.log('verified npm project');");
   writeFileSync(`${root}/verify.py`, "print('verified Python project')\n");
   const executables = discoverCommandExecutables();
@@ -260,6 +260,7 @@ macSandboxIt("verifies an actual project with installed bun test, npm script and
   try {
     for (const [executable, argv, expected] of [
       ["bun", ["test"], "1 pass"],
+      ["bun", ["run", "test"], "1 pass"],
       ["npm", ["run", "verify"], "verified npm project"],
       ["python3", ["verify.py"], "verified Python project"],
     ] as const) {

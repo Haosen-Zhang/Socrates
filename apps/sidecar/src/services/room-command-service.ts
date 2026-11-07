@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { DEFAULT_MAX_OUTPUT_TOKENS, WORK_ACTIVITY_LIMIT, WORK_ACTIVITY_EVENT_LIMIT, resolveRoomCommand, type ModelGateway, type OrchestrationAgent, type RoomCommandInput, type SessionMessage, type WorkActivityRecord, type WorkActivityEvent, type WorkActivityDetail } from "@socrates/core";
+import { DEFAULT_MAX_OUTPUT_TOKENS, WORK_ACTIVITY_LIMIT, WORK_ACTIVITY_EVENT_LIMIT, isRoutingEnabled, resolveRoomCommand, type ModelGateway, type OrchestrationAgent, type RoomCommandInput, type SessionMessage, type WorkActivityRecord, type WorkActivityEvent, type WorkActivityDetail } from "@socrates/core";
 import { ConversationMemoryStore } from "../store/conversation-memory-store";
 import type { HistoryStore } from "../store/history-store";
 import type { SessionStore } from "../store/session-store";
@@ -11,9 +11,13 @@ import { TaskQuoteService } from "./task-quotes";
 import { BudgetLedger } from "./cost-ledger";
 import { isCostBudgetPause } from "./model-invocation-broker";
 import { ExecutionEventStore } from "../store/execution-event-store";
+import type { RoutePolicyService, RoutePreview } from "./route-policy";
+import type { AdaptiveWorkflowService } from "./adaptive-workflow";
+import type { VerificationService } from "./verification-service";
 
 export interface RoomCommandView {
   commandId: string; roomId: string; kind: "direct" | "discussion" | "team";
+  adaptive?: boolean; routeStatus?:string; outcome?:string;
   status: string; runId?: string; taskId?: string; error?: string;
 }
 interface Row { id: string; room_id: string; fingerprint: string; input_json: string; kind: RoomCommandView["kind"]; status: string; run_id: string | null; task_id: string | null; error: string | null }
@@ -28,6 +32,9 @@ interface Dependencies {
   isTeamActive?(taskId: string): boolean;
   resolveAgent(agentId: string, snapshot: Record<string, unknown>): OrchestrationAgent;
   gateway: ModelGateway;
+  verification?: VerificationService;
+  routing?: RoutePolicyService;
+  adaptive?: AdaptiveWorkflowService;
 }
 /** Room authority for dispatch, stable request identity and public discussion history. */
 export class RoomCommandService {
@@ -78,10 +85,26 @@ export class RoomCommandService {
     }
     const room = this.sessions.get(input.roomId);
     if (!room || room.archived) throw new Error("room_not_found");
-    new TaskQuoteService(this.db, this.sessions).validate(input);
-    const resolved = resolveRoomCommand({ ...room, agentIds: room.agents.map((a) => a.agentId) }, input);
+    const quotes=new TaskQuoteService(this.db,this.sessions,this.deps.routing);
+    let quote=quotes.validate(input);
+    let resolved = resolveRoomCommand({ ...room, agentIds: room.agents.map((a) => a.agentId) }, input);
+    let route:RoutePreview|undefined;
+    if(isRoutingEnabled(room,input)&&resolved.kind!=="discussion"){
+      if(!this.deps.routing||!this.deps.adaptive)throw new Error("routing_runtime_unavailable");
+      quote ??= quotes.quote(input); route=quote.route;
+      if(!route?.selected)throw new Error("routing_no_feasible_candidate");
+      resolved=route.selected.resolved;
+    }
+    if (input.verificationPlanId) {
+      if (room.kind !== "cowork" || resolved.kind === "discussion") throw new Error("verification_work_execution_required");
+      if (!this.deps.verification) throw new Error("verification_unavailable");
+      const plan = this.deps.verification.getPlan(input.verificationPlanId);
+      if (!plan || plan.target.roomId !== room.id) throw new Error("verification_target_mismatch");
+      if (plan.approvalStatus !== "approved") throw new Error("verification_plan_approval_required");
+    }
+    if(this.db.query("SELECT root_task_id FROM adaptive_workflows WHERE room_id=? AND status NOT IN ('completed','blocked','failed','cancelled')").get(room.id))throw new Error("room_command_already_running");
     if (!["idle", "completed", "failed", "cancelled", "interrupted"].includes(room.status)) throw new Error("room_command_already_running");
-    const order = resolved.kind === "team"
+    const order = route?.selected ? [...new Set([route.selected.assignments.managerId,...route.selected.assignments.executorIds,route.selected.assignments.reviewerId].filter((id):id is string=>Boolean(id)))] : resolved.kind === "team"
       ? [...new Set([room.collaboration.assignment.coordinatorAgentId ?? room.primaryAgentId, ...input.mentions.flatMap((m) => m.type === "agent" ? [m.agentId] : [])])]
       : resolved.kind === "discussion" && room.collaboration.discussion.enabled
       ? [...room.collaboration.discussion.speakerOrder.filter((id) => resolved.agentIds.includes(id)), ...resolved.agentIds.filter((id) => !room.collaboration.discussion.speakerOrder.includes(id))]
@@ -89,7 +112,7 @@ export class RoomCommandService {
     const agents = order.map((id) => {
       const member = room.agents.find((a) => a.agentId === id)!;
       if (resolved.kind !== "discussion" && !member.executionEligible && room.kind === "cowork") throw new Error("member_execution_unavailable");
-      return this.deps.resolveAgent(id, structuredClone(member.snapshot));
+      return this.deps.resolveAgent(id, structuredClone(route?.members[id]?.snapshot ?? member.snapshot));
     });
     const fileIds = [...new Set([...(input.workspaceRefIds ?? []), ...input.mentions.flatMap((m) => m.type === "file" ? [m.refId] : [])])];
     if (room.kind === "chat" && fileIds.length) throw new Error("chat_file_mentions_forbidden");
@@ -103,10 +126,13 @@ export class RoomCommandService {
     const id = crypto.randomUUID(), now = new Date().toISOString();
     this.db.transaction(() => {
       this.db.query("INSERT INTO room_commands (id,room_id,client_request_id,fingerprint,input_json,kind,status,created_at,updated_at) VALUES (?,?,?,?,?,?,'dispatching',?,?)")
-        .run(id, room.id, input.clientRequestId, fingerprint, JSON.stringify(input), resolved.kind, now, now);
+        .run(id, room.id, input.clientRequestId, fingerprint, JSON.stringify({...input,...(quote?{quoteId:quote.id}:{})}), resolved.kind, now, now);
+      if(route)this.deps.routing!.freeze(id,route,quote?.id ?? null);
       if (input.budget) new BudgetLedger(this.db).create({ rootTaskId: id, roomId: room.id, ...input.budget });
+      if (input.verificationPlanId) this.deps.verification!.bind(input.verificationPlanId,{roomId:room.id,rootTaskId:id});
     })();
     try {
+      if(route){this.deps.adaptive!.start(id);this.update(id,{status:"running"});return this.get(id)!;}
       if (resolved.kind === "direct") {
         const result = await this.deps.startDirect({ sessionId: room.id, agentId: resolved.agentIds[0]!, runtimeKind: "native_ai_sdk", prompt: input.content, clientTurnKey: `room-command:${id}`, attachmentIds: input.attachmentIds ?? [], workspaceRefIds: fileIds,
           runtimeOptions: { costRootTaskId: id, maxOutputTokens: input.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS } });
@@ -136,6 +162,14 @@ export class RoomCommandService {
     const row = this.db.query<Row, [string]>("SELECT * FROM room_commands WHERE id = ?").get(id);
     if (!row) return null;
     if (row.status === "revoked") return { commandId: row.id, roomId: row.room_id, kind: row.kind, status: "revoked", error: "room_command_revoked" };
+    const workflow=this.deps.adaptive?.get(id);
+    if(workflow){
+      const child=workflow.attempts.at(-1)?.child;
+      const routeStatus=workflow.status;
+      const status=["pending","running","assessing"].includes(routeStatus)?"running":routeStatus==="awaiting_plan"?"awaiting_plan_approval":["awaiting_verification","paused_budget"].includes(routeStatus)||routeStatus==="awaiting_approval"&&workflow.pendingApproval?"paused":routeStatus==="blocked"?"failed":routeStatus;
+      return {commandId:row.id,roomId:row.room_id,kind:child?.kind==="team"?"team":child?.kind==="single"?"direct":row.kind,adaptive:true,routeStatus,outcome:workflow.outcome,status,
+        ...(child?.kind==="single"?{runId:child.id}:child?.kind==="team"?{taskId:child.id}:{}),...(workflow.reason?{error:workflow.reason}:{})};
+    }
     const continued = row.run_id ? this.db.query<{ id: string }, [string]>(`SELECT latest.id FROM agent_runs AS original
       JOIN agent_runs AS latest ON latest.turn_id = original.turn_id
       WHERE original.id = ? ORDER BY latest.attempt_no DESC, latest.created_at DESC LIMIT 1`).get(row.run_id) : null;
@@ -265,10 +299,12 @@ export class RoomCommandService {
     const command = this.get(id);
     return command?.kind === "team" && !!command.taskId && !!this.deps.isTeamActive?.(command.taskId);
   }
-  async wait(id: string): Promise<void> { await this.discussions.get(id)?.completion; }
+  async wait(id: string): Promise<void> { if(this.deps.adaptive?.get(id)){await this.deps.adaptive.wait(id);return;} await this.discussions.get(id)?.completion; }
   async cancel(id: string): Promise<void> {
     const command = this.get(id);
     if (!command) throw new Error("command_not_found");
+    if(this.deps.adaptive?.get(id)){await this.deps.adaptive.cancel(id);return;}
+    await this.deps.verification?.cancelRoot(command.roomId, command.commandId);
     if (command.runId && this.deps.cancelDirect) return this.deps.cancelDirect(command.runId);
     const discussion = this.discussions.get(id);
     if (!discussion) throw new Error("command_not_active");

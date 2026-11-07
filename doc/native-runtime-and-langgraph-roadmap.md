@@ -8,7 +8,11 @@
 
 ---
 
-## 📌 进度更新（2026-11-05）
+## 📌 进度更新（2026-11-08）
+
+P03–P04 已将真实产物验证与 LangGraph 父治理工作流接入生产；它复用 Native/Coordinator/TeamRunner 执行子任务，未注册第二个 Agent 工具循环。兼容性实验后的实际接线、冻结策略、预算/审批/恢复证据见 [成本路由与验证](cost-aware-routing.md)。以下 2026-11-05/06 条目是原阶段记录，不代表此次 P04 仍未接通。
+
+### 原阶段记录（2026-11-05）
 
 2026-11-06 补充：成本感知 P00 已用现有 LangGraph.js 完成 Bun SQLite checkpoint、跨进程中断/恢复、取消和任务幂等实验。官方原生 SQLite saver 在当前 Node 26 环境构建失败，经过测试的 Bun 存储适配见 [复用决定](cost-aware-reuse.md)。这属于兼容性验证；生产团队的唯一编排所有者仍为现有 Coordinator/TeamRunner，adaptive 工作流留在 P04。逐调用成本与预算已通过独立 broker 接通 Native/Gateway，不以图编排迁移为前置。
 

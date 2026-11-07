@@ -10,6 +10,8 @@
  *   RoomCollaboration —— 讨论 / 协作 / Boss / 审批 / 监督（仅 cowork）
  *   ExecutionPolicySnapshot —— 某次执行真正生效的策略（执行开始时冻结）
  */
+import { DEFAULT_ROUTE_LIMITS, type RouteLimits } from "./routing";
+
 export type RoomKind = "chat" | "cowork";
 
 export type DiscussionMode = "off" | "round_robin" | "debate";
@@ -26,9 +28,9 @@ export type CollaborationRuntimeCapabilities = {
 };
 
 export const COLLABORATION_RUNTIME_CAPABILITIES: CollaborationRuntimeCapabilities = {
-  supportedStrategies: ["single", "team"],
+  supportedStrategies: ["single", "adaptive", "team"],
   discussion: true,
-  routing: false,
+  routing: true,
   planConfirmation: ["user"],
 };
 
@@ -70,6 +72,10 @@ export type RoomCollaborationSettings = {
       lightweightAgentId: string | null;
       complexAgentId: string | null;
       criticalAgentId: string | null;
+      limits?: RouteLimits;
+      fallbackAgentIds?: string[];
+      /** Missing means the room's configured connections; [] explicitly denies all egress. */
+      allowedProviderIds?: string[];
     };
   };
   discussion: {
@@ -140,6 +146,7 @@ export function normalizeCollaborationSettings(raw: unknown): RoomCollaborationS
     : "single";
   const legacyDiscussionEnabled = r.discussionMode === "round_robin" || r.discussionMode === "debate";
   const rounds = Number(discussion.maxRounds);
+  const limits = routing.limits && typeof routing.limits === "object" ? routing.limits as Record<string,unknown> : null;
   return {
     strategy: pickEnum(EXECUTION_STRATEGIES, r.strategy, legacyStrategy),
     assignment: {
@@ -155,6 +162,13 @@ export function normalizeCollaborationSettings(raw: unknown): RoomCollaborationS
         lightweightAgentId: str(routing.lightweightAgentId),
         complexAgentId: str(routing.complexAgentId),
         criticalAgentId: str(routing.criticalAgentId),
+        ...(limits ? { limits: {
+          maxRetries: limits.maxRetries === undefined ? DEFAULT_ROUTE_LIMITS.maxRetries : Number(limits.maxRetries),
+          maxEscalations: limits.maxEscalations === undefined ? DEFAULT_ROUTE_LIMITS.maxEscalations : Number(limits.maxEscalations),
+          maxTotalModelCalls: limits.maxTotalModelCalls === undefined ? DEFAULT_ROUTE_LIMITS.maxTotalModelCalls : Number(limits.maxTotalModelCalls),
+        } } : {}),
+        ...(routing.fallbackAgentIds === undefined ? {} : { fallbackAgentIds: strings(routing.fallbackAgentIds) }),
+        ...(routing.allowedProviderIds === undefined ? {} : { allowedProviderIds: strings(routing.allowedProviderIds) }),
       },
     },
     discussion: {
@@ -220,16 +234,22 @@ export function validateCollaborationSettings(room: RoomShape, settings: RoomCol
     }
   }
 
-  if (settings.strategy === "adaptive" && !multiMember) errors.push("adaptive_requires_multiple_members");
   if (settings.strategy === "team" && !multiMember) errors.push("team_requires_multiple_members");
-  if (settings.strategy !== "single") {
+  if (settings.strategy === "team") {
     if (!settings.assignment.coordinatorAgentId) errors.push("coordinator_required");
     else if (!members.has(settings.assignment.coordinatorAgentId)) errors.push("coordinator_must_be_room_member");
   }
   if (settings.assignment.callableAgentIds.some((id) => !members.has(id))) {
     errors.push("callable_agents_must_be_room_members");
   }
-  if (settings.assignment.routing.mode === "manual" && settings.strategy === "team") {
+  const routing = settings.assignment.routing;
+  if (routing.fallbackAgentIds?.some(id => !members.has(id) || (settings.assignment.callableAgentIds.length > 0 && !settings.assignment.callableAgentIds.includes(id)))) errors.push("fallback_agents_must_be_callable_members");
+  if (routing.allowedProviderIds?.some(id => typeof id !== "string" || !id.trim())) errors.push("allowed_providers_invalid");
+  if (routing.limits) {
+    const limits=routing.limits;
+    if (!Number.isInteger(limits.maxRetries)||limits.maxRetries<0||limits.maxRetries>3||!Number.isInteger(limits.maxEscalations)||limits.maxEscalations<0||limits.maxEscalations>3||!Number.isInteger(limits.maxTotalModelCalls)||limits.maxTotalModelCalls<1||limits.maxTotalModelCalls>100) errors.push("routing_limits_invalid");
+  }
+  if (settings.assignment.routing.mode === "manual") {
     for (const [role, id] of [
       ["lightweight", settings.assignment.routing.lightweightAgentId],
       ["complex", settings.assignment.routing.complexAgentId],
@@ -274,7 +294,7 @@ export function resolveCollaborationDefaults(
   const speakerOrder = normalized.discussion.speakerOrder.filter((id) => members.has(id));
   return {
     ...normalized,
-    strategy: room.agentIds.length < 2 ? "single" : normalized.strategy,
+    strategy: room.agentIds.length < 2 && normalized.strategy === "team" ? "single" : normalized.strategy,
     assignment: {
       ...normalized.assignment,
       coordinatorAgentId: coordinator,
@@ -286,6 +306,7 @@ export function resolveCollaborationDefaults(
         lightweightAgentId: role(normalized.assignment.routing.lightweightAgentId),
         complexAgentId: role(normalized.assignment.routing.complexAgentId),
         criticalAgentId: role(normalized.assignment.routing.criticalAgentId),
+        ...(normalized.assignment.routing.fallbackAgentIds ? { fallbackAgentIds: normalized.assignment.routing.fallbackAgentIds.filter(id => members.has(id)) } : {}),
       },
     },
     discussion: {

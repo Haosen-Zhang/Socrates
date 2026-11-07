@@ -1,0 +1,7 @@
+.routing-preset-controls, .routing-policy { min-width: 0; }
+.routing-field, .routing-form-grid label { display: grid; gap: 5px; min-width: 0; }
+.routing-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.routing-policy .pixel-input { padding: 5px 7px; min-width: 0; width: 100%; box-sizing: border-box; }
+.routing-evidence { max-height: min(300px, 25dvh); overflow: auto; overscroll-behavior: contain; }
+.routing-code { max-height: 160px; overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; font-size: inherit; }
+@media (max-width: 720px) { .routing-form-grid { grid-template-columns: minmax(0, 1fr); } }

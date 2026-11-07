@@ -1,0 +1,73 @@
+// Uses work-foundation-fixture.ts and the local Vite preview; never a live sidecar.
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
+const metadata=JSON.parse(readFileSync('/private/tmp/socrates-work-foundation-fixture.json','utf8'));
+assert.equal(metadata.source,'synthetic-work-foundation');
+const api=async path=>{const response=await fetch(`http://127.0.0.1:${metadata.port}${path}`,{headers:{Authorization:`Bearer ${metadata.token}`}});assert.ok(response.ok);return response.json();};
+assert.equal((await api('/health')).controlledFixture,true);
+const {chromium}=await import(process.env.SOCRATES_PLAYWRIGHT_MODULE ?? 'playwright');
+const browser=await chromium.launch({channel:'chrome',headless:true});
+const page=await browser.newPage({viewport:{width:1420,height:1000}});
+const out='output/playwright/scroll-regressions';mkdirSync(out,{recursive:true});
+const checks=[],errors=[];
+const check=(name,ok)=>{checks.push({name,ok});console.log(`${ok?'PASS':'FAIL'} ${name}`);assert.ok(ok,name);};
+const until=async(fn)=>{for(let n=0;n<100;n++){if(await fn())return;await page.waitForTimeout(50);}throw Error('Condition did not settle');};
+page.on('pageerror',error=>errors.push(String(error)));
+await page.addInitScript(({port,token})=>{localStorage.clear();localStorage.setItem('socrates.lang','en');window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener(){}};window.__TAURI_INTERNALS__={invoke:async command=>command==='sidecar_handshake'?{port,token}:null,metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback:()=>0,unregisterCallback(){}}},metadata);
+const sidebar=page.locator('[data-navigation-sidebar]');
+const scroll=page.locator('.pixel-room-content .overflow-y-auto').first();
+const composer=page.locator('textarea.pixel-composer-input:visible');
+const inViewport=locator=>locator.evaluate(node=>{const box=node.getBoundingClientRect();return box.height>0&&box.top>=0&&box.bottom<=innerHeight+1;});
+const select=async title=>{const row=sidebar.getByText(title,{exact:true});if(!await row.isVisible())await sidebar.getByRole('button',{expanded:false}).first().click();await row.click();await composer.waitFor();};
+const wheel=async(delta)=>{const box=await scroll.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+Math.min(box.height/2,150));await page.mouse.wheel(0,delta);await page.waitForTimeout(200);};
+try{
+  const counts=await api('/__foundation/counts');
+  await page.goto('http://127.0.0.1:45348/');await page.getByRole('tab',{name:'Work',exact:true}).click();await select('Foundation Work');
+  const storeUrl=await page.evaluate(()=>performance.getEntriesByType('resource').map(e=>e.name).filter(n=>new URL(n).pathname==='/src/store.ts').at(-1));
+  // Change only the controlled renderer projection to cover long result/paused states.
+  await page.evaluate(async url=>{const {useStore}=await import(url);const task=useStore.getState().currentMultiTask;if(!task)throw Error('Missing fixture task');useStore.setState({currentMultiTask:{...task,workPackages:task.workPackages.map((item,i)=>({...item,result:Array.from({length:60},(_,j)=>`Synthetic completed step ${i}.${j}: recorded result for scrolling.`).join('\n')}))}})},storeUrl);
+  await page.waitForTimeout(100);
+  check('Long Work results stay inside the viewport',await inViewport(page.locator('.pixel-room-content')));
+  check('Long Work results leave the composer reachable',await inViewport(composer));
+  check('The room timeline has a bounded scroll range',await scroll.evaluate(node=>node.clientHeight>=120&&node.scrollHeight>node.clientHeight+500));
+  await scroll.evaluate(node=>{node.scrollTop=0;});await wheel(600);
+  check('Wheel down scrolls long work packages',await scroll.evaluate(node=>node.scrollTop)>400);
+  await wheel(-300);const readingTop=await scroll.evaluate(node=>node.scrollTop);
+  check('Wheel up scrolls back through work packages',readingTop>0&&readingTop<500);
+  const tabs=page.getByRole('tablist',{name:'Project navigation'});
+  await tabs.getByRole('tab',{name:'Tasks',exact:true}).click();await tabs.getByRole('tab',{name:'Rooms',exact:true}).click();
+  check('Returning to Rooms preserves the reading position',Math.abs(await scroll.evaluate(node=>node.scrollTop)-readingTop)<3);
+  await page.getByRole('button',{name:'Room members',exact:true}).first().click();
+  const members=page.getByRole('dialog',{name:'Room members',exact:true});await members.waitFor();await members.getByRole('button',{name:/^(Close|Dismiss)$/}).click();
+  await wheel(300);check('Closing members restores room scrolling',await scroll.evaluate(node=>node.scrollTop)>readingTop+100);
+  await page.screenshot({path:`${out}/work-scroll.png`,animations:'disabled'});
+  const resize=page.getByRole('separator',{name:'Resize composer'});
+  await resize.focus();const initial=Number(await resize.getAttribute('aria-valuenow'));await resize.press('ArrowUp');
+  await until(async()=>Number(await resize.getAttribute('aria-valuenow'))>initial);
+  check('Composer keyboard resize remains reachable',await inViewport(composer));
+  const dragBox=await resize.boundingBox();await page.mouse.move(dragBox.x+dragBox.width/2,dragBox.y+dragBox.height/2);await page.mouse.down();await page.mouse.move(dragBox.x+dragBox.width/2,dragBox.y-80,{steps:8});await page.mouse.up();
+  await until(async()=>Number(await resize.getAttribute('aria-valuenow'))>initial+60);
+  check('Composer vertical pointer drag changes its height',await inViewport(composer));
+  await page.getByRole('button',{name:'Reset height',exact:true}).click();
+  await page.setViewportSize({width:760,height:700});await wheel(-300);
+  check('Narrow Work window keeps long results and input within bounds',await inViewport(page.locator('.pixel-room-content'))&&await inViewport(composer));
+  await page.locator('.pixel-room-content > div > details > summary').click();
+  check('Expanded costs keep the composer inside a short window',await inViewport(composer));
+  await page.locator('.pixel-room-content > div > details > summary').click();
+  await page.evaluate(async url=>{const {useStore}=await import(url);const task=useStore.getState().currentMultiTask;useStore.setState({currentMultiTask:{...task,state:'paused',workPackages:task.workPackages.map(item=>({...item,state:'budget_stopped',failureReason:'user_paused'}))}});},storeUrl);
+  await page.getByRole('button',{name:'View work packages',exact:true}).click();
+  await wheel(600);
+  check('Paused work package results remain scrollable without a composer',await scroll.evaluate(node=>node.clientHeight>0&&node.scrollTop>200));
+  check('Jumping to work packages does not move the app outside the window',await page.evaluate(()=>document.body.scrollTop===0&&document.documentElement.scrollTop===0)&&await inViewport(page.locator('.pixel-room-content')));
+  await page.screenshot({path:`${out}/narrow-scroll.png`,animations:'disabled'});
+  await page.setViewportSize({width:1420,height:1000});await select('Foundation Second Room');
+  // Single-agent views share the same parent and must not grow with long messages.
+  await page.evaluate(async url=>{const {useStore}=await import(url);const old=useStore.getState().sessionMessages[0];const now=new Date().toISOString();useStore.setState({sessionMessages:[{...old,id:'synthetic-long-result',sessionId:useStore.getState().currentSessionId,role:'assistant',kind:'text',authorId:'fixture-a',content:'Synthetic single-agent result\n'.repeat(150),parts:[],status:'completed',createdAt:now}]});},storeUrl);
+  check('Single-agent long output also keeps its composer reachable',await inViewport(composer));
+  await page.getByRole('tab',{name:'Chat',exact:true}).click();await select('Foundation Chat');
+  await wheel(-500);check('Chat history still scrolls independently',await scroll.evaluate(node=>node.scrollHeight>node.clientHeight&&node.scrollTop<node.scrollHeight-node.clientHeight-100));
+  check('No model requests were triggered by navigation or resizing',JSON.stringify(await api('/__foundation/counts'))===JSON.stringify(counts));
+  check('No renderer exceptions',errors.length===0);
+}finally{
+  writeFileSync(`${out}/checks.json`,JSON.stringify({checks,errors},null,2));await page.screenshot({path:`${out}/final.png`,animations:'disabled'}).catch(()=>{});await browser.close();
+}

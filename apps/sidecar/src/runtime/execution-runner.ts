@@ -15,6 +15,7 @@ import { ConversationMemoryStore } from "../store/conversation-memory-store";
 import { buildConversationContext } from "../services/conversation-context";
 import { ToolExecutionJournal } from "../tools/execution-journal";
 import { repairToolHistory } from "../tools/repair-history";
+import { taskVerificationTarget, type WorkVerification } from "../services/work-verification";
 
 type ActiveExecution = { runtimeSessionId: string; leaseId: string; calls: Map<string, { name: string; input: unknown }>; cancelled: boolean; paused: boolean;
   package?: { sessionId: string; agentId: string; turnId: string }; controller?: AbortController;
@@ -51,6 +52,7 @@ export class ExecutionRunner {
     private readonly events: EventStore,
     private readonly executionEvents: ExecutionEventStore,
     private readonly history?: HistoryStore,
+    private readonly verification?: WorkVerification,
   ) { this.usage = new UsageCollector(db); }
 
   /** Member execution uses the same runtime/tool/approval pipeline as direct work. */
@@ -125,6 +127,11 @@ export class ExecutionRunner {
         try { this.leases.renew(lease.id, new Date(Date.now() + 30 * 60_000).toISOString()); }
         catch { controller.abort(new Error("workspace_lease_lost")); }
       }, 5 * 60_000);
+      // Recheck while owning the writer lease: a queued sibling may have
+      // invalidated a prerequisite after the scheduler selected this package.
+      const assignment = this.db.query<{definition_json:string},[string]>("SELECT definition_json FROM work_packages WHERE id=?").get(input.packageId);
+      const dependencies = assignment ? (JSON.parse(assignment.definition_json) as {dependencies:string[]}).dependencies : [];
+      for (const dependency of dependencies) if (this.verification && !this.verification.view(taskVerificationTarget(this.db,input.taskId,dependency)).gatePassed) throw new Error("work_package_dependency_verification_invalidated");
       this.assertEvidenceCurrent(workspace.workspace_id, input.plan.evidence);
       if (input.previousRunId) {
         new ToolExecutionJournal(this.db, this.executionEvents).recoverInterrupted(input.previousRunId);
@@ -139,7 +146,7 @@ export class ExecutionRunner {
       const handle = await this.runtimes.open({ runtimeKind: "native_ai_sdk", agentSessionId: runId,
         sessionId: task.sessionId, agentId: input.agentId, workspaceId: workspace.workspace_id,
         runtimeOptions: { sandbox: "workspace-write", runProfile: profile, costRunId: runId,
-          costRootTaskId: task.config.clientRequestId ?? task.id, costWorkPackageId: input.packageId } });
+          costRootTaskId: task.config.costRootTaskId ?? task.config.clientRequestId ?? task.id, costWorkPackageId: input.packageId, costRouteAttemptId:task.config.adaptiveAttemptId } });
       active.runtimeSessionId = handle.id;
       controller.signal.throwIfAborted();
       const preamble: ConversationStoredMessage[] = previous.length ? [{ ...userContext, messageId: `${runId}:continuation`,
@@ -195,6 +202,10 @@ export class ExecutionRunner {
         this.executionEvents.append({ ...identity, eventId: `run-budget:${runId}`, type: "run.interrupted", payload: { reason: "budget_exhausted" } });
         return { status: "budget_stopped", runId, result, reason: "budget_exhausted" };
       }
+      await this.verification?.verify(taskVerificationTarget(this.db, input.taskId, input.packageId), {
+        runId, agentId:input.agentId,signal:controller.signal,leaseId:active.leaseId,
+      });
+      controller.signal.throwIfAborted();
       this.executionEvents.append({ ...identity, eventId: `turn-completed:${runId}`, type: "turn.completed", payload: {} });
       this.executionEvents.append({ ...identity, eventId: `run-completed:${runId}`, type: "run.completed", payload: {} });
       return { status: "completed", runId, result };
@@ -294,7 +305,7 @@ export class ExecutionRunner {
         runtimeKind: "native_ai_sdk", agentSessionId: `${taskId}:${task.attemptNo}:execution`,
         sessionId: task.sessionId, agentId: task.executionAgentId!, workspaceId: session.workspace_id,
         runtimeOptions: { sandbox: "workspace-write", runProfile: profile, costRunId: taskId,
-          costRootTaskId: task.config.clientRequestId ?? taskId },
+          costRootTaskId: task.config.costRootTaskId ?? task.config.clientRequestId ?? taskId, costRouteAttemptId:task.config.adaptiveAttemptId },
       });
       runtimeSessionId = handle.id;
       active.runtimeSessionId = runtimeSessionId;
@@ -370,7 +381,11 @@ export class ExecutionRunner {
       }
       if (!active.cancelled && !active.paused) {
         await persistSegment();
-        this.tasks.transition(taskId, { type: "complete" });
+        const verification = await this.verification?.verify(taskVerificationTarget(this.db, taskId), {
+          runId:taskId,agentId:task.executionAgentId!,signal:controller.signal,leaseId:lease?.id,
+        });
+        controller.signal.throwIfAborted();
+        this.tasks.transition(taskId, verification && !verification.gatePassed ? {type:"pause",reason:"verification_required"} : { type: "complete" });
         this.executionEvents.append({
           eventId: `multi-turn-completed:${taskId}:${turnId}`,
           sessionId: task.sessionId,

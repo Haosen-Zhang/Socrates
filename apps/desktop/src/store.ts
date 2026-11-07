@@ -114,7 +114,7 @@ export type MultiTaskView = {
   workPackages?: WorkPackageView[];
   summary?: string | TeamSummaryView;
   id: string; sessionId: string; prompt: string; state: TaskState; resumeFrom: string | null; terminalReason: string | null; outcomeUnknown: boolean; requiresExecutionReview: boolean;
-  config: { speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string; effortByAgent?: Record<string, ReasoningEffort>; fallbackOrderByAgent?: Record<string, string[]> };
+  config: { clientRequestId?: string; costRootTaskId?:string; routeDecisionId?:string; speakingOrder: string[]; maxRounds: number; synthesizerId: string; executionAgentId: string; effortByAgent?: Record<string, ReasoningEffort>; fallbackOrderByAgent?: Record<string, string[]> };
   plan: MultiPlan | null;
   turns: Array<{ id: string; phase: string; round: number; agentId: string; snapshot: Record<string, unknown>; status: string; content: string | null; usage: { inputTokens?: number; outputTokens?: number } | null; error: string | null }>;
   pendingApprovals: PendingApproval[];
@@ -151,11 +151,11 @@ export type RoomProjection = Pick<Store,
   "sessionMessages" | "agentEvents" | "agentStreamText" | "pendingApprovals" | "agentRunning" | "agentError" | "activeAgentRunId" |
   "multiTasks" | "currentMultiTask" | "multiRunning" | "multiError" | "multiStreamAgentId" | "multiStreamText" |
   "messages" | "streaming" | "roomSending" | "chatError" | "tasks" | "activeTaskId" | "failedTurn" | "usageSummaries" |
-  "draftAttachments" | "draftWorkspaceRefs" | "workspacePathResults" | "lastStoppedRunId" | "activeRoomCommandId">;
+  "draftAttachments" | "draftWorkspaceRefs" | "workspacePathResults" | "lastStoppedRunId" | "activeRoomCommandId" | "adaptiveCommandId" | "adaptiveStatus" | "commandExecutionKind">;
 const emptyRoomProjection = (): RoomProjection => ({
   multiLiveStreams: {},
   historyGeneration: 0, historyRequestVersion: 0, historyRevision: 0, taskRequestVersion: 0, attachmentError: null, attachmentImports: 0,
-  activeRoomCommandId:null, lastStoppedRunId: null, sessionMessages: [], agentEvents: [], agentStreamText: "", pendingApprovals: [], agentRunning: false, agentError: null, activeAgentRunId: null,
+  activeRoomCommandId:null, adaptiveCommandId:null, adaptiveStatus:null, commandExecutionKind:null, lastStoppedRunId: null, sessionMessages: [], agentEvents: [], agentStreamText: "", pendingApprovals: [], agentRunning: false, agentError: null, activeAgentRunId: null,
   multiTasks: [], currentMultiTask: null, multiRunning: false, multiError: null, multiStreamAgentId: null, multiStreamText: "",
   messages: [], streaming: null, roomSending: false, chatError: null, tasks: [], activeTaskId: null, failedTurn: null, usageSummaries: [],
   draftAttachments: [], draftWorkspaceRefs: [], workspacePathResults: [],
@@ -171,6 +171,9 @@ export type Store = {
   attachmentError: string | null;
   attachmentImports: number;
   activeRoomCommandId:string | null;
+  adaptiveCommandId:string | null;
+  adaptiveStatus:string|null;
+  commandExecutionKind:"direct"|"discussion"|"team"|null;
   lastStoppedRunId: string | null;
   roomNavigation: RoomNavigation;
   roomProjections: Record<string, RoomProjection>;
@@ -181,7 +184,7 @@ export type Store = {
   setComposerMentions: (roomId:string,mentions:SelectedMention[]) => void;
   setComposerDraft: (roomId: string, text: string) => void;
   setAppMode: (mode: "chat" | "cowork") => Promise<void>;
-  sendRoomCommand: (content: string, mentions: RoomMention[], intent: RoomCommandIntent, clientRequestId?: string, roomId?: string, costOptions?: CostOptions) => Promise<boolean>;
+  sendRoomCommand: (content: string, mentions: RoomMention[], intent: RoomCommandIntent, clientRequestId?: string, roomId?: string, costOptions?: CostOptions, verificationPlanId?:string, routingCandidateId?:string) => Promise<boolean>;
   continueAgentRun: () => Promise<void>;
   applyMemberTemplate: (sessionId: string, agentId: string) => Promise<void>;
   retryWorkPackage: (taskId: string, packageId: string, confirmOutcomeUnknown?:boolean) => Promise<void>;
@@ -434,6 +437,67 @@ export const useStore = create<Store>((set, get) => {
   };
 
   const commandObservers = new Map<string, { roomId: string; generation: number; controller: AbortController; promise: Promise<void> }>();
+  const adaptiveObservers = new Map<string,{roomId:string;generation:number;controller:AbortController;promise:Promise<void>}>();
+  type CommandView={commandId:string;kind:"direct"|"discussion"|"team";status:string;adaptive?:boolean;routeStatus?:string;runId?:string;taskId?:string;error?:string};
+  const observeAdaptiveCommand=(roomId:string,commandId:string)=>{
+    const generation=roomView(roomId).historyGeneration;
+    const existing=adaptiveObservers.get(commandId);if(existing?.generation===generation)return existing.promise;
+    existing?.controller.abort();const controller=new AbortController();
+    updateRoom(roomId,{activeRoomCommandId:commandId,adaptiveCommandId:commandId});
+    const valid=()=>!controller.signal.aborted&&roomView(roomId).historyGeneration===generation&&roomView(roomId).adaptiveCommandId===commandId;
+    let childController:AbortController|undefined,childId:string|undefined;
+    const seenRuns=new Set<string>();
+    const followTeam=(taskId:string,signal:AbortSignal)=>{void(async()=>{
+      let cursor=0;
+      while(valid()&&!signal.aborted&&childId===taskId){
+        const response=await sidecarFetch(hs(),`/room-commands/${commandId}/events?afterSeq=${cursor}`,{signal});
+        if(!response.ok)await requireOk(response);
+        for await(const raw of streamSseEvents(response)){
+          if(!valid()||signal.aborted||childId!==taskId)break;
+          const event=raw as {seq?:number;taskId?:string;type?:string;turnId?:string;agentId?:string;text?:string;payload?:{runId?:string;packageId?:string;agentId?:string;event?:RuntimeEvent}};
+          if(event.taskId!==taskId||typeof event.seq!=="number"||event.seq<=cursor)continue;cursor=event.seq;
+          const runtime=event.payload?.event;
+          const key=event.payload?.runId??event.payload?.packageId??event.turnId??event.agentId??taskId;
+          const text=runtime?.type==="text_delta"?runtime.text:event.type==="delta"?event.text:undefined;
+          if(text)updateRoom(roomId,v=>({multiLiveStreams:{...v.multiLiveStreams,[key]:{agentId:event.payload?.agentId??event.agentId??"",text:(v.multiLiveStreams[key]?.text??"")+text}}}));
+          if(["turn_completed","multi.package_finished"].includes(event.type??""))updateRoom(roomId,v=>{const streams={...v.multiLiveStreams};delete streams[key];return {multiLiveStreams:streams};});
+        }
+        if(!signal.aborted)await new Promise(resolve=>setTimeout(resolve,500));
+      }
+    })().catch(error=>{if(valid()&&!signal.aborted)updateRoom(roomId,{multiError:String(error)});});};
+    const promise=(async()=>{
+      try{
+        while(valid()){
+          try {
+          const response=await sidecarFetch(hs(),`/room-commands/${commandId}`,{signal:controller.signal});
+          if(response.status===404||response.status===410){updateRoom(roomId,{activeRoomCommandId:null,adaptiveCommandId:null,agentRunning:false,multiRunning:false});return;}
+          const command=await requireOk<CommandView>(response);
+          if(!valid())return;
+          const terminal=["completed","failed","cancelled","revoked"].includes(command.status);
+          updateRoom(roomId,{commandExecutionKind:command.kind,adaptiveStatus:command.routeStatus??command.status,agentError:terminal&&command.status==="failed"&&command.kind==="direct"?command.error??null:null,multiError:terminal&&command.status==="failed"&&command.kind==="team"?command.error??null:null});
+          const nextChild=command.taskId??command.runId;
+          if(nextChild!==childId){childController?.abort();childController=undefined;childId=nextChild;updateRoom(roomId,{multiLiveStreams:{},agentStreamText:"",agentEvents:[],activeAgentRunId:null,pendingApprovals:[],...(command.kind!=="team"?{currentMultiTask:null,multiRunning:false}:{})});}
+          if(command.kind==="team"&&command.taskId){
+            await get().loadMultiTask(command.taskId,roomId);
+            if(!childController&&!terminal){childController=new AbortController();followTeam(command.taskId,childController.signal);}
+          }else if(command.runId&&!seenRuns.has(command.runId)){
+            seenRuns.add(command.runId);
+            updateRoom(roomId,{activeAgentRunId:command.runId});
+            void get().resumeAgentRun(roomId,command.runId,0);
+          }
+          if(!valid())return;
+          const executing=["pending","running","assessing"].includes(command.routeStatus??command.status);
+          updateRoom(roomId,{agentRunning:executing&&command.kind!=="team",multiRunning:executing&&command.kind==="team"});
+          if(terminal){await refreshMessages(roomId,generation);updateRoom(roomId,{activeRoomCommandId:null,adaptiveCommandId:null,agentRunning:false,multiRunning:false,multiLiveStreams:{}});await get().loadSessions();return;}
+          } catch(error) {if(valid())updateRoom(roomId,{agentError:error instanceof Error?error.message:String(error)});}
+          if(valid())await new Promise(resolve=>setTimeout(resolve,500));
+        }
+      }
+      finally{childController?.abort();}
+    })();
+    const observer={roomId,generation,controller,promise};adaptiveObservers.set(commandId,observer);
+    void promise.finally(()=>{if(adaptiveObservers.get(commandId)===observer)adaptiveObservers.delete(commandId);});return promise;
+  };
   const observeCommand = (roomId: string, commandId: string, taskId?: string) => {
     const generation = roomView(roomId).historyGeneration;
     const existing = commandObservers.get(commandId);
@@ -513,9 +577,9 @@ export const useStore = create<Store>((set, get) => {
     return observation;
   };
   const restoreTeamObserver = async (roomId: string, taskId: string, generation: number) => {
-    const commands=await requireOk<Array<{commandId:string;kind:string;taskId?:string}>>(await sidecarFetch(hs(),`/room-commands/rooms/${roomId}`));
+    const commands=await requireOk<Array<{commandId:string;kind:string;taskId?:string;adaptive?:boolean}>>(await sidecarFetch(hs(),`/room-commands/rooms/${roomId}`));
     const command=commands.find(item=>item.kind === "team" && item.taskId === taskId);
-    if(command && roomView(roomId).historyGeneration === generation) void observeCommand(roomId,command.commandId,taskId);
+    if(command && roomView(roomId).historyGeneration === generation) void (command.adaptive?observeAdaptiveCommand(roomId,command.commandId):observeCommand(roomId,command.commandId,taskId));
   };
 
   /** POST 到当前房间的流式端点并消费 SSE，把事件映射进 store。
@@ -617,7 +681,7 @@ export const useStore = create<Store>((set, get) => {
   return {
     multiLiveStreams: {},
     historyGeneration: 0, historyRequestVersion: 0, historyRevision: 0, taskRequestVersion: 0, attachmentError: null, attachmentImports: 0,
-    activeRoomCommandId:null, lastStoppedRunId:null, roomNavigation: storedRoomNavigation(), pendingRoomRequests:{}, approvalDecisionKeys:{}, roomProjections: {}, composerDrafts: {}, composerMentions: {},
+    activeRoomCommandId:null, adaptiveCommandId:null, adaptiveStatus:null, commandExecutionKind:null, lastStoppedRunId:null, roomNavigation: storedRoomNavigation(), pendingRoomRequests:{}, approvalDecisionKeys:{}, roomProjections: {}, composerDrafts: {}, composerMentions: {},
     setComposerMentions: (roomId, mentions) => set(state => ({composerMentions:{...state.composerMentions,[roomId]:mentions}})),
     setComposerDraft: (roomId, text) => set(state => ({composerDrafts: {...state.composerDrafts, [roomId]: text}})),
     setAppMode: async mode => {
@@ -668,7 +732,7 @@ export const useStore = create<Store>((set, get) => {
         void get().resumeAgentRun(sessionId,started.runId);
       } catch(error) {if(roomView(sessionId).historyGeneration === generation) updateRoom(sessionId,{agentRunning:false,agentError:error instanceof Error ? error.message : String(error)});}
     },
-    sendRoomCommand: async (content, mentions, intent, clientRequestId, targetRoomId, costOptions) => {
+    sendRoomCommand: async (content, mentions, intent, clientRequestId, targetRoomId, costOptions, verificationPlanId, routingCandidateId) => {
       const roomId = targetRoomId ?? get().currentSessionId;
       if (!roomId) return false;
       const view = roomView(roomId);
@@ -679,15 +743,15 @@ export const useStore = create<Store>((set, get) => {
       const requestedCostBody = commandCostBody(costOptions);
       const semanticCostBody = { ...requestedCostBody };
       delete semanticCostBody.quoteId;
-      const fingerprint=JSON.stringify({content,mentions,intent,attachments,workspaceRefs,...semanticCostBody});
+      const fingerprint=JSON.stringify({content,mentions,intent,attachments,workspaceRefs,verificationPlanId,routingCandidateId,...semanticCostBody});
       const pending=get().pendingRoomRequests[roomId];
       const retryingPending = pending?.fingerprint === fingerprint && (clientRequestId === undefined || clientRequestId === pending.clientRequestId);
       const costBody = retryingPending && pending.costOptions ? commandCostBody(pending.costOptions) : requestedCostBody;
       clientRequestId ??= retryingPending ? pending.clientRequestId : crypto.randomUUID();
       set(state=>({pendingRoomRequests:{...state.pendingRoomRequests,[roomId]:{fingerprint,clientRequestId:clientRequestId!,costOptions:costBody}}}));
-      updateRoom(roomId,{activeRoomCommandId:`pending:${clientRequestId}`,agentRunning:true,lastStoppedRunId:null,agentError:null,agentEvents:[],agentStreamText:"",historyRevision:view.historyRevision+1,taskRequestVersion:view.taskRequestVersion+1,multiStreamAgentId:mentions.find(mention=>mention.type==="agent")?.type === "agent" ? (mentions.find(mention=>mention.type==="agent") as {agentId:string}).agentId : get().sessions.find(session=>session.id===roomId)?.primaryAgentId ?? null});
+      updateRoom(roomId,{adaptiveCommandId:null,adaptiveStatus:null,commandExecutionKind:null,activeRoomCommandId:`pending:${clientRequestId}`,agentRunning:true,lastStoppedRunId:null,agentError:null,agentEvents:[],agentStreamText:"",historyRevision:view.historyRevision+1,taskRequestVersion:view.taskRequestVersion+1,multiStreamAgentId:mentions.find(mention=>mention.type==="agent")?.type === "agent" ? (mentions.find(mention=>mention.type==="agent") as {agentId:string}).agentId : get().sessions.find(session=>session.id===roomId)?.primaryAgentId ?? null});
       try {
-        const response = await sidecarFetch(hs(),"/room-commands",{method:"POST",body:JSON.stringify({roomId,clientRequestId,content,mentions,intent,attachmentIds:attachments,workspaceRefIds:workspaceRefs,...costBody})});
+        const response = await sidecarFetch(hs(),"/room-commands",{method:"POST",body:JSON.stringify({roomId,clientRequestId,content,mentions,intent,attachmentIds:attachments,workspaceRefIds:workspaceRefs,verificationPlanId,routingCandidateId,...costBody})});
         if (!response.ok) {
           const rejected = await response.json() as { error?: string };
           // These errors prove that this quote was rejected before dispatch.
@@ -697,11 +761,12 @@ export const useStore = create<Store>((set, get) => {
           }
           throw new Error(rejected.error ?? `request failed (${response.status})`);
         }
-        const started = await response.json() as {kind:"direct"|"discussion"|"team";runId?:string;taskId?:string;commandId:string};
+        const started = await response.json() as CommandView;
         if (roomView(roomId).historyGeneration !== generation) return false;
         set(state=>{const pendingRoomRequests={...state.pendingRoomRequests};delete pendingRoomRequests[roomId];return {pendingRoomRequests};});
-        updateRoom(roomId, current => ({activeRoomCommandId:started.commandId, draftAttachments: current.draftAttachments.filter(item => !attachments.includes(item.id)), draftWorkspaceRefs: current.draftWorkspaceRefs.filter(item => !workspaceRefs.includes(item.id))}));
-        if (started.kind === "direct" && started.runId) {
+        updateRoom(roomId, current => ({activeRoomCommandId:started.commandId,commandExecutionKind:started.kind, draftAttachments: current.draftAttachments.filter(item => !attachments.includes(item.id)), draftWorkspaceRefs: current.draftWorkspaceRefs.filter(item => !workspaceRefs.includes(item.id))}));
+        if(started.adaptive){void observeAdaptiveCommand(roomId,started.commandId);}
+        else if (started.kind === "direct" && started.runId) {
           updateRoom(roomId,{activeAgentRunId:started.runId});
           const storage=cursorStorage(); if(storage) writeActiveAgentRunCursor(storage,{sessionId:roomId,runId:started.runId,afterSeq:0});
           void get().resumeAgentRun(roomId, started.runId, 0);
@@ -935,9 +1000,10 @@ export const useStore = create<Store>((set, get) => {
       const sessionId = get().currentSessionId;
       if (!sessionId || get().agentRunning || get().multiRunning) return;
       const generation=roomView(sessionId).historyGeneration + 1;
-      updateRoom(sessionId,{historyGeneration:generation,activeAgentRunId:null,activeRoomCommandId:null,lastStoppedRunId:null,agentError:null,multiError:null,pendingApprovals:[],agentEvents:[],agentStreamText:"",multiStreamText:"",multiLiveStreams:{}});
+      updateRoom(sessionId,{historyGeneration:generation,activeAgentRunId:null,activeRoomCommandId:null,adaptiveCommandId:null,adaptiveStatus:null,commandExecutionKind:null,lastStoppedRunId:null,agentError:null,multiError:null,pendingApprovals:[],agentEvents:[],agentStreamText:"",multiStreamText:"",multiLiveStreams:{}});
       for (const observer of activeAgentObservers.values()) if(observer.sessionId === sessionId) observer.controller.abort();
       for (const observer of commandObservers.values()) if(observer.roomId === sessionId) observer.controller.abort();
+      for (const observer of adaptiveObservers.values()) if(observer.roomId === sessionId) observer.controller.abort();
       const storage=cursorStorage();
       const saved=storage ? readActiveAgentRunCursor(storage) : null;
       if(storage && saved?.sessionId === sessionId) clearActiveAgentRunCursor(storage,saved.runId);
@@ -956,9 +1022,16 @@ export const useStore = create<Store>((set, get) => {
       await Promise.all([get().loadCurrentUsage(id),get().loadMultiTasks(id)]);
       if(roomView(id).historyGeneration !== generation) return;
       const revision=roomView(id).historyRevision;
-      const commands=await requireOk<Array<{commandId:string;kind:string;status:string;runId?:string;taskId?:string;error?:string}>>(await sidecarFetch(hs(),`/room-commands/rooms/${id}`));
+      const commands=await requireOk<CommandView[]>(await sidecarFetch(hs(),`/room-commands/rooms/${id}`));
       if(roomView(id).historyGeneration !== generation || roomView(id).historyRevision !== revision) return;
       const latest=commands[0];
+      updateRoom(id,{commandExecutionKind:latest?.kind??null,adaptiveStatus:latest?.adaptive?latest.routeStatus??latest.status:null});
+      if(latest?.adaptive){
+        if(latest.taskId)await get().loadMultiTask(latest.taskId,id);else updateRoom(id,{currentMultiTask:null,multiRunning:false});
+        if(!["completed","failed","cancelled","revoked"].includes(latest.status))void observeAdaptiveCommand(id,latest.commandId);
+        else updateRoom(id,{adaptiveCommandId:null,activeRoomCommandId:null,agentRunning:false,multiRunning:false,agentError:latest.kind==="direct"?latest.error??null:null,multiError:latest.kind==="team"?latest.error??null:null});
+        return;
+      }
       if(latest?.kind === "direct" && latest.runId) {
         if(["running","dispatching","preparing","awaiting_approval"].includes(latest.status)) {
           if(!activeAgentObservers.has(latest.runId)) {
@@ -1055,10 +1128,10 @@ export const useStore = create<Store>((set, get) => {
                   }));
                   if (event.type === "status" && event.status === "failed") {
                     runError = event.message ?? "agent_run_failed";
-                    set({ agentError: runError });
+                    if(!roomView(sessionId).adaptiveCommandId)set({ agentError: runError });
                   } else if (event.type === "status" && event.status === "interrupted") {
                     runError = event.message === "budget_exhausted" ? "budget_exhausted" : tr(get().lang, "task_cancelled_notice");
-                    set({ agentError: runError, lastStoppedRunId:runId });
+                    if(!roomView(sessionId).adaptiveCommandId)set({ agentError: runError, lastStoppedRunId:runId });
                   }
                 }
               }
@@ -1077,7 +1150,7 @@ export const useStore = create<Store>((set, get) => {
         } catch (error) {
           runError = error instanceof Error ? error.message : String(error);
           if (!valid() || controller.signal.aborted) return false;
-          if (currentRun(sessionId) === runId) set({ agentError: runError });
+          if (currentRun(sessionId) === runId && !roomView(sessionId).adaptiveCommandId) set({ agentError: runError });
           const run = await pollAgentRunUntilTerminal(
             async () => requireOk<AgentRunStatusView>(
               await sidecarFetch(hs(), `/agent/runs/${runId}`),
@@ -1097,9 +1170,9 @@ export const useStore = create<Store>((set, get) => {
           set({
             agentRunning: false,
             activeAgentRunId: null,
-            activeRoomCommandId:null,
+            ...(!roomView(sessionId).adaptiveCommandId?{activeRoomCommandId:null}:{}),
             pendingApprovals: [],
-            agentError: runError,
+            ...(!roomView(sessionId).adaptiveCommandId?{agentError:runError}:{}),
             ...(!runError ? {lastStoppedRunId:null} : {}),
           });
         }
@@ -1185,7 +1258,7 @@ export const useStore = create<Store>((set, get) => {
     cancelMultiTask: async () => {
       const task = get().currentMultiTask;
       if (!task) return;
-      await requireOk(await sidecarFetch(hs(), `/multi/tasks/${task.id}/cancel`, { method: "POST" }));
+      await requireOk(await sidecarFetch(hs(), task.config.costRootTaskId?`/room-commands/${task.config.costRootTaskId}/cancel`:`/multi/tasks/${task.id}/cancel`, { method: "POST" }));
       await get().loadMultiTask(task.id,task.sessionId);
     },
     pauseMultiTask: async () => {

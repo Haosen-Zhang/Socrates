@@ -537,3 +537,40 @@ it("projects Worker text and approvals from Team SSE without a mounted polling c
   expect(useStore.getState().multiLiveStreams).toEqual({});
   expect(useStore.getState().sessionMessages.map(message=>message.id)).toEqual(["worker-answer"]);
 });
+
+it("follows an adaptive parent across temporary transport failure and a completed child without declaring success", async () => {
+  let reads=0,finish=false;
+  const command={commandId:"adaptive-root",kind:"team",adaptive:true,taskId:"adaptive-child",status:"paused",routeStatus:"awaiting_verification"};
+  const task={id:"adaptive-child",sessionId:"a",state:"completed",config:{costRootTaskId:"adaptive-root"},pendingApprovals:[],usageSummaries:[]};
+  route=url=>{
+    if(url.endsWith("/room-commands/rooms/a"))return json([command]);
+    if(url.endsWith("/room-commands/adaptive-root")){
+      reads++;if(reads===1)throw Error("temporary local connection loss");
+      return json({...command,status:finish?"completed":"paused",routeStatus:finish?"completed":"awaiting_verification"});
+    }
+    if(url.includes("/room-commands/adaptive-root/events"))return new Response("",{headers:{"content-type":"text/event-stream"}});
+    if(url.endsWith("/multi/tasks/adaptive-child"))return json(task);
+    if(url.endsWith("/sessions"))return json(sessions);
+    return json([]);
+  };
+  try {
+    await useStore.getState().selectAgentSession("a");
+    await eventually(()=>reads>=2&&useStore.getState().currentMultiTask?.id===task.id);
+    expect(useStore.getState().commandExecutionKind).toBe("team");
+    expect(useStore.getState().adaptiveCommandId).toBe("adaptive-root");
+    expect(useStore.getState().activeRoomCommandId).toBe("adaptive-root");
+    expect(useStore.getState().multiRunning).toBe(false);
+    expect(useStore.getState().adaptiveStatus).toBe("awaiting_verification");
+    expect(useStore.getState().agentError).toBeNull();
+    await useStore.getState().selectAgentSession("b");
+    finish=true;
+    await eventually(()=>useStore.getState().roomProjections.a.adaptiveCommandId===null);
+    expect(useStore.getState().currentSessionId).toBe("b");
+    expect(useStore.getState().currentMultiTask).toBeNull();
+    expect(useStore.getState().commandExecutionKind).toBeNull();
+    expect(useStore.getState().roomProjections.a.commandExecutionKind).toBe("team");
+  } finally {
+    finish=true;
+    await eventually(()=>useStore.getState().roomProjections.a?.adaptiveCommandId===null||useStore.getState().adaptiveCommandId===null);
+  }
+});
