@@ -1417,7 +1417,7 @@ export default function ChatPage({ onOpenSettings, settingsOpen=false }: { onOpe
       <div className={mode === "cowork" ? "work-main" : "contents"}>
       {mode === "cowork" && <WorkContextBar context={workContext} project={project?.label} onChange={changeWorkContext}/>}
       {mode === "cowork" && workContext !== "rooms" && <WindowRoomToolbar title={project?.label ?? t("work_project")} sidebarHidden={chrome.sidebarHidden} toolbarMode={chrome.toolbarMode} collapseLabel={t("sidebar_collapse")} expandLabel={t("sidebar_expand")} onToggleSidebar={chrome.onToggleSidebar}/>}
-      <section className="pixel-room-content flex min-w-0 flex-1 flex-col" style={mode === "cowork" && workContext !== "rooms" ? {display:"none"} : undefined} inert={mode === "cowork" && workContext !== "rooms" ? true : undefined}>
+      <section className="pixel-room-content flex min-h-0 min-w-0 flex-1 flex-col" style={mode === "cowork" && workContext !== "rooms" ? {display:"none"} : undefined} inert={mode === "cowork" && workContext !== "rooms" ? true : undefined}>
         {currentSessionId ? (currentSession?.collaboration.strategy === "team" ? <MultiAgentSession key={currentSessionId} chrome={chrome} /> : <SingleAgentSession key={currentSessionId} chrome={chrome} />) : currentRoomId ? (
           <>
             <WindowRoomToolbar
