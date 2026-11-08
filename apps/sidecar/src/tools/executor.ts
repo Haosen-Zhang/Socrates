@@ -1,3 +1,4 @@
+import { arenaToolBoundary } from "./arena-boundary";
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { approvalMatchesExecution, isStructuredExecutionError, StructuredExecutionError, truncateToolOutput, validateJsonSchemaInput, type ExecutionErrorDetail, type PermissionEvaluation, type ToolCallStatus, type ToolContext, type ToolDefinition } from "@socrates/core";
@@ -74,6 +75,8 @@ export class ToolExecutor {
       return this.toRecord(existing);
     }
     const tool = this.registry.resolve(request.name, request.generation);
+    const boundary = arenaToolBoundary(this.db, context.sessionId, tool.capability, request.input);
+    if (boundary.denial) permission = {...permission,effect:"deny",reasonCode:boundary.denial};
     const validation = validateJsonSchemaInput(tool.inputSchema, request.input);
     if (validation.length) throw inputError(validation);
     const semanticValidation = tool.validateInput?.(request.input) ?? [];
@@ -147,6 +150,9 @@ export class ToolExecutor {
       let failure: ExecutionErrorDetail | undefined;
       try {
         if (context.signal.aborted) throw new Error("tool_cancelled");
+        const boundary = arenaToolBoundary(this.db, context.sessionId, tool.capability, input);
+        if (boundary.denial) throw new StructuredExecutionError({code:boundary.denial.toUpperCase(),category:"permission",phase:"approval",retryable:false,message:boundary.denial});
+        context = {...context,protectedPaths:boundary.protectedPaths};
         const declaredTimeout = tool.timeoutMs ?? 30_000;
         const requestedTimeout = tool.capability === "shell" && input && typeof input === "object" && "timeoutMs" in input
           && typeof input.timeoutMs === "number" ? input.timeoutMs : declaredTimeout;

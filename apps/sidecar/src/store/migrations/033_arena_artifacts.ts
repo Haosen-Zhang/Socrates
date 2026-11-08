@@ -1,0 +1,2 @@
+import {migrationChecksum,type Migration} from '../migrations';
+export const arenaArtifactsMigration:Migration={version:33,name:'arena_artifacts',checksum:migrationChecksum('033:explicit-arena-artifact-apply:v1'),up(db){db.exec(`CREATE TABLE arena_artifact_applications(experiment_id TEXT NOT NULL REFERENCES arena_experiments(id) ON DELETE CASCADE,request_id TEXT NOT NULL,fingerprint TEXT NOT NULL,state TEXT NOT NULL,result_json TEXT NOT NULL,PRIMARY KEY(experiment_id,request_id));`);}};

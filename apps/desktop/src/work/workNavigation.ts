@@ -1,5 +1,5 @@
-export type WorkContext = "rooms" | "tasks" | "squads";
-export const WORK_CONTEXTS: readonly WorkContext[] = ["rooms", "tasks", "squads"];
+export type WorkContext = "rooms" | "tasks" | "squads" | "memory" | "arena";
+export const WORK_CONTEXTS: readonly WorkContext[] = ["rooms", "tasks", "squads", "memory", "arena"];
 export function activityStatusKey(status: string): string {
   if (["queued", "running", "dispatching", "preparing", "discussing", "synthesizing", "revising_plan", "executing", "planning", "reviewing", "summarizing", "waiting_workspace"].includes(status)) return "task_status_running";
   if (["awaiting_approval", "awaiting_plan_approval", "awaiting_tool_approval"].includes(status)) return "task_status_awaiting_confirmation";
@@ -10,9 +10,9 @@ export function activityStatusKey(status: string): string {
 export function nextWorkContext(current: WorkContext, key: string, composing: boolean): WorkContext | null {
   if (composing) return null;
   if (key === "Home") return "rooms";
-  if (key === "End") return "squads";
+  if (key === "End") return WORK_CONTEXTS[WORK_CONTEXTS.length - 1]!;
   if (key !== "ArrowLeft" && key !== "ArrowRight") return null;
-  return WORK_CONTEXTS[(WORK_CONTEXTS.indexOf(current) + (key === "ArrowRight" ? 1 : 2)) % 3]!;
+  return WORK_CONTEXTS[(WORK_CONTEXTS.indexOf(current) + (key === "ArrowRight" ? 1 : WORK_CONTEXTS.length - 1)) % WORK_CONTEXTS.length]!;
 }
 export function projectRoomIds(rooms: readonly {id: string; kind: string; workspaceId: string|null; archived?: boolean}[], workspaceId: string|null): string[] {
   return workspaceId ? rooms.filter(room => room.kind === "cowork" && room.workspaceId === workspaceId).map(room => room.id) : [];

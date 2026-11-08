@@ -1,3 +1,5 @@
+import { assertArenaInvocationAllowed } from "./arena-budget";
+import { ProjectMemoryService } from "./project-memory";
 import type { Database } from "bun:sqlite";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS, MAX_AUTOMATIC_OUTPUT_TOKENS, requestCostUpperBound, StructuredExecutionError,
@@ -48,11 +50,13 @@ export class ModelInvocationBroker {
     this.budgets = new BudgetLedger(db); this.events = new EventStore(db);
   }
 
-  async *invoke<T>(request: InvocationRequest, open: (controls: { maxOutputTokens: number; outputTokenCeiling: number }) => AsyncIterable<T>,
+  async *invoke<T>(request: InvocationRequest, open: (controls: { maxOutputTokens: number; outputTokenCeiling: number; memoryContext: string }) => AsyncIterable<T>,
     observe: (part: T) => InvocationObservation | undefined): AsyncIterable<T> {
     request.signal?.throwIfAborted();
     const context = request.context;
     this.assertCurrentPermission(context, request);
+    const memoryContext = new ProjectMemoryService(this.db).context({roomId:context.roomId,rootTaskId:context.rootTaskId,providerId:context.providerConnectionId}).context;
+    request = {...request,payload:{original:request.payload,memoryContext}};
     invocationModelOptions(request);
     const command = this.db.query<{ input_json: string }, [string]>("SELECT input_json FROM room_commands WHERE id=? AND status!='revoked'").get(context.rootTaskId);
     const original = command ? JSON.parse(command.input_json) as { maxOutputTokens?: number; quoteId?: string } : {};
@@ -131,7 +135,7 @@ export class ModelInvocationBroker {
       frozenInvocationRoute(this.db,context,request);
       this.ledger.markSent(identity.invocationId);
       this.event(identity, "pricing.snapshot_selected", { priceSnapshotId: applicablePrice?.id ?? null });
-      for await (const part of open({ maxOutputTokens, outputTokenCeiling })) {
+      for await (const part of open({ maxOutputTokens, outputTokenCeiling, memoryContext })) {
         const next = observe(part);
         if (next) {
           failed ||= next.failed === true;
@@ -164,8 +168,8 @@ export class ModelInvocationBroker {
       yield* broker.invoke({ context: request.invocation, providerType: request.providerType, baseUrl: request.baseUrl,
         modelId: request.modelId, payload: { system: request.system, messages: request.messages },
         maxOutputTokens: request.maxOutputTokens, signal: request.signal, reasoningEffort: request.reasoningEffort, temperature: request.temperature },
-      async function* ({ maxOutputTokens, outputTokenCeiling }) {
-        for await (const event of gateway({ ...request, maxOutputTokens })) {
+      async function* ({ maxOutputTokens, outputTokenCeiling, memoryContext }) {
+        for await (const event of gateway({ ...request, messages: memoryContext ? [...request.messages,{role:"user",content:memoryContext}] : request.messages, maxOutputTokens })) {
           yield event.type === "done" ? { ...event, outputTokenLimit: maxOutputTokens, outputTokenCeiling } : event;
         }
       },
@@ -174,6 +178,7 @@ export class ModelInvocationBroker {
   }
 
   private assertCurrentPermission(context: GatewayInvocationContext, request: InvocationRequest): void {
+    assertArenaInvocationAllowed(this.db, context.roomId, context.agentId, context.providerConnectionId);
     const provider = this.db.query<{ enabled: number; base_url: string; type: string }, [string]>("SELECT enabled,base_url,type FROM providers WHERE id=?").get(context.providerConnectionId);
     if (!provider?.enabled || provider.base_url !== request.baseUrl || provider.type !== request.providerType) throw new Error("invocation_provider_unavailable");
     this.authorizeProvider?.(context.providerConnectionId);

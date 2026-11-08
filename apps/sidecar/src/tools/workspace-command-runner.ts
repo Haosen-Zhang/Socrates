@@ -337,6 +337,10 @@ async function macOsSandboxInvocation(
     // after the initial scan. Network denial applies to descendants as well.
     `(deny file-read* file-write* (regex ${sandboxString(`${workspaceRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(.*\\/)?(\\.env|\\.ssh|\\.gnupg|\\.aws|\\.npmrc|\\.pypirc)(/.*)?$`)}))`,
     ...secretDenials,
+    ...(context.protectedPaths ?? []).flatMap(path => {
+      const target = new WorkspacePathPolicy(workspaceRoot).resolveMutationTarget(path).absolutePath;
+      return [`(deny file-write* (literal ${sandboxString(target)}) (subpath ${sandboxString(target)}))`, ...ancestorPaths(target).filter(parent=>parent.startsWith(workspaceRoot)).map(parent=>`(deny file-write-unlink (literal ${sandboxString(parent)}))`)];
+    }),
     // Approved project validators may invoke interpreters, compilers, linkers
     // and freshly built workspace binaries. Every descendant inherits the
     // same filesystem/network sandbox; the public API still uses exact argv.

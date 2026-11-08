@@ -133,7 +133,7 @@ it("stops later model activity after an unresolved tool even when the SDK swallo
   expect(error).toBeInstanceOf(StructuredExecutionError);
   expect((error as StructuredExecutionError).detail.code).toBe("TOOL_EXECUTION_UNRESOLVED");
   expect(nextSample).toBe(false);
-  expect(s.db.query("SELECT status FROM tool_calls WHERE id = 'unresolved'").get()).toEqual({ status: "running" });
+  expect(s.db.query("SELECT status FROM tool_calls").all()).toEqual([{ status: "running" }]);
   s.db.close();
 });
 

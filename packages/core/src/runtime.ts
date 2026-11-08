@@ -26,8 +26,8 @@ export function isTerminalRuntimeStatus(status: RuntimeStatus): boolean {
 
 export type RuntimeEvent =
   | { type: "text_delta"; text: string }
-  | { type: "tool_call"; callId: string; name: string; input: unknown }
-  | { type: "tool_result"; callId: string; name: string; output: ToolOutputRef; isError: boolean }
+  | { type: "tool_call"; callId: string; providerCallId?: string; name: string; input: unknown }
+  | { type: "tool_result"; callId: string; providerCallId?: string; name: string; output: ToolOutputRef; isError: boolean }
   | { type: "approval_required"; requestId: string; callId: string; risk?: ToolRisk; kind?: string; toolGeneration?: number; policyVersion?: number; freshHumanRequired?: boolean }
   | { type: "usage"; usage: NormalizedUsage }
   | { type: "status"; status: RuntimeStatus; message?: string }

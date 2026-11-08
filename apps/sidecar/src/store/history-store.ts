@@ -603,8 +603,8 @@ export class HistoryStore {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
     parts.forEach((part, ordinal) => {
       if (part.type === "text" || part.type === "reasoning_summary") insert.run(crypto.randomUUID(), messageId, ordinal, part.type, part.text, null, null, null);
-      else if (part.type === "tool_call") insert.run(crypto.randomUUID(), messageId, ordinal, part.type, null, null, part.callId, JSON.stringify({ name: part.name, input: part.input }));
-      else if (part.type === "tool_result") insert.run(crypto.randomUUID(), messageId, ordinal, part.type, null, null, part.callId, JSON.stringify({ output: part.output, isError: part.isError }));
+      else if (part.type === "tool_call") insert.run(crypto.randomUUID(), messageId, ordinal, part.type, null, null, part.callId, JSON.stringify({ name: part.name, input: part.input, providerCallId: part.providerCallId }));
+      else if (part.type === "tool_result") insert.run(crypto.randomUUID(), messageId, ordinal, part.type, null, null, part.callId, JSON.stringify({ output: part.output, isError: part.isError, providerCallId: part.providerCallId }));
       else if (part.type === "image" || part.type === "file") insert.run(crypto.randomUUID(), messageId, ordinal, part.type, null, part.attachmentId, null, JSON.stringify(part));
       else insert.run(crypto.randomUUID(), messageId, ordinal, part.type, null, null, null, JSON.stringify(part));
     });
@@ -615,8 +615,8 @@ export class HistoryStore {
     return rows.flatMap((row): MessagePart[] => {
       const data = row.metadata_json ? JSON.parse(row.metadata_json) : {};
       if (row.type === "text" || row.type === "reasoning_summary") return [{ type: row.type, text: row.text ?? "" }];
-      if (row.type === "tool_call") return [{ type: "tool_call", callId: row.tool_call_id, name: data.name, input: data.input }];
-      if (row.type === "tool_result") return [{ type: "tool_result", callId: row.tool_call_id, output: data.output, isError: data.isError === true }];
+      if (row.type === "tool_call") return [{ type: "tool_call", callId: row.tool_call_id, ...(typeof data.providerCallId === "string" ? {providerCallId:data.providerCallId} : {}), name: data.name, input: data.input }];
+      if (row.type === "tool_result") return [{ type: "tool_result", callId: row.tool_call_id, ...(typeof data.providerCallId === "string" ? {providerCallId:data.providerCallId} : {}), output: data.output, isError: data.isError === true }];
       if (row.type === "image") return [{ type: "image", attachmentId: row.attachment_id, mediaType: data.mediaType ?? "application/octet-stream", alt: data.alt }];
       if (row.type === "file") return [{ type: "file", attachmentId: row.attachment_id, mediaType: data.mediaType ?? "application/octet-stream", filename: data.filename ?? "file" }];
       if (row.type === "workspace_ref") return [{ type: "workspace_ref", refId: data.refId ?? "", relativePath: data.relativePath ?? "", snapshotHash: data.snapshotHash, attachmentId: data.attachmentId }];

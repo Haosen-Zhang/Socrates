@@ -1,3 +1,5 @@
+import { ProjectMemoryService } from "./project-memory";
+import { linkArenaBudget } from "./arena-budget";
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { DEFAULT_MAX_OUTPUT_TOKENS, WORK_ACTIVITY_LIMIT, WORK_ACTIVITY_EVENT_LIMIT, isRoutingEnabled, resolveRoomCommand, type ModelGateway, type OrchestrationAgent, type RoomCommandInput, type SessionMessage, type WorkActivityRecord, type WorkActivityEvent, type WorkActivityDetail } from "@socrates/core";
@@ -127,8 +129,10 @@ export class RoomCommandService {
     this.db.transaction(() => {
       this.db.query("INSERT INTO room_commands (id,room_id,client_request_id,fingerprint,input_json,kind,status,created_at,updated_at) VALUES (?,?,?,?,?,?,'dispatching',?,?)")
         .run(id, room.id, input.clientRequestId, fingerprint, JSON.stringify({...input,...(quote?{quoteId:quote.id}:{})}), resolved.kind, now, now);
+      new ProjectMemoryService(this.db).freeze(id, room.id);
       if(route)this.deps.routing!.freeze(id,route,quote?.id ?? null);
       if (input.budget) new BudgetLedger(this.db).create({ rootTaskId: id, roomId: room.id, ...input.budget });
+      linkArenaBudget(this.db, room.id, id);
       if (input.verificationPlanId) this.deps.verification!.bind(input.verificationPlanId,{roomId:room.id,rootTaskId:id});
     })();
     try {

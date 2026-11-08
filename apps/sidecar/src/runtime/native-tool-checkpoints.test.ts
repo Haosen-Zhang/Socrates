@@ -25,7 +25,7 @@ function setup(stream: NativeStreamFactory) {
   });
   const manager = new RuntimeManager(db, events);
   manager.register("native", () => runtime);
-  return { db, events, executor, manager, effects: () => effects };
+  return { db, events, executor, manager, runtime, effects: () => effects };
 }
 
 it("binds tool execution to the real Run/Turn/Step even when SDK execution is eager", async () => {
@@ -38,7 +38,7 @@ it("binds tool execution to the real Run/Turn/Step even when SDK execution is ea
   const handle = await s.manager.open({ runtimeKind: "native", agentSessionId: "as", sessionId: "s", agentId: "a" });
   await s.manager.run(handle.id, { taskId: "run", turnId: "turn", prompt: "write" });
   const event = s.events.listAfter("run", 0).find((item) => item.type === "tool.attempt.started");
-  expect(event?.coordinates).toMatchObject({ turnId: "turn", stepId: "run:turn:turn:step:1", toolOperationId: "c" });
+  expect(event?.coordinates).toMatchObject({ turnId: "turn", stepId: "run:turn:turn:step:1", toolOperationId: expect.stringMatching(/^native-tool-v1:[a-f0-9]{64}$/) });
   expect(s.db.query("SELECT task_id, turn_id FROM tool_calls").get()).toEqual({ task_id: "run", turn_id: "turn" });
 });
 
@@ -75,4 +75,9 @@ it("requires fresh approval for an unknown mutation despite a room allow policy"
   await s.manager.run(handle.id, { taskId: "run", turnId: "turn", prompt: "continue" });
   expect(effect).toBe("ask");
   expect(s.effects()).toBe(0);
+});
+
+it('deferred approved SDK execution retains its original operation and provider step',async()=>{
+ const s=setup(async function*({tools,requestApproval}){yield {type:'provider_attempt_started',attemptNo:1};const permission={...tools.write!.permission(),effect:'ask' as const};yield {type:'tool_call',callId:'shared',name:'write',input:{}};const request={requestId:'approve-deferred',callId:'shared',name:'write',input:{},permission};const granted=requestApproval(request);yield {type:'approval_required',...request};await granted;yield {type:'provider_attempt_completed',attemptNo:1};yield {type:'provider_step_completed'};yield {type:'provider_attempt_started',attemptNo:1};const output=await tools.write!.execute({},'shared',permission);yield {type:'tool_result',callId:'shared',name:'write',output,isError:false};yield {type:'provider_attempt_completed',attemptNo:1};yield {type:'provider_step_completed'};});
+ const handle=await s.manager.open({runtimeKind:'native',agentSessionId:'as',sessionId:'s',agentId:'a'});let requested:string|undefined,resultId:string|undefined;await s.manager.run(handle.id,{taskId:'run',turnId:'turn',prompt:'controlled',onEvent:async event=>{if(event.type==='tool_call'){requested=event.callId;expect(event.providerCallId).toBe('shared');}if(event.type==='approval_required')await s.runtime.answerApproval(event.requestId,'allow_once');if(event.type==='tool_result'){resultId=event.callId;expect(event.providerCallId).toBe('shared');}}});expect(resultId).toBe(requested);expect(s.events.listAfter('run',0).find(e=>e.type==='tool.attempt.started')?.coordinates).toMatchObject({toolOperationId:requested,stepId:'run:turn:turn:step:1'});expect(s.effects()).toBe(1);s.db.close();
 });

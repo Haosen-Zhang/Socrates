@@ -680,12 +680,12 @@ export class ConversationMemoryStore implements ConversationMemoryStoreContract 
       } else if (part.type === "tool_call") {
         insert.run(
           crypto.randomUUID(), messageId, ordinal, part.type, null, null, part.callId,
-          JSON.stringify({ name: part.name, input: part.input }),
+          JSON.stringify({ name: part.name, input: part.input, providerCallId: part.providerCallId }),
         );
       } else {
         insert.run(
           crypto.randomUUID(), messageId, ordinal, part.type, null, null, part.callId,
-          JSON.stringify({ output: part.output, isError: part.isError }),
+          JSON.stringify({ output: part.output, isError: part.isError, providerCallId: part.providerCallId }),
         );
       }
     });
@@ -713,10 +713,10 @@ export class ConversationMemoryStore implements ConversationMemoryStoreContract 
         ...(typeof metadata.attachmentId === "string" ? { attachmentId: metadata.attachmentId } : {}),
       }];
       if (part.type === "tool_call" && part.tool_call_id) return [{
-        type: "tool_call", callId: part.tool_call_id, name: String(metadata.name ?? ""), input: metadata.input,
+        type: "tool_call", callId: part.tool_call_id, ...(typeof metadata.providerCallId === "string" ? {providerCallId:metadata.providerCallId} : {}), name: String(metadata.name ?? ""), input: metadata.input,
       }];
       if (part.type === "tool_result" && part.tool_call_id) return [{
-        type: "tool_result", callId: part.tool_call_id,
+        type: "tool_result", callId: part.tool_call_id, ...(typeof metadata.providerCallId === "string" ? {providerCallId:metadata.providerCallId} : {}),
         output: metadata.output as ToolOutputRef,
         isError: metadata.isError === true,
       }];

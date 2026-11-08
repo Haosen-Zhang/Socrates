@@ -1,3 +1,13 @@
+import { ArenaArtifactService } from "./services/arena-artifacts";
+import { arenaArtifactRoutes } from "./routes/arena-artifacts";
+import { ArenaStrategyService } from "./services/arena-strategy";
+import { arenaStrategyRoutes } from "./routes/arena-strategy";
+import { ArenaService } from "./services/arena-service";
+import { arenaRoutes } from "./routes/arena";
+import { FlightRecorderService } from "./services/flight-recorder";
+import { flightRecorderRoutes } from "./routes/flight-recorder";
+import { ProjectMemoryService } from "./services/project-memory";
+import { projectMemoryRoutes } from "./routes/project-memory";
 import { adaptiveEvidenceContext } from "./services/adaptive-context";
 import { Hono } from "hono";
 import { VerificationService } from "./services/verification-service";
@@ -293,6 +303,15 @@ app.route(
   }),
 );
 app.route("/room-commands", roomCommandRoutes(commands));
+const arena = new ArenaService(db,{sessions,workspaces,commands,verification,quotes:new TaskQuoteService(db,sessions,routing),baseDirectory:join(defaultDataDir(),"arena"),});
+arena.recover();
+app.route("/arena",arenaRoutes(arena));
+app.route("/arena-artifacts",arenaArtifactRoutes(new ArenaArtifactService(db,workspaces,leases)));
+app.route("/arena-strategy",arenaStrategyRoutes(new ArenaStrategyService(db,sessions,id=>arena.results(id))));
+const flightRecorder = new FlightRecorderService(db);
+const projectMemory = new ProjectMemoryService(db);
+app.route("/flight-recorder",flightRecorderRoutes(flightRecorder));
+app.route("/project-memory",projectMemoryRoutes(projectMemory));
 app.route("/verification",verificationRoutes(verification));
 app.route("/routing",routingRoutes(routing,adaptive));
 app.route("/cost", costRoutes(db, sessions, invocationBroker, new TaskQuoteService(db, sessions,routing), costTasks, commands));
@@ -311,12 +330,14 @@ const server = Bun.serve({
 if (server.port === undefined) throw new Error("TCP server has no port");
 
 stopManagedServices = async () => {
+  await arena.shutdown();
   await adaptive.shutdown();
   await verification.shutdown();
   await commands.shutdown();
   await teamRunner.shutdown();
   await executionRunner.shutdown();
   await runSupervisor.shutdown();
+  await flightRecorder.shutdown();
   await mcp.stopAll();
   server.stop(true);
 };
