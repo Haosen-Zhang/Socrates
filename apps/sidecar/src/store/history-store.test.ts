@@ -25,6 +25,14 @@ function fixture() {
 }
 
 describe("HistoryStore", () => {
+  it("retains provider wire IDs separately from durable tool operation IDs", async () => {
+    const f=fixture();
+    try {
+      await f.history.appendMessage({roomId:f.session.id,threadId:`thread:${f.session.id}`,runId:"run",turnId:"turn",agentId:"agent",role:"assistant",kind:"tool_call",content:"",parts:[{type:"tool_call",callId:"operation-scoped",providerCallId:"provider-raw",name:"read_file",input:{path:"a"}}],status:"completed",idempotencyKey:"wire-test"});
+      expect(new SessionStore(f.db).listMessages(f.session.id)[0]?.parts?.[0]).toMatchObject({callId:"operation-scoped",providerCallId:"provider-raw"});
+    } finally {rmSync(f.dir,{recursive:true,force:true});f.db.close();}
+  });
+
   it("serializes strict hash-chained records and deduplicates record IDs", async () => {
     const f = fixture();
     try {

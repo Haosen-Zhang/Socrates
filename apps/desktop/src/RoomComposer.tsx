@@ -1,3 +1,4 @@
+import { ChatMemoryBinding } from "./project-memory/ChatMemoryBinding";
 import { useEffect, useRef, useState } from "react";
 import type { ConversationSession } from "@socrates/core";
 import { useStorePick } from "./selectors";
@@ -318,6 +319,7 @@ export default function RoomComposer({
           {t(error)}
         </p>
       )}
+      {!work && <ChatMemoryBinding key={session.id} roomId={session.id}/>}
       {work && <AttachmentTray />}
       <ComposerCostControls session={session} content={draft} mentions={retainSelectedMentions(draft.trim(), selected).map(item => item.mention)}
         intent={behavior === "team" ? "execute" : behavior} attachmentIds={draftAttachments.map(item => item.id)} workspaceRefIds={draftWorkspaceRefs.map(item => item.id)} disabled={running} onChange={setCost}

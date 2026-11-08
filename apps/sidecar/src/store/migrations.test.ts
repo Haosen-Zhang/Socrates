@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createConsistentBackup, runMigrations, type Migration } from "./migrations";
+import { SessionStore } from "./session-store";
 import { migrations } from "./migrations/index";
 
 describe("migration runner", () => {
@@ -55,4 +56,25 @@ describe("migration runner", () => {
       rmSync(target, { force: true });
     }
   });
+});
+
+
+it("P05-P07 upgrades a persisted P04 database without changing existing rows", () => {
+  const path = `${tmpdir()}/socrates-p05-upgrade-${crypto.randomUUID()}.db`;
+  let db = new Database(path);
+  try {
+    runMigrations(db, migrations.filter(m => m.version <= 28));
+    const room = new SessionStore(db).create({title:"Preserved Chat",mode:"chat",primaryAgentId:"fixture",agents:[{agentId:"fixture",snapshot:{nickname:"Fixture"},executionEligible:false}]});
+    db.query("INSERT INTO session_messages(id,session_id,role,content,status,created_at) VALUES (?,?, 'user','Preserved history','completed','now')").run("kept-message",room.id);
+    const tables = db.query<{name:string},[]>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name!='schema_migrations' ORDER BY name").all().map(r=>r.name);
+    const snapshot = () => Object.fromEntries(tables.map(name=>[name,db.query(`SELECT * FROM "${name}" ORDER BY rowid`).all()]));
+    const before = snapshot();
+    expect(runMigrations(db,migrations)).toEqual([29,30,31,32,33]);
+    expect(snapshot()).toEqual(before);
+    db.close(); db = new Database(path);
+    expect(runMigrations(db,migrations)).toEqual([]);
+    expect(snapshot()).toEqual(before);
+    expect(new SessionStore(db).get(room.id)?.title).toBe("Preserved Chat");
+    expect(db.query("PRAGMA integrity_check").get()).toEqual({integrity_check:"ok"});
+  } finally { db.close(); rmSync(path,{force:true}); }
 });

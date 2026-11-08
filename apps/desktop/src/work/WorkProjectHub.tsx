@@ -6,6 +6,9 @@ import { WORK_PROJECT_KEYS, useStorePick } from "../selectors";
 import { requireOk, sidecarFetch, type Handshake } from "../transport";
 import { activityStatusKey, projectRoomIds, visibleActivities, type ActivityFilter, type WorkContext } from "./workNavigation";
 import RoomTimeline from "../RoomTimeline";
+import FlightRecorderPanel from "../flight-recorder/FlightRecorderPanel";
+import { ProjectMemoryPanel } from "../project-memory/ProjectMemoryPanel";
+import ArenaPanel from "../arena/ArenaPanel";
 import "./work.css";
 
 const statusTone = (status: string) => ["failed", "outcome_unknown"].includes(status) ? "danger" as const
@@ -17,6 +20,7 @@ function statusLabel(status: string, t: (key: string) => string) {
 function ActivityDetail({handshake, selected, open, revision, onClose, onOpenRoom}: {handshake: Handshake; selected: WorkActivityRecord; open:boolean; revision:number; onClose:()=>void; onOpenRoom:()=>void}) {
   const t = useT();
   const [width,setWidth]=useState(390);
+  const [showRecorder,setShowRecorder]=useState(false);
   const [detail,setDetail]=useState<WorkActivityDetail|null>(null), [error,setError]=useState("");
   useEffect(()=>{
     if(!open)return;
@@ -43,6 +47,8 @@ function ActivityDetail({handshake, selected, open, revision, onClose, onOpenRoo
     {activity.error && <ErrorNotice message={t(activity.error)}/>}
     {activity.status === "completed" && <p className="work-review-note">{t("work_review_separate")}</p>}
     <button className="pixel-button pixel-button--primary px-3 py-2" onClick={onOpenRoom}>{t("work_open_room")}</button>
+    <button type="button" className="pixel-button px-3 py-2" aria-expanded={showRecorder} onClick={()=>setShowRecorder(value=>!value)}>{t("work_recorder")}</button>
+    {showRecorder && <FlightRecorderPanel key={selected.id} roomId={selected.roomId} rootTaskId={selected.commandId ?? selected.taskId ?? selected.runId} handshake={handshake} onOpenRelated={onOpenRoom}/>}
     <h3 className="mt-6 mb-3 font-bold">{t("work_events")}</h3>
     {error ? <ErrorNotice message={t("work_activity_failed")}/> : !detail ? <LoadingState label={t("loading")}/> : detail.events.length ?
       <ActivityTimeline items={detail.events.map(event=>({id:event.id,title:t(event.type),description:[event.agentId,event.occurredAt ? undefined : t("work_time_unknown")].filter(Boolean).join(" · "),timestamp:event.occurredAt ?? undefined}))}/> : <EmptyState title={t("work_no_events")}/>}
@@ -76,10 +82,17 @@ export default memo(function WorkProjectHub({workspaceId,context,onOpenRoom}: {w
     };
     void load();return()=>{controller.abort();clearTimeout(timer);};
   },[context,handshake,roomKey,workspaceId,refresh]);
+  const [projectRoom,setProjectRoom]=useState("");
+  const availableRooms=sessions.filter(room=>room.kind==="cowork" && room.workspaceId===workspaceId && !room.archived);
+  const featureRoom=availableRooms.find(room=>room.id===projectRoom) ?? availableRooms[0];
   const selected=rows.find(row=>row.id === selectedId);
   const visible=visibleActivities(rows,query,filter);
   if(!workspaceId)return context === "rooms" ? null : <EmptyState title={t("work_choose_project")} description={t("work_choose_project_hint")}/>;
   return <>
+    {(context === "memory" || context === "arena") && <div className="work-project-hub"><ObjectPage title={t(`work_${context}`)}>
+      <label>{t("work_room")} <select className="pixel-input p-2" value={featureRoom?.id ?? ""} onChange={event=>setProjectRoom(event.target.value)}>{availableRooms.map(room=><option key={room.id} value={room.id}>{room.title}</option>)}</select></label>
+      {!featureRoom ? <EmptyState title={t("work_choose_project")} description={t("work_choose_project_hint")}/> : context === "memory" ? <ProjectMemoryPanel key={featureRoom.id} roomId={featureRoom.id}/> : handshake && <ArenaPanel key={featureRoom.id} roomId={featureRoom.id} handshake={handshake}/>}
+    </ObjectPage></div>}
     {context === "squads" && <ObjectPage title={t("work_squads")}><EmptyState title={t("work_squads_unavailable")} description={t("work_squads_hint")}/></ObjectPage>}
     <div className="work-project-hub" data-work-task-list aria-busy={loading} style={context !== "tasks" ? {display:"none"} : undefined} inert={context !== "tasks" ? true : undefined}>
     <ObjectPage title={t("work_recent_tasks")} description={t("work_recent_hint")} actions={<Tooltip label={t("work_refresh")}><button type="button" className="pixel-button px-3 py-2" onClick={()=>setRefresh(value=>value+1)}>{t("work_refresh")}</button></Tooltip>}>

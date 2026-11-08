@@ -13,8 +13,8 @@ export type MessagePart =
     /** Content-addressed local snapshot used for durable model context. */
     attachmentId?: string;
   }
-  | { type: "tool_call"; callId: string; name: string; input: unknown }
-  | { type: "tool_result"; callId: string; output: ToolOutputRef; isError: boolean }
+  | { type: "tool_call"; callId: string; providerCallId?: string; name: string; input: unknown }
+  | { type: "tool_result"; callId: string; providerCallId?: string; output: ToolOutputRef; isError: boolean }
   | { type: "reasoning_summary"; text: string };
 
 export interface AttachmentRecord {

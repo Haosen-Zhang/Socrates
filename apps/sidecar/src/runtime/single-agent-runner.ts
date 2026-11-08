@@ -943,7 +943,7 @@ export class SingleAgentRunner {
               role: "assistant",
               kind: "tool_call",
               content: "",
-              parts: [{ type: "tool_call", callId: event.callId, name: event.name, input: event.input }],
+              parts: [{ type: "tool_call", callId: event.callId, providerCallId: event.providerCallId, name: event.name, input: event.input }],
               status: "completed",
               idempotencyKey: `tool-call:${prepared.runId}:${event.callId}`,
             });
@@ -960,6 +960,7 @@ export class SingleAgentRunner {
               parts: [{
                 type: "tool_result",
                 callId: event.callId,
+                providerCallId: event.providerCallId,
                 output: event.output,
                 isError: event.isError,
               }],

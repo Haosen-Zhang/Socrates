@@ -172,3 +172,16 @@ Current result: output is managed by the application; users configure money. Exi
 - [x] Complete all gates, real UI checks and progress/reuse documentation; preserve user data and do not push automatically.
 
 Final result (2026-11-08): 1,167 tests / 0 failures, 203 files, 23,146 assertions; types/build/lint passed. Actual Chrome: routing 25, verification 19, scrolling 17 checks passed. Local branch `codex/cost-aware-p03-p04`; runtime/data preserved. See `implementation-progress.md`, `doc/cost-aware-routing.md` and the sanitized validation record for exact evidence, limits and P05–P08 dependencies. No live model, private-data upload, push or release.
+
+## Cost-aware P05–P07 (2026-11-08)
+
+Base: merged PR #147, origin/main `2275657`; branch `codex/cost-aware-p05-p07`. Preserve original checkout/user history/raw outputs. No live/paid model, private uploads or release. User authorizes PR after validated completion.
+
+- [x] P05: incremental local flight recorder, real OTel spans, privacy/export/retention, task UI and integration tests.
+- [x] P06: versioned scoped project memory, FTS5 retrieval, frozen provider manifests, import/export/governance UI and actual context integration.
+- [x] P07: isolated full-task Arena, four frozen variants, shared budgets, objective evidence/metrics, promptfoo integration and project UI.
+- [x] Integrate services/migrations/navigation, validate all gates and real browser, independent review, update progress and submit PR.
+
+Ownership: flight_recorder owns P05 and migration029; project_memory owns P06 and migration030 plus single/coordinator context; agent_arena owns P07 and migration031. Root owns shared assembly/index/navigation, integration fixture/browser gates, review and submission. New SDK dependencies must be coordinated; no concurrent edits to shared files.
+
+Final acceptance: 1,228 tests / 0 failures, types/build/lint; 44 actual Chrome checks; promptfoo full-task evaluation 1/0. P08 remains unstarted. See implementation-progress.md and doc/assets/cost-aware-p05-p07/validation.json.

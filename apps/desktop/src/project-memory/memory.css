@@ -1,0 +1,32 @@
+[data-project-memory] .pixel-button {
+	padding: 0.4rem 0.7rem;
+	margin: 0.2rem;
+}
+[data-project-memory] .pixel-input {
+	padding: 0.5rem;
+}
+[data-project-memory] article {
+	border-color: var(--pixel-border, currentColor);
+}
+[data-project-memory] fieldset {
+	max-height: 12rem;
+	overflow: auto;
+	padding: 0.4rem;
+}
+[data-project-memory] summary {
+	cursor: pointer;
+	padding: 0.4rem 0;
+	font-weight: 600;
+}
+[data-project-memory] > label,
+[data-project-memory] > div > label {
+	display: block;
+	margin: 0.5rem 0;
+}
+[data-project-memory] select {
+	padding: 0.35rem 0.5rem;
+	margin-left: 0.5rem;
+}
+[data-project-memory] input[type="checkbox"] {
+	margin-right: 0.4rem;
+}

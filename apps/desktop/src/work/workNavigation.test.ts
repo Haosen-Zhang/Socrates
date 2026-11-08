@@ -20,11 +20,14 @@ describe("Work navigation boundaries", () => {
   });
   it("provides roving keyboard navigation without consuming IME candidate selection", () => {
     expect(nextWorkContext("rooms", "ArrowRight", false)).toBe("tasks");
-    expect(nextWorkContext("rooms", "ArrowLeft", false)).toBe("squads");
+    expect(nextWorkContext("rooms", "ArrowLeft", false)).toBe("arena");
     expect(nextWorkContext("squads", "Home", false)).toBe("rooms");
-    expect(nextWorkContext("tasks", "End", false)).toBe("squads");
+    expect(nextWorkContext("tasks", "End", false)).toBe("arena");
     expect(nextWorkContext("rooms", "ArrowRight", true)).toBeNull();
     expect(nextWorkContext("rooms", "Enter", false)).toBeNull();
+    expect(nextWorkContext("squads", "ArrowRight", false)).toBe("memory");
+    expect(nextWorkContext("memory", "ArrowRight", false)).toBe("arena");
+    expect(nextWorkContext("arena", "ArrowRight", false)).toBe("rooms");
   });
   it("searches only the fetched project facts and keeps waiting and terminal states distinct", () => {
     const rows = [

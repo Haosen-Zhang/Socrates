@@ -182,7 +182,7 @@ export function createAiSdkNativeStream(
           || part.type === "tool_result",
         errorFromPart: (part) => part.type === "error" ? part.error : null,
         openAttempt: (attemptNo) => {
-          const open = async function* (maxOutputTokens?: number): AsyncIterable<NativeStreamPart> {
+          const open = async function* (maxOutputTokens?: number, memoryContext = ""): AsyncIterable<NativeStreamPart> {
           pending = [];
           hadToolActivity = false;
           let requestId: string | undefined;
@@ -195,7 +195,7 @@ export function createAiSdkNativeStream(
             ...(profile.providerType && profile.modelId
               ? invocationModelOptions({ providerType: profile.providerType, modelId: profile.modelId, baseUrl: profile.baseUrl ?? "",
                 temperature: profile.temperature, reasoningEffort: profile.reasoningEffort }) : { temperature: profile.temperature }),
-            messages,
+            messages: memoryContext ? [...messages, {role: "user" as const, content: memoryContext}] : messages,
             tools,
             toolApproval,
             // The Socrates policy owns retries. One SDK invocation is exactly
@@ -276,7 +276,7 @@ export function createAiSdkNativeStream(
             providerType: profile.providerType, baseUrl: profile.baseUrl ?? "", modelId: profile.modelId,
             payload: { system: input.system, messages, tools: sample.map(({ native }) => native.definition) },
             maxOutputTokens: profile.maxOutputTokens, signal: input.signal, reasoningEffort: profile.reasoningEffort, temperature: profile.temperature },
-          ({ maxOutputTokens }) => open(maxOutputTokens),
+          ({ maxOutputTokens, memoryContext }) => open(maxOutputTokens, memoryContext),
           part => part.type === "usage" ? { usage: { ...Object.fromEntries(Object.entries(part.usage).filter(([key, value]) =>
             ["inputTokens", "outputTokens", "totalTokens", "cachedInputTokens", "cacheWriteTokens", "reasoningTokens"].includes(key) && value !== null)),
             ...part.rawUsage }, requestId: part.requestId, finishReason: part.finishReason } : part.type === "error" ? { failed: true } : undefined);
@@ -385,7 +385,7 @@ export function toAiSdkModelMessages(history: RuntimeConversationMessage[]): Mod
           toolNames.set(part.callId, part.name);
           content.push({
             type: "tool-call",
-            toolCallId: part.callId,
+            toolCallId: part.providerCallId ?? part.callId,
             toolName: part.name,
             input: part.input,
           });
@@ -406,7 +406,7 @@ export function toAiSdkModelMessages(history: RuntimeConversationMessage[]): Mod
         if (part.type !== "tool_result") continue;
         content.push({
           type: "tool-result",
-          toolCallId: part.callId,
+          toolCallId: part.providerCallId ?? part.callId,
           toolName: toolNames.get(part.callId) ?? "unknown_tool",
           output: part.isError
             ? { type: "error-text", value: modelToolOutput(part.output) }
@@ -423,6 +423,8 @@ export function toAiSdkModelMessages(history: RuntimeConversationMessage[]): Mod
 
 type PendingApproval = {
   callId: string;
+  operationId: string;
+  stepNo: number;
   inputHash: string;
   policyVersion: number;
   freshHumanRequired: boolean;
@@ -437,7 +439,7 @@ export class NativeAgentRuntime implements AgentRuntime {
   private interrupted = false;
   private activeAbortController: AbortController | null = null;
   private readonly pendingApprovals = new Map<string, PendingApproval>();
-  private readonly approvedCalls = new Map<string, { inputHash: string; policyVersion: number }>();
+  private readonly approvedCalls = new Map<string, { inputHash: string; policyVersion: number; operationId: string; stepNo: number }>();
 
   constructor(
     private readonly input: {
@@ -517,6 +519,8 @@ export class NativeAgentRuntime implements AgentRuntime {
     const runId = input.execution?.runId ?? this.input.taskId;
     const turnId = input.execution?.turnId ?? this.input.taskId;
     let stepNo = 0;
+    const operationId = (wireId: string) => `native-tool-v1:${hashToolInput({sessionId:this.input.sessionId,runId,turnId,stepNo,wireId})}`;
+    const operationByWire = new Map<string,string>();
     let fatalToolError: unknown;
     let budgetExhausted = false;
     const tools = Object.fromEntries(definitions.map((definition) => [definition.name, {
@@ -534,21 +538,24 @@ export class NativeAgentRuntime implements AgentRuntime {
       execute: async (toolInput: unknown, callId: string, permission: PermissionEvaluation, signal?: AbortSignal) => {
         if (fatalToolError) throw fatalToolError;
         if (permission.effect === "deny") throw new Error("native_tool_permission_denied");
+        let toolOperationId=operationId(callId), toolStepNo=stepNo;
         const recoveryConfirmation = this.input.executor.requiresRecoveryConfirmation(definition.name, this.input.workspaceIdentity);
         if (permission.effect === "ask" || recoveryConfirmation || definition.capability === "shell") {
           const grant = this.approvedCalls.get(callId);
           this.approvedCalls.delete(callId);
           if (!grant) throw new Error("native_tool_approval_missing");
+          toolOperationId=grant.operationId;toolStepNo=grant.stepNo;
           if (grant.inputHash !== hashToolInput(toolInput) || grant.policyVersion !== permission.policyVersion) {
             throw new Error("native_tool_approval_evidence_mismatch");
           }
         }
+        operationByWire.set(callId,toolOperationId);
         const context: ToolContext = {
-          callId,
+          callId:toolOperationId,
           sessionId: this.input.sessionId,
           taskId: runId,
           turnId,
-          ...(input.execution ? { stepId: `${runId}:turn:${turnId}:step:${stepNo}` } : {}),
+          ...(input.execution ? { stepId: `${runId}:turn:${turnId}:step:${toolStepNo}` } : {}),
           agentId: this.input.agentId,
           workspaceId: this.input.workspaceId,
           mode: "single_agent",
@@ -559,7 +566,7 @@ export class NativeAgentRuntime implements AgentRuntime {
         try {
           if (input.execution && stepNo === 0) throw new Error("tool_provider_checkpoint_missing");
           record = await this.input.executor.invoke({
-            stableKey: `${runId}:${callId}`,
+            stableKey: toolOperationId,
             name: definition.name,
             generation: definition.generation,
             input: toolInput,
@@ -623,6 +630,7 @@ export class NativeAgentRuntime implements AgentRuntime {
           if (this.pendingApprovals.has(requestId)) return Promise.reject(new Error("native_approval_id_reused"));
           return new Promise((resolve, reject) => this.pendingApprovals.set(requestId, {
             callId,
+            operationId:operationId(callId),stepNo,
             inputHash: hashToolInput(toolInput),
             policyVersion: permission.policyVersion,
             freshHumanRequired: permission.freshHumanRequired || definition.capability === "shell",
@@ -635,16 +643,17 @@ export class NativeAgentRuntime implements AgentRuntime {
         if (event.type === "provider_attempt_started" && event.attemptNo === 1) stepNo++;
         if (this.interrupted || abortController.signal.aborted) throw new Error("native_agent_cancelled");
         if (event.type === "text_delta") yield event;
-        else if (event.type === "tool_call") yield event;
+        else if (event.type === "tool_call") { const id=operationId(event.callId);operationByWire.set(event.callId,id);yield input.execution?{...event,callId:id,providerCallId:event.callId}:event; }
         else if (event.type === "tool_result") yield {
           type: "tool_result",
-          callId: event.callId,
+          callId: input.execution?(operationByWire.get(event.callId)??operationId(event.callId)):event.callId,
+          ...(input.execution?{providerCallId:event.callId}:{}),
           name: event.name,
           output: asToolOutputRef(event.output),
           isError: event.isError,
         };
         else if (event.type === "approval_required") yield {
-          type: "approval_required", requestId: event.requestId, callId: event.callId,
+          type: "approval_required", requestId: event.requestId, callId: input.execution?(operationByWire.get(event.callId)??operationId(event.callId)):event.callId,
           risk: tools[event.name]?.definition.risk ?? "high", kind: event.name,
           toolGeneration: tools[event.name]?.definition.generation,
           policyVersion: event.permission.policyVersion,
@@ -681,6 +690,7 @@ export class NativeAgentRuntime implements AgentRuntime {
     if (decision !== "deny") this.approvedCalls.set(pending.callId, {
       inputHash: pending.inputHash,
       policyVersion: pending.policyVersion,
+      operationId:pending.operationId,stepNo:pending.stepNo,
     });
     pending.resolve({ approved: decision !== "deny", reason: decision === "deny" ? "Denied by user" : undefined });
   }

@@ -168,11 +168,11 @@ export class ExecutionRunner {
             await persistText();
             active.calls.set(event.callId, { name: event.name, input: event.input });
             await memory.appendMessage({ roomId: task.sessionId, threadId: thread.id, runId, turnId, agentId: input.agentId,
-              role: "assistant", kind: "tool_call", content: "", parts: [{ type: "tool_call", callId: event.callId, name: event.name, input: event.input }], status: "completed", idempotencyKey: `${runId}:call:${event.callId}` });
+              role: "assistant", kind: "tool_call", content: "", parts: [{ type: "tool_call", callId: event.callId, providerCallId: event.providerCallId, name: event.name, input: event.input }], status: "completed", idempotencyKey: `${runId}:call:${event.callId}` });
           }
           if (event.type === "tool_result") await memory.appendMessage({ roomId: task.sessionId, threadId: thread.id, runId, turnId, agentId: input.agentId,
             role: "tool", kind: "tool_result", content: event.output.preview,
-            parts: [{ type: "tool_result", callId: event.callId, output: event.output, isError: event.isError }],
+            parts: [{ type: "tool_result", callId: event.callId, providerCallId: event.providerCallId, output: event.output, isError: event.isError }],
             status: event.isError ? "failed" : "completed", idempotencyKey: `${runId}:result:${event.callId}` });
           if (event.type === "approval_required") {
             const call = active.calls.get(event.callId);
@@ -340,11 +340,11 @@ export class ExecutionRunner {
             await persistSegment();
             active.calls.set(event.callId, { name: event.name, input: event.input });
             await memory.appendMessage({ roomId: task.sessionId, threadId: thread.id, runId: taskId, turnId, agentId: task.executionAgentId!,
-              role: "assistant", kind: "tool_call", content: "", parts: [{ type: "tool_call", callId: event.callId, name: event.name, input: event.input }],
+              role: "assistant", kind: "tool_call", content: "", parts: [{ type: "tool_call", callId: event.callId, providerCallId: event.providerCallId, name: event.name, input: event.input }],
               status: "completed", idempotencyKey: `multi-execution:${taskId}:${turnId}:call:${event.callId}` });
           }
           if (event.type === "tool_result") await memory.appendMessage({ roomId: task.sessionId, threadId: thread.id, runId: taskId, turnId, agentId: task.executionAgentId!,
-            role: "tool", kind: "tool_result", content: event.output.preview, parts: [{ type: "tool_result", callId: event.callId, output: event.output, isError: event.isError }],
+            role: "tool", kind: "tool_result", content: event.output.preview, parts: [{ type: "tool_result", callId: event.callId, providerCallId: event.providerCallId, output: event.output, isError: event.isError }],
             status: event.isError ? "failed" : "completed", idempotencyKey: `multi-execution:${taskId}:${turnId}:result:${event.callId}` });
           if (event.type === "approval_required") {
             const call = active.calls.get(event.callId);

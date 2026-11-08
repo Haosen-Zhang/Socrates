@@ -231,12 +231,14 @@ export class SessionStore {
         if (part.type === "tool_call" && part.tool_call_id) return [{
           type: "tool_call",
           callId: part.tool_call_id,
+          ...(typeof metadata.providerCallId === "string" ? {providerCallId:metadata.providerCallId} : {}),
           name: String(metadata.name ?? ""),
           input: metadata.input,
         }];
         if (part.type === "tool_result" && part.tool_call_id) return [{
           type: "tool_result",
           callId: part.tool_call_id,
+          ...(typeof metadata.providerCallId === "string" ? {providerCallId:metadata.providerCallId} : {}),
           output: metadata.output as ToolOutputRef,
           isError: metadata.isError === true,
         }];

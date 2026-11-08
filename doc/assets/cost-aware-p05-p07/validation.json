@@ -1,0 +1,241 @@
+{
+  "date": "2026-11-08",
+  "base": "2275657e1770c6c2aa8c06a7aff58b0031c870c6",
+  "scope": [
+    "P05",
+    "P06",
+    "P07"
+  ],
+  "environment": "Temporary SQLite/workspaces, controlled provider responses, local Chrome and production React/services; no paid model or user database",
+  "tests": {
+    "passed": 1228,
+    "failed": 0,
+    "files": 211,
+    "assertions": 23439
+  },
+  "gates": {
+    "typecheck": "passed",
+    "desktopBuild": "passed with existing mixed-import and chunk-size warnings",
+    "lint": "passed (529 files)",
+    "diffCheck": "passed"
+  },
+  "browser": {
+    "flight-recorder": {
+      "passed": 12,
+      "checks": [
+        {
+          "name": "Task details open records from the actual Native execution",
+          "ok": true
+        },
+        {
+          "name": "Invocation, price and machine verification share the selected task",
+          "ok": true
+        },
+        {
+          "name": "Stage filter returns model records only",
+          "ok": true
+        },
+        {
+          "name": "Tree and details expose persisted parent and price identities",
+          "ok": true
+        },
+        {
+          "name": "Search empty state is explicit",
+          "ok": true
+        },
+        {
+          "name": "Previewed download includes schema and references without prompt text",
+          "ok": true
+        },
+        {
+          "name": "Imported diagnostic commands remain inert and secret fields disappear",
+          "ok": true
+        },
+        {
+          "name": "Another room cannot read the selected task trace",
+          "ok": true
+        },
+        {
+          "name": "Durable pagination does not repeat the previous event",
+          "ok": true
+        },
+        {
+          "name": "Narrow drawer keeps record controls scrollable",
+          "ok": true
+        },
+        {
+          "name": "Read/export/import actions do not add invocation charges",
+          "ok": true
+        },
+        {
+          "name": "No renderer errors or external requests",
+          "ok": true
+        }
+      ],
+      "rendererErrors": 0,
+      "externalRequests": 0
+    },
+    "project-memory": {
+      "passed": 14,
+      "checks": [
+        {
+          "name": "Project Memory entry opens real project service",
+          "ok": true
+        },
+        {
+          "name": "Create persists a proposed entry without silent trust",
+          "ok": true
+        },
+        {
+          "name": "Explicit confirmation persists a new version",
+          "ok": true
+        },
+        {
+          "name": "Chinese query finds the real persisted constraint",
+          "ok": true
+        },
+        {
+          "name": "Editing appends version and returns change to proposed",
+          "ok": true
+        },
+        {
+          "name": "Version history is visible through the service",
+          "ok": true
+        },
+        {
+          "name": "Export is versioned and retains portable provenance",
+          "ok": true
+        },
+        {
+          "name": "Import preview does not mutate memory",
+          "ok": true
+        },
+        {
+          "name": "Imported content remains proposed and unpinned",
+          "ok": true
+        },
+        {
+          "name": "Repeated import is idempotent",
+          "ok": true
+        },
+        {
+          "name": "Project memory remains within a narrow viewport",
+          "ok": true
+        },
+        {
+          "name": "Chat explicitly shares selected project background",
+          "ok": true
+        },
+        {
+          "name": "Revoking Chat sharing clears permission",
+          "ok": true
+        },
+        {
+          "name": "Local UI uses no external requests or renderer errors",
+          "ok": true
+        }
+      ],
+      "rendererErrors": 0,
+      "externalRequests": 0
+    },
+    "arena": {
+      "passed": 18,
+      "checks": [
+        {
+          "name": "User entry freezes four isolated variants with the same starting snapshot",
+          "ok": true
+        },
+        {
+          "name": "Preflight alone starts no trial",
+          "ok": true
+        },
+        {
+          "name": "Controlled runs are labelled as simulated model tests",
+          "ok": true
+        },
+        {
+          "name": "Both direct variants execute through real task entries",
+          "ok": true
+        },
+        {
+          "name": "Planning and review variants retain actual child identities and objective evidence",
+          "ok": true
+        },
+        {
+          "name": "Results report four real successes and preserved costs",
+          "ok": true
+        },
+        {
+          "name": "Completed experiments and samples cannot be stopped again",
+          "ok": true
+        },
+        {
+          "name": "Raw task and variant counts retain the planned denominator",
+          "ok": true
+        },
+        {
+          "name": "Category selection retains all four matching samples",
+          "ok": true
+        },
+        {
+          "name": "Time breakdown distinguishes unmeasured human time",
+          "ok": true
+        },
+        {
+          "name": "Export retains reproducible snapshot identity without raw copied files",
+          "ok": true
+        },
+        {
+          "name": "CSV export contains actual samples",
+          "ok": true
+        },
+        {
+          "name": "JSONL export contains actual samples",
+          "ok": true
+        },
+        {
+          "name": "Artifact application requires a selected file and explicit confirmation",
+          "ok": true
+        },
+        {
+          "name": "One-task simulated evidence cannot automatically change the routing policy",
+          "ok": true
+        },
+        {
+          "name": "Arena remains within a narrow scrollable project page",
+          "ok": true
+        },
+        {
+          "name": "Reload retains completed trials without running them again",
+          "ok": true
+        },
+        {
+          "name": "Local browser flow has no external requests or renderer exceptions",
+          "ok": true
+        }
+      ],
+      "rendererErrors": 0,
+      "externalRequests": 0
+    }
+  },
+  "promptfoo": {
+    "version": "0.125.1",
+    "successes": 1,
+    "failures": 0,
+    "nativeRequests": 2,
+    "outcome": "verified_success",
+    "network": "forbidden"
+  },
+  "review": {
+    "targetedTests": 88,
+    "blockingFindingsAfterFixes": 0
+  },
+  "boundaries": [
+    "Native Tauri rendered window not tested",
+    "No live model benchmark or economic recommendation",
+    "Raw browser data and temporary credentials excluded",
+    "Public remote trace exporter and deep prompt capture unavailable",
+    "Arena file application supports bounded declared UTF-8 files; no binary/deletion application",
+    "Small samples remain exploratory; no generalization or cold-cache claim"
+  ]
+}

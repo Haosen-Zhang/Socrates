@@ -51,6 +51,8 @@ export interface ToolDefinition<I = unknown, O = unknown> {
 }
 
 export interface ToolContext {
+  /** Host-only immutable evaluation definitions; never accepted from tool input. */
+  protectedPaths?: readonly string[];
   callId: string;
   sessionId: string;
   taskId: string;

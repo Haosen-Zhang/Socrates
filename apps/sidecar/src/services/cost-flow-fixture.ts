@@ -1,3 +1,13 @@
+import { ArenaArtifactService } from "./arena-artifacts";
+import { arenaArtifactRoutes } from "../routes/arena-artifacts";
+import { ArenaStrategyService } from "./arena-strategy";
+import { arenaStrategyRoutes } from "../routes/arena-strategy";
+import { ArenaService } from "./arena-service";
+import { arenaRoutes } from "../routes/arena";
+import { FlightRecorderService } from "./flight-recorder";
+import { flightRecorderRoutes } from "../routes/flight-recorder";
+import { ProjectMemoryService } from "./project-memory";
+import { projectMemoryRoutes } from "../routes/project-memory";
 import { adaptiveEvidenceContext } from "./adaptive-context";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -73,7 +83,7 @@ const PLAN: StructuredPlan = {
 };
 
 /** Real production services; only the Provider stream and disposable test files are controlled. */
-export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: boolean; reasoningPlanner?: boolean; writeApprovalFlow?: boolean; scopeExpansion?: boolean; invalidWriteHash?: boolean; automaticPricingView?: boolean; routingFixture?:boolean } = {}) {
+export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: boolean; reasoningPlanner?: boolean; writeApprovalFlow?: boolean; scopeExpansion?: boolean; invalidWriteHash?: boolean; automaticPricingView?: boolean; routingFixture?:boolean; nativeToolCalls?:(body:unknown)=>Array<{id:string;type:string;function:{name:string;arguments:string}}>|undefined; onNativeRequest?:(body:unknown)=>void; onGatewayRequest?:(request:unknown)=>void } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "socrates-cost-flow-"));
   const workspacePath = join(directory, "workspace");
   mkdirSync(workspacePath);
@@ -145,6 +155,7 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
         responsePlan={...PLAN,workPackages:executors.map((executorAgentId,index)=>({id:`delivery-${index}`,title:`Delivery ${index+1}`,objective:"Inspect and deliver synthetic output",input:"Write result.txt once if absent, otherwise inspect it.",dependencies:[],executorAgentId,reviewerAgentId:task.config.routingReviewerId ?? null,expectedFiles:["result.txt","context.txt"],acceptanceCriteria:["The controlled result exists"]}))};
       }
     }
+    options.onGatewayRequest?.(request);
     gatewayCalls.push({ purpose, agentId: request.invocation!.agentId, maxOutputTokens: request.maxOutputTokens });
     if (nextGatewayUnknown) {
       nextGatewayUnknown = false;
@@ -179,6 +190,7 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
     if (!String(url).startsWith("https://fixture.invalid/v1/")) throw new Error("fixture_network_forbidden");
     const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ role: string; tool_call_id?: string }>; max_tokens?: number; tools?: unknown[] };
     const toolHistory = body.messages.some(message => message.role === "tool");
+    options.onNativeRequest?.(body);
     nativeCalls.push({ model: body.model, toolHistory, maxOutputTokens: body.max_tokens });
     const firstWorkerSample = (options.routingFixture || body.model === "fixture-model-a") && !toolHistory && !!body.tools?.length;
     let calls = firstWorkerSample ? [
@@ -198,6 +210,7 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
         else if (!JSON.stringify(body.messages).includes("expectedSha256: null")) throw new Error("fixture_write_guidance_missing");
       }
     }
+    calls = options.nativeToolCalls?.(body) ?? calls;
     const chunk = (delta: unknown, finish_reason: string | null, usage?: unknown) => ({ id: `fixture-completion-${nativeCalls.length}`, object: "chat.completion.chunk", created: 1, model: body.model,
       choices: [{ index: 0, delta, finish_reason }], ...(usage ? { usage } : {}) });
     const providerUsage = { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150,
@@ -286,12 +299,21 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
   app.route("/config", configRoutes(config)); app.route("/providers", providerRoutes(db, secrets, controlledFetch)); app.route("/agents", agentRoutes(db));
   app.route("/sessions", sessionRoutes(sessions, events, usage, workspaces)); app.route("/workspaces", workspaceRoutes(workspaces));
   app.route("/room-commands", roomCommandRoutes(commands)); app.route("/multi", multiAgentRoutes(tasks, coordinator, execution, approvals, team, adaptive));
+  const arena = new ArenaService(db,{sessions,workspaces,commands,verification,quotes,baseDirectory:join(directory,"arena"),controlled:true});
+  arena.recover();
+  app.route("/arena",arenaRoutes(arena));
+  app.route("/arena-artifacts",arenaArtifactRoutes(new ArenaArtifactService(db,workspaces,leases)));
+  app.route("/arena-strategy",arenaStrategyRoutes(new ArenaStrategyService(db,sessions,id=>arena.results(id))));
+  const flightRecorder = new FlightRecorderService(db);
+  const projectMemory = new ProjectMemoryService(db);
+  app.route("/flight-recorder",flightRecorderRoutes(flightRecorder));
+  app.route("/project-memory",projectMemoryRoutes(projectMemory));
   app.route("/verification",verificationRoutes(verification));
   app.route("/routing",routingRoutes(routes,adaptive));
   app.route("/agent", agentRunRoutes(supervisor, runner, approvals, executionEvents,(child,key)=>adaptive.notifyChildProgress(child,key).then(()=>{}))); app.route("/cost", costRoutes(db, sessions, broker, quotes, costTasks, commands));
   app.route("/content", contentRoutes(db, workspaces, attachments));
   app.get("/rooms", c => c.json([])); app.get("/mcp/servers", c => c.json([]));
-  return { directory, db, routes, adaptive, sessions, workspaces, workspace, roomIds: { work: work.id, chat: chat.id }, broker, commands, quotes, costTasks, tasks, coordinator, verification, packages,
+  return { directory, db, arena, flightRecorder, projectMemory, routes, adaptive, sessions, workspaces, workspace, roomIds: { work: work.id, chat: chat.id }, broker, commands, quotes, costTasks, tasks, coordinator, verification, packages,
     execution, team, runtimes, approvals, runner, supervisor, app, token, headers, gatewayCalls, nativeCalls,
-    async close() { await adaptive.shutdown(); await verification.shutdown(); await commands.shutdown(); await team.shutdown(); await execution.shutdown(); await supervisor.shutdown(); db.close(); rmSync(directory, { recursive: true, force: true }); } };
+    async close() { await arena.shutdown(); await adaptive.shutdown(); await verification.shutdown(); await commands.shutdown(); await team.shutdown(); await execution.shutdown(); await supervisor.shutdown(); await flightRecorder.shutdown(); db.close(); rmSync(directory, { recursive: true, force: true }); } };
 }
