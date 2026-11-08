@@ -312,3 +312,8 @@ Remaining validation/coverage limits: no paid Provider or native Tauri-window ve
 - Artifact application covers bounded declared UTF-8 files; binary/deletion application is not enabled. Original source authorization remains live even for frozen experiments. Initial-copy quotas are not OS-level runtime disk quotas. No native Tauri window, installed app replacement, real Provider entitlement, paid model or real-world benchmark was tested.
 - **P08 remains unstarted**: whole-product compatibility/release gates, native packaging/rendered-window verification and optional explicitly budgeted real-provider evaluation. Read the four stage documents, reuse decisions and current architecture first. M02–M07 are separate future Work entity/interaction scope.
 - User-authorized submission: branch `codex/cost-aware-p05-p07`, issue #148; commit/push/PR after the gates above. Merge/release remain user decisions. No private data upload or paid model call occurred.
+
+### P05–P07 PR submission (2026-11-09)
+
+- Created [PR #149](https://github.com/Haosen-Zhang/Socrates/pull/149), closing issue #148, from `codex/cost-aware-p05-p07` to main. Implementation commit `d094d6b` contains the validated source/tests/evidence above.
+- Verified remote branch points to the submitted commit. Temporary fixture and frontend test servers stopped. Raw local screenshots/logs remain untracked; original user data and existing outputs preserved. No merge or release.
