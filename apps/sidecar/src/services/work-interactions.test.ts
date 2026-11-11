@@ -230,3 +230,20 @@ test('blocked ordinary instruction can be resolved through Inbox endpoint and st
   expect(f.interactions.preview(scope,input('next')).reasons).toContain('model_cost_settlement_required');expect({gateway:f.gatewayCalls.length,native:f.nativeCalls.length}).toEqual(calls);
  }finally{await f.close();}
 });
+for(const routed of [false,true])test(`bound Squad HTTP quote to interaction dispatch ${routed?'with custom routing':'with standard execution'} calls only the Leader`,async()=>{
+ const f=await setupCostFlowFixture({nativeToolCalls:()=>[]});try{
+  const squad=f.squads.create({workspaceId:f.workspace.id,name:'Quoted Squad',avatar:null,description:'',instructions:'',leaderAgentId:'fixture-a',members:[{agentId:'fixture-a',responsibility:'Lead'},{agentId:'fixture-b',responsibility:'Build'}]});
+  const {room}=f.squads.createRoom(squad.id,squad.revision,'Bound source room');
+  if(routed)f.sessions.applySquadBinding(()=>f.sessions.updateCollaboration(room.id,{...room.collaboration,assignment:{...room.collaboration.assignment,routing:{...room.collaboration.assignment.routing,mode:'manual'}}}));
+  const body={roomId:room.id,content:'Inspect context',intent:'execute',mentions:[{type:'squad',squadId:squad.id}],budget:{mode:'soft_limit',limitAtomic:'1000000000000'}};
+  if(routed){const routing=await f.app.request('/routing/preview',{method:'POST',headers:f.headers,body:JSON.stringify(body)});expect(routing.status).toBe(200);expect((await routing.json()).selected.resolved).toEqual({kind:'direct',agentIds:['fixture-a']});}
+  const quoted=await f.app.request('/cost/quotes',{method:'POST',headers:f.headers,body:JSON.stringify(body)});expect(quoted.status).toBe(201);const quote=await quoted.json();expect(quote.kind).toBe('direct');
+  const submitted=await f.app.request(`/room-commands/rooms/${room.id}/interactions`,{method:'POST',headers:f.headers,body:JSON.stringify({...body,roomId:undefined,clientRequestId:'squad-quoted',action:'message',delivery:'now',quoteId:quote.id})});expect(submitted.status).toBe(202);const interaction=await submitted.json();expect(interaction.status).toBe('dispatched');
+  await untilCostFlow(()=>f.commands.get(interaction.commandId)?.status==='completed','quoted Squad complete');
+  expect(f.nativeCalls.map(c=>c.model)).toEqual(['fixture-model-a']);expect(f.gatewayCalls).toHaveLength(0);
+  expect(f.squads.binding(room.id)!.squadId).toBe(squad.id);
+  for(const [mention,status] of [[{type:'squad'},400],[{type:'squad',squadId:''},400],[{type:'squad',squadId:'foreign-squad'},409]] as const){
+   const invalid=await f.app.request('/cost/quotes',{method:'POST',headers:f.headers,body:JSON.stringify({...body,mentions:[mention]})});expect(invalid.status).toBe(status);
+  }
+ }finally{await f.close();}
+});
