@@ -346,3 +346,7 @@ Remaining validation/coverage limits: no paid Provider or native Tauri-window ve
 - New-admission maintenance controls do not discard existing tasks or budgets. Database backup/refusal protects forward compatibility; unsupported graph versions have explicit compatible-version recovery, **not** an automatic converter. Current source backup does not capture external workspace files or Keychain.
 - Interruption tests cover durable reservations, uncertain sent outcomes, tool recovery, planning/review/budget/verification/summary boundaries; no arbitrary instruction-level process-kill coverage is claimed. Memory proposals are local deterministic operations, with no model extraction request to interrupt or bill.
 - Not validated: packaged/native Tauri rendered window, actual OS IME candidate window, spoken screen reader, signed/notarized installer, live provider entitlements/quality/prices or economic performance. Native compilation and controlled Chrome results do not establish these. They remain explicit later release/operator gates; no live API, release/tag/deploy or installer publication performed. P00–P08 implementation scope is closed with these declared release limits; M02–M07 remains separate Work UX scope.
+
+### P08 PR submission
+
+Created [PR #151](https://github.com/Haosen-Zhang/Socrates/pull/151), closing issue #150. Validated implementation commit `ce785dafb3cf8ffb5002fcae5d2a4923ec59a1f8` is pushed on `codex/cost-aware-p08`; local/remote hashes matched. Only this final submission note follows it. No merge, release or production-data changes.
