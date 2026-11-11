@@ -1,3 +1,6 @@
+import { workItemPreviewsMigration } from './036_work_item_previews';
+import { workItemsMigration } from './035_work_items';
+import { squadsMigration } from "./034_squads";
 import { arenaArtifactsMigration } from "./033_arena_artifacts";
 import { arenaStrategyMigration } from "./032_arena_strategy";
 import { flightRecorderMigration } from "./029_flight_recorder";
@@ -34,4 +37,4 @@ import { routeDecisionsMigration } from "./027_route_decisions";
 
 import { adaptiveWorkflowMigration } from "./028_adaptive_workflow";
 
-export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration, usageAndRecoveryMigration, projectConversationOrganizationMigration, roomKindMigration, phase1RuntimeMigration, conversationMemoryMigration, roomApprovalPolicyMigration, managedWorkspacesMigration, collaborationSettingsMigration, modelCatalogProvenanceMigration, historyProjectionMigration, executionEventAuthorityMigration, toolAttemptsMigration, toolResultArtifactsMigration, roomCommandsMigration, teamWorkPackagesMigration, legacyRoomSessionsMigration, costAccountingMigration, costAccountingCompletionMigration, sessionToolApprovalsMigration, verificationMigration, routeDecisionsMigration, adaptiveWorkflowMigration, flightRecorderMigration, projectMemoryMigration, arenaMigration, arenaStrategyMigration, arenaArtifactsMigration] as const;
+export const migrations = [baselineMigration, agentWorkspaceMigration, runtimeFoundationMigration, p2ConversationMigration, mcpMigration, multiAgentMigration, usageAndRecoveryMigration, projectConversationOrganizationMigration, roomKindMigration, phase1RuntimeMigration, conversationMemoryMigration, roomApprovalPolicyMigration, managedWorkspacesMigration, collaborationSettingsMigration, modelCatalogProvenanceMigration, historyProjectionMigration, executionEventAuthorityMigration, toolAttemptsMigration, toolResultArtifactsMigration, roomCommandsMigration, teamWorkPackagesMigration, legacyRoomSessionsMigration, costAccountingMigration, costAccountingCompletionMigration, sessionToolApprovalsMigration, verificationMigration, routeDecisionsMigration, adaptiveWorkflowMigration, flightRecorderMigration, projectMemoryMigration, arenaMigration, arenaStrategyMigration, arenaArtifactsMigration, squadsMigration, workItemsMigration, workItemPreviewsMigration] as const;

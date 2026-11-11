@@ -55,7 +55,7 @@ export function multiAgentRoutes(store: MultiTaskStore, coordinator: MultiAgentC
     // AdaptiveWorkflowService. The legacy public endpoint cannot forge them.
     if(["routeDecisionId","adaptiveAttemptId","allowedAgentIds","routingReviewerId","frozenCollaboration","costRootTaskId"].some(key=>key in publicConfig))return c.json({error:"multi_task_internal_routing_config"},400);
     let task;
-    try { task = await coordinator.create({ sessionId: c.req.param("sessionId"), prompt: body.prompt, config: body.config as MultiTaskConfig }); }
+    try { coordinator.assertPublicStart(c.req.param("sessionId")); task = await coordinator.create({ sessionId: c.req.param("sessionId"), prompt: body.prompt, config: body.config as MultiTaskConfig }); }
     catch (error) { return c.json({ error: error instanceof Error ? error.message : "multi_task_create_failed" }, 400); }
     return streamSSE(c, async (stream) => {
       const emit = async (event: MultiAgentEvent) => stream.writeSSE({ event: event.type, data: JSON.stringify(event) });

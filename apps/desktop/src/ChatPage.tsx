@@ -10,6 +10,8 @@ import RoomComposer from "./RoomComposer";
 import RoomSidebar from "./sidebar/RoomSidebar";
 import WorkContextBar from "./work/WorkContextBar";
 import WorkProjectHub from "./work/WorkProjectHub";
+import CreateWorkItemButton from "./work-items/CreateWorkItemButton";
+import RoomWorkItemBanner from "./work-items/RoomWorkItemBanner";
 import type { WorkContext } from "./work/workNavigation";
 import { ActorPicker, ConfirmationDialog, DetailPanel, ErrorNotice, notify } from "./foundation";
 import { useAnimatedDialogClose } from "./dialog/useAnimatedDialogClose";
@@ -145,6 +147,7 @@ function MsgActions({
       >
         {copied ? t("msg_copied") : t("msg_copy")}
       </button>
+      <CreateWorkItemButton messageId={m.id} content={m.content}/>
       {!busy && (
         <button
           className={`${btn} ${confirming ? "font-medium text-red-500" : ""}`}
@@ -1364,6 +1367,7 @@ export default function ChatPage({ onOpenSettings, settingsOpen=false }: { onOpe
       <div className={mode === "cowork" ? "work-main" : "contents"}>
       {mode === "cowork" && <WorkContextBar context={workContext} project={project?.label} onChange={changeWorkContext}/>}
       {mode === "cowork" && workContext !== "rooms" && <WindowRoomToolbar title={project?.label ?? t("work_project")} sidebarHidden={chrome.sidebarHidden} toolbarMode={chrome.toolbarMode} collapseLabel={t("sidebar_collapse")} expandLabel={t("sidebar_expand")} onToggleSidebar={chrome.onToggleSidebar}/>}
+      {mode === "cowork" && workContext === "rooms" && currentSession?.workspaceId && <RoomWorkItemBanner key={currentSession.id} roomId={currentSession.id} workspaceId={currentSession.workspaceId} onOpen={()=>changeWorkContext("tasks")}/>}
       <section className="pixel-room-content flex min-h-0 min-w-0 flex-1 flex-col" style={mode === "cowork" && workContext !== "rooms" ? {display:"none"} : undefined} inert={mode === "cowork" && workContext !== "rooms" ? true : undefined}>
         {currentSessionId ? ((commandExecutionKind ? commandExecutionKind === "team" : currentSession?.collaboration.strategy === "team") ? <MultiAgentSession key={currentSessionId} chrome={chrome} /> : <SingleAgentSession key={currentSessionId} chrome={chrome} />) : currentRoomId ? (
           <>
@@ -1435,7 +1439,7 @@ export default function ChatPage({ onOpenSettings, settingsOpen=false }: { onOpe
           </>
         )}
       </section>
-      {mode === "cowork" && <WorkProjectHub key={projectKey} workspaceId={projectId} context={workContext} onOpenRoom={openRooms}/>}
+      {mode === "cowork" && <WorkProjectHub key={projectKey} workspaceId={projectId} context={workContext} onOpenRoom={openRooms} onChangeContext={changeWorkContext}/>}
       </div>
       {workContext === "rooms" && currentSession?.kind === "cowork" && dockMode !== "closed" && activeConversationId && (
         viewportWidth <= 980 ? <DetailPanel open drawer title={t("workspace_overview")} closeLabel={t("close")} onClose={()=>setDockMode("closed")}>

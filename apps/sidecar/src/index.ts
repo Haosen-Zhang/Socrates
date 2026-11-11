@@ -1,3 +1,8 @@
+import { WorkItemLaunchService } from "./services/work-item-launch";
+import { workItemRoutes } from "./routes/work-items";
+import { WorkItemService } from "./services/work-items";
+import { squadRoutes } from "./routes/squads";
+import { SquadService } from "./services/squads";
 import { ArenaArtifactService } from "./services/arena-artifacts";
 import { arenaArtifactRoutes } from "./routes/arena-artifacts";
 import { ArenaStrategyService } from "./services/arena-strategy";
@@ -282,10 +287,18 @@ const commands = new RoomCommandService(db, sessions, {
 commands.recoverInterrupted();
 const costTasks = new CostTaskService(db, commands, runSupervisor, agentRuns, multiTasks, multiCoordinator, teamRunner, executionRunner,{routing,adaptive});
 
-app.get("/health", (c) => c.json({ ok: true }));
+const workItems=new WorkItemService(db,commands);
+ const squads=new SquadService(db,sessions,workspaceId=>workItems.list(workspaceId));
+ const workItemLaunch=new WorkItemLaunchService(db,workItems,sessions,squads,new TaskQuoteService(db,sessions),commands,async id=>{
+  const command=commands.get(id);if(!command)throw new Error('Command not found');
+  if(command.taskId&&!command.adaptive){multiCoordinator.cancel(command.taskId);await multiCoordinator.wait(command.taskId);await teamRunner.cancel(command.taskId);}
+  else await commands.cancel(id);
+ });
+ app.get("/health", (c) => c.json({ ok: true }));
 app.route("/config", configRoutes(config));
 app.route("/providers", providerRoutes(db, secrets, proxiedFetch));
 app.route("/agents", agentRoutes(db, modelCatalog));
+  app.route("/squads", squadRoutes(squads));
 app.route("/rooms", roomRoutes(db, secrets, gateway, usage, sessions));
 app.route("/workspaces", workspaceRoutes(workspaces));
 app.route(
@@ -314,6 +327,7 @@ app.route("/flight-recorder",flightRecorderRoutes(flightRecorder));
 app.route("/project-memory",projectMemoryRoutes(projectMemory));
 app.route("/verification",verificationRoutes(verification));
 app.route("/routing",routingRoutes(routing,adaptive));
+app.route("/work-items", workItemRoutes(workItems,workItemLaunch));
 app.route("/cost", costRoutes(db, sessions, invocationBroker, new TaskQuoteService(db, sessions,routing), costTasks, commands));
 app.route("/agent", agentRunRoutes(runSupervisor, agentRuns, approvals, executionEvents, (child,key)=>adaptive.notifyChildProgress(child,key).then(()=>{})));
 app.route("/content", contentRoutes(db, workspaces, attachments));

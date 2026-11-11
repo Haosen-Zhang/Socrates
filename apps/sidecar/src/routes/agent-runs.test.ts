@@ -1,3 +1,4 @@
+import { assertWorkItemAdmission } from "../services/work-item-admission";
 import { describe, expect, it } from "bun:test";
 import { Hono } from "hono";
 import { openDb } from "../db";
@@ -49,7 +50,7 @@ describe("durable agent run transport", () => {
       "/agent",
       agentRunRoutes(
         supervisor,
-        {} as SingleAgentRunner,
+        {assertPublicStart:(roomId:string)=>assertWorkItemAdmission(db,roomId)} as SingleAgentRunner,
         new ApprovalManager(db),
         new ExecutionEventStore(db),
       ),

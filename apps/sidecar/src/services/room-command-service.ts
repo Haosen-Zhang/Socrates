@@ -1,3 +1,4 @@
+import { assertWorkItemAdmission } from "./work-item-admission";
 import { ProjectMemoryService } from "./project-memory";
 import { linkArenaBudget } from "./arena-budget";
 import { createHash } from "node:crypto";
@@ -64,7 +65,8 @@ export class RoomCommandService {
       this.setSessionStatus(row.room_id, "interrupted");
     }
   }
-  submit(input: RoomCommandInput): Promise<RoomCommandView> {
+  submit(input: RoomCommandInput, workItemRunId?: string): Promise<RoomCommandView> {
+    try { assertWorkItemAdmission(this.db,input.roomId,workItemRunId); } catch(error) { return Promise.reject(error); }
     const key = `${input.roomId}:${input.clientRequestId}`;
     // All callers still validate fingerprints after the first reservation settles.
     const predecessor = this.pending.get(key);
@@ -87,6 +89,7 @@ export class RoomCommandService {
     }
     const room = this.sessions.get(input.roomId);
     if (!room || room.archived) throw new Error("room_not_found");
+    if(this.db.query('SELECT b.room_id FROM squad_room_bindings b JOIN squad_templates s ON s.id=b.squad_id WHERE b.room_id=? AND s.archived=1').get(room.id))throw new Error('squad_archived_rebind_required');
     const quotes=new TaskQuoteService(this.db,this.sessions,this.deps.routing);
     let resolved = resolveRoomCommand({ ...room, agentIds: room.agents.map((a) => a.agentId) }, input);
     if(isRoutingEnabled(room,input) && resolved.kind!=="discussion" && room.collaboration.strategy === "adaptive" && process.env.SOCRATES_AUTOMATIC_ADMISSION_ENABLED === "false") throw new Error("automatic_new_task_admission_disabled");

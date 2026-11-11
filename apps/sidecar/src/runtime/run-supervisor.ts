@@ -102,11 +102,11 @@ export class RunSupervisor {
 
   async cancel(runId: string): Promise<void> {
     const entry = this.runs.get(runId);
-    if (!entry) throw new Error("agent_run_not_active");
     // Journal cancellation intent before either cancellation mechanism can
     // produce a terminal event.
     await this.runner.cancel(runId);
-    entry.controller.abort("user_cancelled");
+    entry?.controller.abort("user_cancelled");
+    await entry?.completion.catch(()=>{});
   }
 
   async wait(runId:string):Promise<void> { await this.runs.get(runId)?.completion.catch(()=>{}); }

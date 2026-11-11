@@ -1,3 +1,8 @@
+import { WorkItemService } from "./work-items";
+import { workItemRoutes } from "../routes/work-items";
+import { WorkItemLaunchService } from "../services/work-item-launch";
+import { squadRoutes } from "../routes/squads";
+import { SquadService } from "../services/squads";
 import { ArenaArtifactService } from "./arena-artifacts";
 import { arenaArtifactRoutes } from "../routes/arena-artifacts";
 import { ArenaStrategyService } from "./arena-strategy";
@@ -289,7 +294,14 @@ export async function setupCostFlowFixture(options: { strictBoundFixture?: boole
   const quotes = new TaskQuoteService(db, sessions,routes), usage = new UsageCollector(db);
   const config = new ConfigStore(join(directory, "config.toml"), secrets);
   config.update({ language: "en", theme: "dark", soundEnabled: false });
-  const app = new Hono();
+const workItems=new WorkItemService(db,commands);
+ const squads=new SquadService(db,sessions,workspaceId=>workItems.list(workspaceId));
+ const workItemLaunch=new WorkItemLaunchService(db,workItems,sessions,squads,new TaskQuoteService(db,sessions),commands,async id=>{
+  const command=commands.get(id);if(!command)throw new Error('Command not found');
+  if(command.taskId&&!command.adaptive){coordinator.cancel(command.taskId);await coordinator.wait(command.taskId);await team.cancel(command.taskId);}
+  else await commands.cancel(id);
+ });
+   const app = new Hono();
   app.use("*", cors({ origin: "*", allowHeaders: ["Authorization", "Content-Type"], allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"] }));
   app.use("*", async (c, next) => { if (c.req.header("authorization") !== `Bearer ${token}`) return c.text("unauthorized", 401); await next(); });
   app.get("/health", c => c.json({ ok: true, controlledFixture: true }));
@@ -302,6 +314,8 @@ export async function setupCostFlowFixture(options: { strictBoundFixture?: boole
     return c.json({ controlledFixture: true });
   });
   app.route("/config", configRoutes(config)); app.route("/providers", providerRoutes(db, secrets, controlledFetch)); app.route("/agents", agentRoutes(db));
+  app.route("/work-items",workItemRoutes(workItems,workItemLaunch));
+  app.route("/squads", squadRoutes(squads));
   app.route("/sessions", sessionRoutes(sessions, events, usage, workspaces)); app.route("/workspaces", workspaceRoutes(workspaces));
   app.route("/room-commands", roomCommandRoutes(commands)); app.route("/multi", multiAgentRoutes(tasks, coordinator, execution, approvals, team, adaptive));
   const arena = new ArenaService(db,{sessions,workspaces,commands,verification,quotes,baseDirectory:join(directory,"arena"),controlled:true});
@@ -318,7 +332,7 @@ export async function setupCostFlowFixture(options: { strictBoundFixture?: boole
   app.route("/agent", agentRunRoutes(supervisor, runner, approvals, executionEvents,(child,key)=>adaptive.notifyChildProgress(child,key).then(()=>{}))); app.route("/cost", costRoutes(db, sessions, broker, quotes, costTasks, commands));
   app.route("/content", contentRoutes(db, workspaces, attachments));
   app.get("/rooms", c => c.json([])); app.get("/mcp/servers", c => c.json([]));
-  return { directory, db, arena, flightRecorder, projectMemory, routes, adaptive, sessions, workspaces, workspace, roomIds: { work: work.id, chat: chat.id }, broker, commands, quotes, costTasks, tasks, coordinator, verification, packages,
+  return { workItems, workItemLaunch, squads, directory, db, arena, flightRecorder, projectMemory, routes, adaptive, sessions, workspaces, workspace, roomIds: { work: work.id, chat: chat.id }, broker, commands, quotes, costTasks, tasks, coordinator, verification, packages,
     execution, team, runtimes, approvals, runner, supervisor, app, token, headers, gatewayCalls, nativeCalls,
     async close() { await arena.shutdown(); await adaptive.shutdown(); await verification.shutdown(); await commands.shutdown(); await team.shutdown(); await execution.shutdown(); await supervisor.shutdown(); await flightRecorder.shutdown(); db.close(); rmSync(directory, { recursive: true, force: true }); } };
 }

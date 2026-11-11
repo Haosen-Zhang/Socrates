@@ -1,0 +1,2 @@
+.work-item-identity {white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:160px;overflow:auto;padding:10px;border:1px solid var(--pixel-shadow)}
+.work-item-room-banner {display:flex;flex:none;gap:8px;flex-wrap:wrap;max-height:120px;overflow:auto;padding:8px 12px;border-bottom:1px solid var(--pixel-shadow);font-size:12px}

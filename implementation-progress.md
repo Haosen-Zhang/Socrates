@@ -350,3 +350,38 @@ Remaining validation/coverage limits: no paid Provider or native Tauri-window ve
 ### P08 PR submission
 
 Created [PR #151](https://github.com/Haosen-Zhang/Socrates/pull/151), closing issue #150. Validated implementation commit `ce785dafb3cf8ffb5002fcae5d2a4923ec59a1f8` is pushed on `codex/cost-aware-p08`; local/remote hashes matched. Only this final submission note follows it. No merge, release or production-data changes.
+
+## 2026-11-11 — Multica UX M02–M03（issue #152）
+
+起点 `26a4352`（P08 已合并）；分支 `codex/multica-ux-m02-m03`。保留原 checkout、用户修改、房间和历史，测试仅临时 SQLite/工作区与受控模型流。规划及许可/复用复核见 `doc/multica-m02-m03-plan.md`、`doc/multica-m02-m03-acceptance.md`。
+
+### M02 当前实现
+
+- 迁移 034：项目 Squad、成员职责、模板版本、冻结房间绑定和独立单调 bindingVersion；保留旧房间，无强制绑定。
+- 真实 Squad REST/service/UI：创建 Leader 自动入组、跨供应商角色选择、内嵌 AgentEditor、新建/编辑/归档、显式应用版本、新建 Work 房间、保留快照解除绑定。
+- 复用现有 Base UI 1.9.0 MIT ActorPicker/Dialog、AgentAvatar、SessionStore。Multica 只读行为参考，没有复制代码或素材。
+- 模板更新不改变既有房间；绑定房间的普通成员/Leader/配置编辑需先显式解除绑定；独立版本避免同号 Squad 切换接受过期更新。运行信息注明当前绑定房间范围，WorkItem 运行另存冻结归属。
+- M02 后端审查修复后复审通过；浏览器创建、保存、重开、窄屏、归档 9 项通过。正在与 M03 整体验收。
+
+### M03 当前实现与验证中事项
+
+- 迁移 035–036：独立工作事项、运行关联、审核记录、冻结启动预览；源房间/源消息可追溯，原消息/工作包/费用不复制。
+- 默认任务列表，Backlog/To Do/In Progress/In Review/Done，真实 owner/等待原因；项目和消息创建；双动作只分配/分配并开始。仅根执行完成进入审核，人工确认才 Done。
+- 预览冻结独立执行房间与真实报价；原 RoomCommandService、Coordinator/TeamRunner、权限/预算/验证仍为权威；Squad 仅 Leader 首先规划。
+- WorkItem 页面、执行房间入口、原执行时间线、任务审核和历史身份已接线。Squad 活跃事项数量从同一工作事项投影派生。
+- 完整回归第一轮在必要本机权限下：1253 pass / 0 fail / 23668 assertions，218 文件；外层沙箱初跑端口/macOS 命令受限的失败已单独归因并复验。类型/构建通过，lint 553 文件通过。
+- M03 审查发现的旧公开接口准入绕过、preparing 崩溃恢复、预算暂停停止移交已修复并通过复审。最终审查还补齐工作区及审批 mode/version 的冻结校验，修改后旧预览在任何新调用前被拒绝。
+
+### 后续依赖
+
+M03 可选 Board 不引入；M04 生命周期、M05 提及/收件箱/Leader 再评估、M06 运行交互、M07 完整压力验收仍属后续。没有付费模型实测、发布、合并或安装包验证。完成最终修复和验证后按授权自动提交 PR。
+
+
+### M02–M03 最终验收（通过）
+
+- **1261 tests passed / 0 failed / 23729 assertions / 218 files**；typecheck、desktop build、lint 554 文件和 diff-check 通过。
+- **23 项真实 Chrome 界面检查全通过**，包含新建/保存/重开/归档、只分配零运行零调用、报价零调用、Leader-only 规划、人工审核、跨视图状态、来源消息、运行中停止移交、零预算暂停后的终止移交、窄屏；无外部网络请求，无 renderer error。
+- M02 活跃 WorkItem 计数和“分配任务”入口已随 M03 完成。两阶段审查与全分支最终复审通过。
+- 实际实现、复用决定、接口、复验命令、证据和边界见 `doc/multica-m02-m03-acceptance.md`；机器记录及合成截图在 `doc/assets/multica-m02-m03/`。
+- 本轮选择项目作用域 Squad、默认列表、独立冻结执行房间；不会改变源房间。未使用的预览保留本地隐藏记录，暂不自动清理；可选 Board 与 M04–M07 待后续。不含付费模型、真实 Tauri 窗口/OS 输入法/屏幕阅读器或安装包验收。原 Vite 大 chunk 警告保留。
+- 保留所有用户修改及既有 output 目录，没有合并、发布或调用付费 API；按授权提交并创建 PR，链接将在提交后补记。
