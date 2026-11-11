@@ -95,8 +95,9 @@ export class AgentLifecycleService {
   }
   const evaluations=this.db.query<{id:string;roomId:string;taskId:string;status:string;createdAt:string},[string]>("SELECT e.id,t.session_id AS roomId,t.id AS taskId,e.status,e.created_at AS createdAt FROM leader_evaluations e JOIN multi_tasks t ON t.id=e.task_id WHERE json_extract(t.config_json,'$.synthesizerId')=? AND e.status IN ('pending','running','blocked','awaiting_review')").all(agentId);
   for(const evaluation of evaluations){
-   // The actual running Leader turn already owns this work; pending work has its own durable identity.
-   if(evaluation.status==='running'&&this.db.query("SELECT 1 FROM multi_turns WHERE task_id=? AND phase='leader_evaluation' AND status='running'").get(evaluation.taskId))continue;
+   // Terminal-parent normalization can omit the turn; deduplicate only work actually projected.
+   const turn=evaluation.status==='running'?this.db.query<{id:string},[string,string]>("SELECT id FROM multi_turns WHERE task_id=? AND stable_key=? AND status='running'").get(evaluation.taskId,'leader-evaluation:'+evaluation.id):null;
+   if(turn&&items.some(item=>item.kind==='discussion'&&item.id===turn.id&&item.state==='running'))continue;
    items.push({id:evaluation.id,kind:'leader_evaluation',roomId:evaluation.roomId,rootTaskId:resolveExecutionRoot(this.db,evaluation.roomId,evaluation.taskId),runId:null,workPackageId:null,attemptNo:0,state:evaluation.status==='pending'?'queued':evaluation.status==='blocked'?'paused':evaluation.status==='awaiting_review'?'awaiting_review':'running',createdAt:evaluation.createdAt});
   }
   return projectAgentWorkload(items.filter(item=>!item.rootTaskId||!this.db.query("SELECT 1 FROM room_commands WHERE id=? AND status='revoked'").get(item.rootTaskId)));

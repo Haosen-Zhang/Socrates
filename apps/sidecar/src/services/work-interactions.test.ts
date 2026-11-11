@@ -2,7 +2,7 @@ import {expect,test} from 'bun:test';
 import {setupCostFlowFixture,untilCostFlow} from './cost-flow-fixture';
 import {WorkInteractionService} from './work-interactions';
 import {EventStore} from '../store/event-store';
-import {LEADER_LIMITS,type WorkInteractionInput} from '@socrates/core';
+import {LEADER_LIMITS,type AgentWorkloadProjection,type WorkInteractionInput} from '@socrates/core';
 type Fixture=Awaited<ReturnType<typeof setupCostFlowFixture>>;
 const input=(id:string,extra:Partial<WorkInteractionInput>={}):WorkInteractionInput=>({clientRequestId:id,action:'message',content:'Inspect the existing result',mentions:[],...extra});
 const create=(f:Fixture)=>f.workItems.create({workspaceId:f.workspace.id,title:'Inspect context',objective:'Read context.txt',acceptanceCriteria:['Report findings'],ownerKind:'user',priority:'normal'});
@@ -81,12 +81,21 @@ test('Leader evaluates one event batch with bounded real broker calls and never 
   const turns=f.db.query<{phase:string;status:string},[]>("SELECT phase,status FROM multi_turns WHERE phase='leader_evaluation'").all();expect(turns).toEqual([{phase:'leader_evaluation',status:'completed'}]);
  }finally{await f.close();}
 });
-test('real TeamRunner package completion automatically schedules bounded Leader evaluation and Inbox review',async()=>{
- const f=await setupCostFlowFixture({nativeToolCalls:()=>[]});try{
+test('real TeamRunner completion keeps automatic Leader evaluation running until settlement and publishes Inbox review',async()=>{
+ let during:AgentWorkloadProjection|undefined,parentState:string|undefined;
+ const f=await setupCostFlowFixture({nativeToolCalls:()=>[],onGatewayRequest:request=>{
+  if(JSON.stringify(request).includes('LEADER_EVALUATION:')){
+   during=f.agentLifecycle.workload('fixture-a');
+   parentState=f.db.query<{state:string},[]>("SELECT t.state FROM multi_tasks t JOIN leader_evaluations e ON e.task_id=t.id WHERE e.status='running'").get()?.state;
+  }
+ }});try{
   const {item}=await squadItem(f),taskId=f.commands.get(item.currentRun!.commandId!)!.taskId!,plan=f.tasks.getPlan(taskId)!;
   const response=await f.app.request(`/multi/tasks/${taskId}/plan-decisions`,{method:'POST',headers:f.headers,body:JSON.stringify({version:plan.version,hash:plan.contentHash,clientDecisionKey:'approve',decision:'approve_exact_plan'})});expect(response.status).toBe(200);
   await untilCostFlow(()=>f.db.query<{n:number},[]>("SELECT COUNT(*) n FROM leader_evaluations WHERE status='no_action'").get()!.n===1,'real reports');
   expect(f.packages.list(taskId).every(p=>p.state==='completed')).toBe(true);
+  expect(parentState).toBe('completed');expect(during?.state).toBe('running');expect(during?.counts.running).toBe(1);
+  expect(during?.items).toHaveLength(1);expect(during?.items[0]).toMatchObject({kind:'leader_evaluation',runId:null,rootTaskId:item.currentRun!.commandId});
+  expect(f.agentLifecycle.workload('fixture-a').state).toBe('idle');
   expect(f.db.query<{n:number},[]>("SELECT COUNT(*) n FROM leader_report_receipts WHERE event_id LIKE 'package-report:%'").get()!.n).toBeGreaterThanOrEqual(2);
   expect(f.inbox.list().items.some(i=>i.kind==='human_review'&&i.link.workItemId===item.id)).toBe(true);
   const current=f.workItems.get(item.id)!;f.workItems.review(item.id,current.revision,'accept');expect(f.inbox.list().items.some(i=>i.id.startsWith('review:'))).toBe(false);
