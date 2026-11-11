@@ -385,3 +385,11 @@ M03 可选 Board 不引入；M04 生命周期、M05 提及/收件箱/Leader 再�
 - 实际实现、复用决定、接口、复验命令、证据和边界见 `doc/multica-m02-m03-acceptance.md`；机器记录及合成截图在 `doc/assets/multica-m02-m03/`。
 - 本轮选择项目作用域 Squad、默认列表、独立冻结执行房间；不会改变源房间。未使用的预览保留本地隐藏记录，暂不自动清理；可选 Board 与 M04–M07 待后续。不含付费模型、真实 Tauri 窗口/OS 输入法/屏幕阅读器或安装包验收。原 Vite 大 chunk 警告保留。
 - 保留所有用户修改及既有 output 目录，没有合并、发布或调用付费 API；按授权提交并创建 PR：[PR #153](https://github.com/Haosen-Zhang/Socrates/pull/153)，实现提交 `12719df`。未合并、未发布。
+
+## 2026-11-11 — Multica UX M04–M05 (in progress)
+
+- Baseline verified: PR #153 (M02–M03) merged, new branch `codex/multica-ux-m04-m05` from `origin/main@d87b365`, issue #154. Existing user data, original checkout and older untracked browser artifacts preserved.
+- M04 implementation committed locally as `995cf81`: independent availability/workload projections, provider evidence migration 037, real Agent detail and dual-axis Squad roster, run/attempt/package timeline, safe tool summaries and existing recorded write diffs, cost/statistics and verification links. No Native runtime rewrite.
+- Reuse audit reread actual Multica license and lifecycle/timeline/mention sources; no Multica code/assets copied, no dependency added. Reference-path mismatch and actual source SHA recorded in `doc/reuse-decisions.md`.
+- M04 targeted regression: 81 pass, 0 fail. Root typecheck and desktop build passed after correcting desktop target-lib/import/test-fixture compatibility. Chrome: 8/8 checks passed, no renderer errors or external browser requests; real temporary services, controlled model, narrow 650×600 drawer inspected. Stage review pending; M05 not yet marked complete.
+- Plan, authority mapping and validation record: `doc/multica-m04-m05-plan.md`, `doc/multica-m04-m05-acceptance.md`. Full suite/final browser/PR will be recorded after M05.

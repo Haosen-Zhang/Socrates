@@ -28,6 +28,19 @@ afterEach(() => {
 });
 
 describe("room-scoped store projections", () => {
+  it("late instruction acknowledgement clears only submitted files in its source room", async()=>{
+    await useStore.getState().selectAgentSession("a");
+    useStore.setState({draftAttachments:[{id:"a-sent"},{id:"a-new"}] as never,draftWorkspaceRefs:[{id:"a-ref"}] as never});
+    await useStore.getState().selectAgentSession("b");
+    useStore.setState({draftAttachments:[{id:"b-file"}] as never,draftWorkspaceRefs:[{id:"b-ref"}] as never});
+    useStore.getState().clearSubmittedRoomFiles("a",["a-sent"],["a-ref"]);
+    expect(useStore.getState().draftAttachments.map(a=>a.id)).toEqual(["b-file"]);
+    expect(useStore.getState().draftWorkspaceRefs.map(a=>a.id)).toEqual(["b-ref"]);
+    await useStore.getState().selectAgentSession("a");
+    expect(useStore.getState().draftAttachments.map(a=>a.id)).toEqual(["a-new"]);
+    expect(useStore.getState().draftWorkspaceRefs).toEqual([]);
+  });
+
   for (const source of ["workspace", "clipboard"] as const) it(`keeps late ${source} imports in the originating room`, async () => {
     await useStore.getState().selectAgentSession("a");
     let release!: (value: Response) => void;

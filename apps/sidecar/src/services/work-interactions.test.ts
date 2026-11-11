@@ -151,7 +151,7 @@ test('Will trigger alreadyQueued reflects durable target-specific instructions, 
 });
 for(const pendingState of ['created','sent','outcome_unknown'] as const)test(`unsettled ${pendingState} model cost blocks queue dispatch and restart without a dollar budget`,async()=>{
  const f=await setupCostFlowFixture({nativeToolCalls:()=>[]});try{
-  const {item,roomId}=await squadItem(f),scope={workItemId:item.id};
+  const {item}=await squadItem(f),scope={workItemId:item.id};
   const queued=await f.interactions.submit(scope,input('cost-queue',{delivery:'queue',mentions:[{type:'agent',agentId:'fixture-b'}]}));
   const original=f.broker.ledger.list({rootTaskId:item.currentRun!.commandId!})[0]!;
   f.broker.ledger.begin({...original,invocationId:'unsettled-model',logicalStepId:'unsettled-step'},original.priceSnapshotId);

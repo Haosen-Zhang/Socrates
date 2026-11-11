@@ -182,6 +182,7 @@ export type Store = {
   composerDrafts: Record<string, string>;
   composerMentions: Record<string, SelectedMention[]>;
   setComposerMentions: (roomId:string,mentions:SelectedMention[]) => void;
+  clearSubmittedRoomFiles: (roomId:string,attachmentIds:string[],workspaceRefIds:string[]) => void;
   setComposerDraft: (roomId: string, text: string) => void;
   setAppMode: (mode: "chat" | "cowork") => Promise<void>;
   sendRoomCommand: (content: string, mentions: RoomMention[], intent: RoomCommandIntent, clientRequestId?: string, roomId?: string, costOptions?: CostOptions, verificationPlanId?:string, routingCandidateId?:string) => Promise<boolean>;
@@ -683,6 +684,7 @@ export const useStore = create<Store>((set, get) => {
     historyGeneration: 0, historyRequestVersion: 0, historyRevision: 0, taskRequestVersion: 0, attachmentError: null, attachmentImports: 0,
     activeRoomCommandId:null, adaptiveCommandId:null, adaptiveStatus:null, commandExecutionKind:null, lastStoppedRunId:null, roomNavigation: storedRoomNavigation(), pendingRoomRequests:{}, approvalDecisionKeys:{}, roomProjections: {}, composerDrafts: {}, composerMentions: {},
     setComposerMentions: (roomId, mentions) => set(state => ({composerMentions:{...state.composerMentions,[roomId]:mentions}})),
+    clearSubmittedRoomFiles: (roomId,attachmentIds,workspaceRefIds) => updateRoom(roomId,current=>({draftAttachments:current.draftAttachments.filter(item=>!attachmentIds.includes(item.id)),draftWorkspaceRefs:current.draftWorkspaceRefs.filter(item=>!workspaceRefIds.includes(item.id))})),
     setComposerDraft: (roomId, text) => set(state => ({composerDrafts: {...state.composerDrafts, [roomId]: text}})),
     setAppMode: async mode => {
       const nav = switchRoomMode(get().roomNavigation, mode);

@@ -3,6 +3,7 @@ import { atomicToDecimal, decimalToAtomic, type WorkItem, type WorkItemOwnerKind
 import { ActorPicker, DetailPanel, EmptyState, ErrorNotice, ObjectPage, StatusBadge } from "../foundation";
 import { useStorePick } from "../selectors";
 import { requireOk, sidecarFetch, type Handshake } from "../transport";
+import WorkItemDiscussion from "../work-interactions/WorkItemDiscussion";
 import AgentAvatar from "../AgentAvatar";
 import FlightRecorderPanel from "../flight-recorder/FlightRecorderPanel";
 import "../squads/squads.css";
@@ -60,6 +61,7 @@ export default function WorkItemsPanel({workspaceId,handshake,onOpenRoom,onHisto
       {error&&<ErrorNotice message={error}/>}<button className="pixel-button px-3 py-2" onClick={editOwner}>{tr("分配 / 开始","Assign / start")}</button>
       {item.workflow==="in_review"&&<><p>{tr("执行完成不等于通过验收，请核对产物后决定。","Execution completion is not acceptance. Check the artifacts before deciding.")}</p><button className="pixel-button px-3 py-2" disabled={busy} onClick={()=>void act(async()=>{setDetail(await request<ItemDetail>(`/${item.id}/review`,{expectedRevision:item.revision,decision:"accept"}));})}>{tr("审核通过并完成","Accept and mark Done")}</button><button className="pixel-button px-3 py-2" disabled={busy} onClick={()=>void act(async()=>{setDetail(await request<ItemDetail>(`/${item.id}/review`,{expectedRevision:item.revision,decision:"request_changes"}));})}>{tr("要求修改","Request changes")}</button></>}
       {item.roomId&&<button className="pixel-button px-3 py-2" onClick={()=>void act(()=>openRoom(item.roomId!))}>{tr("打开来源房间","Open source room")}{item.sourceMessageId?` · ${tr("消息","message")}`:""}</button>}
+      <WorkItemDiscussion key={item.id} item={item} squads={squads} handshake={handshake} onOpenRoom={id=>void act(()=>openRoom(id))}/>
       <h3>{tr("对话消息","Conversation")}</h3>{item.messages?.map(m=><p className="work-task-objective" key={m.id}>{m.content}</p>)}
       <h3>{tr("工作包","Work packages")}</h3>{item.workPackages?.map(p=><article key={p.id}><strong>{p.title}</strong> · {p.state}<ul>{p.acceptanceCriteria?.map((c,i)=><li key={i}>{c}</li>)}</ul></article>)}
       <h3>{tr("产物","Artifacts")}</h3>{item.artifacts?.map((a,i)=><p key={i}>{a.path||`${tr("已保存产物","Stored artifact")}: ${a.id}`} · {a.mediaType}</p>)}
