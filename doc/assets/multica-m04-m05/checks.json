@@ -49,6 +49,14 @@
       "ok": true
     },
     {
+      "name": "Durable next-round queue appears in Agent workload before any Run exists",
+      "ok": true
+    },
+    {
+      "name": "Agent queued instruction opens its room without fabricating an empty Run timeline",
+      "ok": true
+    },
+    {
       "name": "Work composer stays editable while approval is pending",
       "ok": true
     },
@@ -86,6 +94,30 @@
     },
     {
       "name": "Read-only timeline buttons do not submit an unsent room draft",
+      "ok": true
+    },
+    {
+      "name": "Expanded history evidence stays inside a scrollable portal 1440x1000",
+      "ok": true
+    },
+    {
+      "name": "Original composer, send and navigation remain reachable 1440x1000",
+      "ok": true
+    },
+    {
+      "name": "Expanded history evidence stays inside a scrollable portal 650x600",
+      "ok": true
+    },
+    {
+      "name": "Original composer, send and navigation remain reachable 650x600",
+      "ok": true
+    },
+    {
+      "name": "Real Native tool approval Inbox opens its canonical command timeline with Run events",
+      "ok": true
+    },
+    {
+      "name": "Agent detail opens older adaptive planning turn at its frozen command root",
       "ok": true
     },
     {

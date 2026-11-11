@@ -1,9 +1,15 @@
 {
-  "room-instructions.png": "a516fae5bcae0b22ca3d7fd931ebc6f53be65ff43537881134522181449104a5",
+  "agent-adaptive-history.png": "a80f92b91ee9a442abd11179fc8b58b5c7328cd4b36d56867e5198d156147723",
+  "agent-detail.png": "82dc07b1e671b73141f3a65708b8dd13a1f385a78ba6a96570ec4ddcb3fbf1f4",
+  "agent-narrow.png": "b00a858b92066c4be44184dd60b24cd30f3ef1b8dc2e180f3c95ef6affafc11b",
+  "checks.json": "b5549148f1acd9dcedf42562110dddac5a770815e91b46e2fdd2ab8d1d368a00",
+  "inbox-tool-approval-events.png": "7251c276883cd319beaf5ab1e2821f5de8155c0cf17bb46b82813139d7ff6441",
   "inbox.png": "34b130b0979dae2d53a0b59bce3af21799346c18957975d4199254eb8e1b9eb0",
-  "agent-narrow.png": "8d9bf044026755d5b85d0c01870c7fd20ff8966e54dd5d181c6f8b182af5539f",
   "interactions-narrow.png": "c102ee1f58f74edb6d62d1484b21c1efbce07f994f493f671e34c332d0368022",
-  "checks.json": "556d2a4123bd1f3d549d53efd954b9b652474d5f4500a89487dbaf188ecd5940",
-  "agent-detail.png": "da585c68cc8d9d03fa6b3d77574f7bd8773a9ed11b0210f37007e5636a02ee0e",
-  "interactions.png": "84d77f26f3f69b5c30b2ab1d78b42c6437640891ab276bb626c72e55add074f4"
+  "interactions.png": "7c5a1282cf73d29a05e0bad977c5493f9a293ee31b43ff7611b1e57a1fad8cd9",
+  "room-composer-1440.png": "f0f36dbaa67e0cc84aad6d4f8e7567eb201e6810577e6fb9b6f3d4ba19087f9a",
+  "room-composer-650.png": "94245fc00f6c0e770de79983be2d45fb0b872e4c320911ba4ffc7971de943b66",
+  "room-instructions-650.png": "c71bcf06cc24e4acd6246757b32c026e1362a455af0d1647beeffc205c00f5c3",
+  "room-instructions.png": "feb652abf49429efd7825e209b10ec33e70569907b4b4c2aeae3ee1d6de242db",
+  "validation.json": "5708744508f415b8c8ef8e0b68f13d4bc67f24f8bd8194a2df4fbcde1361d713"
 }

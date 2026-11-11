@@ -12,7 +12,7 @@ Reuse/license audit: [reuse-decisions.md](reuse-decisions.md), including the act
 
 ## Validation
 
-Implemented and stage-reviewed. Final whole-branch review and submission evidence are recorded below. Tests use temporary SQLite/workspaces and controlled providers; no private content or paid provider calls.
+Implemented and stage-reviewed. After the final integration fixes, **1312 tests and 32 actual Chrome checks pass**; typecheck, desktop build, lint (583 files) and diff-check pass. Final scoped review is approved; submission evidence is recorded below. Tests use temporary SQLite/workspaces and controlled providers; no private content or paid provider calls.
 
 ### M04 evidence
 
@@ -80,3 +80,41 @@ M06 execution interaction refinements and M07 full stress/acceptance remain sepa
 - Actual Chrome: **24/24 passed**, no external browser requests and no renderer errors. Includes both WorkItem and Room composer paths, real Squad quote→dispatch, note zero calls, exact-target admission, persisted queue/reload, approval deep link, bounded Leader no_action, stop/restart history, both human and blocked Inbox resolution/reload/no replay, read-only controls do not send an unsent draft, and narrow scrolling.
 - Machine results and synthetic screenshots: [checks.json](assets/multica-m04-m05/checks.json), [Agent](assets/multica-m04-m05/agent-detail.png), [Inbox](assets/multica-m04-m05/inbox.png), [narrow instructions](assets/multica-m04-m05/interactions-narrow.png), [Room instructions](assets/multica-m04-m05/room-instructions.png). [SHA-256 manifest](assets/multica-m04-m05/sha256.json). Screenshots visually inspected.
 - Full suite output: `/private/tmp/socrates-m04-m05-tests-final.log`. Temporary browser DOM/logs stay untracked; no real data is included in evidence.
+
+## Final whole-branch review
+
+The broad review found five integration defects missed by isolated stage tests: restrictive interaction foreign keys blocked ordinary room deletion; inline history timelines exceeded the composer viewport; M05 queued instructions were absent from M04 workload; tool approval/unknown-outcome Inbox roots did not match recorder roots; older adaptive planning/review turns lost their frozen root. All are assigned to one combined fix wave with real-service and browser regressions. Final fix results are appended after verification; the earlier 24 checks alone are not acceptance for these boundaries.
+
+## Execution decisions
+
+1. Keep Runtime/RoomCommandService/TeamRunner as the execution authority and add only persisted dispatch/evidence/projection facts. This follows the specification and avoids a second scheduler; a mistaken authority mapping would require migration/dispatch repair.
+2. Use the user's standing automatic-PR authorization and AGENTS.md, overriding the prompt pack's default no-push instruction. Push only this feature branch and create/update a PR; never merge or release. If the intended authorization changes, the remote branch/PR can be closed without merging.
+3. Because the specified Multica source path is absent at its cited revision, use the separately audited existing checkout with its actual SHA, explicitly documenting the mismatch. No source/assets are copied. If that reference is unsuitable, redo the behavior comparison; the implementation remains Socrates-owned.
+4. Continue the minimal residual Leader-state correction despite the workflow skill's final-wave limit: the user's complete-implementation request takes precedence over stopping with a reproduced required-state defect. The tradeoff is additional focused validation/review time; no new feature or runtime authority is introduced.
+
+
+### Final combined fix wave (`f9b4f56`)
+
+All five broad-review findings were repaired together, with no migration checksum changes or new dependency:
+
+- Explicit ordinary-room deletion removes its interaction/evaluation dependencies and Inbox projections in the existing transaction; billing is retained and the WorkItem execution-history deletion guard remains. Rechecking after asynchronous history staging prevents deleting a newly started queued Run and restores staged history on rejection.
+- History timelines now use the installed foundation DetailPanel portal. Composer options scroll locally under a height bound; draft and send remain outside that region. Actual desktop/narrow geometry asserts no application-root scrolling and visible navigation, toolbar, textarea and send after inspecting diagnostics/test evidence.
+- Durable instructions and pending Leader evaluations enter the independent workload projection. Pre-Run queue identities link to the real room, with no invented Run/root. Dispatch/recovery deduplicate projections; blocked/resolved rows update workload without changing availability.
+- Recorder, Inbox and workload reuse one execution-root resolver. Inbox carries explicit root/task/run/package/approval IDs, including real Native tool approvals and unknown adaptive child outcomes.
+- Older planning/review turns use the frozen cost root after the adaptive command advances to another child, preserving materialized record IDs/cursors and revoked-root filtering.
+
+Final full suite: **1312 pass / 0 fail / 24093 assertions / 226 files**, 43.15s (`/private/tmp/socrates-m04-m05-final-fix-tests.log`). Focused wave: **95 pass / 487 assertions / 9 files**, including actual deletion/retained billing, staging race, queue recovery/dispatch/block/resolution, approval→recorder HTTP events and old planner/reviewer links. Typecheck, desktop build, lint583 and diff-check pass.
+
+Final actual Chrome: **32/32 pass**, no renderer errors or external browser requests. Added queue Agent→room, real tool-approval Inbox→execution events, old adaptive planner Agent→timeline, and expanded diagnostic/test-evidence layout at 1440×1000 and 650×600. Controller inspected [narrow composer](assets/multica-m04-m05/room-composer-650.png), [bounded timeline](assets/multica-m04-m05/room-instructions-650.png), and [actual approval events](assets/multica-m04-m05/inbox-tool-approval-events.png). [Older adaptive history](assets/multica-m04-m05/agent-adaptive-history.png), final machine checks and SHA-256 manifest are in the same evidence directory. This supersedes the earlier 24-check capture.
+
+The final scoped re-review accepted four fixes and found one residual workload edge case: an automatic Leader evaluation after its parent completed was hidden by raw-turn deduplication. A narrow follow-up is required before completion; the previously reported 1312/32 results do not cover that state. The work continues to satisfy the requested M04–M05 behavior rather than parking a known defect under a process-round limit.
+
+
+
+### Final approval and verified source
+
+The residual state edge is repaired in `7790a43` / `c7e4245`: an exact, task-matched durably running Leader evaluation keeps its actual post-completion turn `running` in recent activity and workload, without duplication. Settled/stale turns still project interrupted. The real TeamRunner completion callback regression covers both states. Final scoped review is **approved; all five broad-review findings are closed**, with no remaining Critical/Important findings.
+
+On source `c7e4245`: **1312 tests pass / 0 fail / 24102 assertions / 226 files** (42.98s), root typecheck, desktop build (2.72s), lint583 and diff-check pass. The final 32-check Chrome capture is from `f9b4f56`; subsequent changes touch only backend lifecycle projection and its real-service regression, with no UI/harness changes. The final full-suite log is `/private/tmp/socrates-m04-m05-verified-tests.log`. [Validation metadata](assets/multica-m04-m05/validation.json) records these exact boundaries.
+
+M04 and M05 are complete. M06/M07, optional shortcut menus and the native/real-provider verification limitations above remain outside this run scope.
