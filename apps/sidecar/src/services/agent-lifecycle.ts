@@ -25,7 +25,7 @@ const runsSql=`WITH runs AS (
  FROM work_package_attempts a JOIN work_packages p ON p.id=a.package_id JOIN multi_tasks t ON t.id=p.task_id JOIN sessions s ON s.id=t.session_id
  WHERE NOT EXISTS(SELECT 1 FROM agent_runs r WHERE r.id=a.run_id)
  UNION ALL
- SELECT v.id,'discussion',t.session_id,s.workspace_id,v.agent_id,COALESCE(c.id,NULLIF(json_extract(t.config_json,'$.costRootTaskId'),''),t.id),NULL,a.attempt_no,CASE WHEN v.status='running' AND t.state IN ('completed','failed','cancelled') THEN 'interrupted' ELSE v.status END,v.error,NULL,v.started_at,v.completed_at
+ SELECT v.id,'discussion',t.session_id,s.workspace_id,v.agent_id,COALESCE(c.id,NULLIF(json_extract(t.config_json,'$.costRootTaskId'),''),t.id),NULL,a.attempt_no,CASE WHEN v.status='running' AND t.state IN ('completed','failed','cancelled') AND NOT EXISTS(SELECT 1 FROM leader_evaluations e WHERE e.task_id=t.id AND e.status='running' AND v.phase='leader_evaluation' AND v.stable_key='leader-evaluation:'||e.id) THEN 'interrupted' ELSE v.status END,v.error,NULL,v.started_at,v.completed_at
  FROM multi_turns v JOIN multi_tasks t ON t.id=v.task_id JOIN multi_task_attempts a ON a.id=v.attempt_id JOIN sessions s ON s.id=t.session_id LEFT JOIN room_commands c ON c.task_id=t.id AND c.room_id=t.session_id
  UNION ALL
  SELECT c.id||':'||json_extract(profile.value,'$.agentId'),'discussion_command',c.room_id,s.workspace_id,json_extract(profile.value,'$.agentId'),c.id,NULL,1,c.status,c.error,NULL,c.created_at,CASE WHEN c.status IN ('completed','failed','cancelled','interrupted') THEN c.updated_at END

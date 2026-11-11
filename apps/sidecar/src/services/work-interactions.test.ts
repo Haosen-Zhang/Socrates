@@ -82,11 +82,12 @@ test('Leader evaluates one event batch with bounded real broker calls and never 
  }finally{await f.close();}
 });
 test('real TeamRunner completion keeps automatic Leader evaluation running until settlement and publishes Inbox review',async()=>{
- let during:AgentWorkloadProjection|undefined,parentState:string|undefined;
+ let during:AgentWorkloadProjection|undefined,parentState:string|undefined,turnId:string|undefined,turnStatus:string|undefined;
  const f=await setupCostFlowFixture({nativeToolCalls:()=>[],onGatewayRequest:request=>{
   if(JSON.stringify(request).includes('LEADER_EVALUATION:')){
-   during=f.agentLifecycle.workload('fixture-a');
-   parentState=f.db.query<{state:string},[]>("SELECT t.state FROM multi_tasks t JOIN leader_evaluations e ON e.task_id=t.id WHERE e.status='running'").get()?.state;
+   const detail=f.agentLifecycle.detail('fixture-a')!;during=detail.workload;
+   const active=f.db.query<{state:string;id:string},[]>("SELECT t.state,v.id FROM multi_tasks t JOIN leader_evaluations e ON e.task_id=t.id JOIN multi_turns v ON v.task_id=t.id AND v.stable_key='leader-evaluation:'||e.id WHERE e.status='running' AND v.status='running'").get();
+   parentState=active?.state;turnId=active?.id;turnStatus=detail.recentRuns.runs.find(run=>run.id===turnId)?.status;
   }
  }});try{
   const {item}=await squadItem(f),taskId=f.commands.get(item.currentRun!.commandId!)!.taskId!,plan=f.tasks.getPlan(taskId)!;
@@ -94,11 +95,14 @@ test('real TeamRunner completion keeps automatic Leader evaluation running until
   await untilCostFlow(()=>f.db.query<{n:number},[]>("SELECT COUNT(*) n FROM leader_evaluations WHERE status='no_action'").get()!.n===1,'real reports');
   expect(f.packages.list(taskId).every(p=>p.state==='completed')).toBe(true);
   expect(parentState).toBe('completed');expect(during?.state).toBe('running');expect(during?.counts.running).toBe(1);
-  expect(during?.items).toHaveLength(1);expect(during?.items[0]).toMatchObject({kind:'leader_evaluation',runId:null,rootTaskId:item.currentRun!.commandId});
+  expect(during?.items).toHaveLength(1);expect(during?.items[0]).toMatchObject({id:turnId,kind:'discussion',runId:null,rootTaskId:item.currentRun!.commandId});expect(turnStatus).toBe('running');
   expect(f.agentLifecycle.workload('fixture-a').state).toBe('idle');
   expect(f.db.query<{n:number},[]>("SELECT COUNT(*) n FROM leader_report_receipts WHERE event_id LIKE 'package-report:%'").get()!.n).toBeGreaterThanOrEqual(2);
   expect(f.inbox.list().items.some(i=>i.kind==='human_review'&&i.link.workItemId===item.id)).toBe(true);
   const current=f.workItems.get(item.id)!;f.workItems.review(item.id,current.revision,'accept');expect(f.inbox.list().items.some(i=>i.id.startsWith('review:'))).toBe(false);
+  // An unfinished persisted turn without an active matching evaluation is still stale.
+  f.db.query("UPDATE multi_turns SET status='running' WHERE id=?").run(turnId!);
+  const stale=f.agentLifecycle.detail('fixture-a')!;expect(stale.recentRuns.runs.find(run=>run.id===turnId)?.status).toBe('interrupted');expect(stale.workload.state).toBe('idle');
  }finally{await f.close();}
 });
 test('explicit re-evaluation preserves approval and terminal plans; strict output and maximum calls stop safely',async()=>{
