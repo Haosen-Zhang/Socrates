@@ -361,9 +361,9 @@ Created [PR #151](https://github.com/Haosen-Zhang/Socrates/pull/151), closing is
 - 真实 Squad REST/service/UI：创建 Leader 自动入组、跨供应商角色选择、内嵌 AgentEditor、新建/编辑/归档、显式应用版本、新建 Work 房间、保留快照解除绑定。
 - 复用现有 Base UI 1.9.0 MIT ActorPicker/Dialog、AgentAvatar、SessionStore。Multica 只读行为参考，没有复制代码或素材。
 - 模板更新不改变既有房间；绑定房间的普通成员/Leader/配置编辑需先显式解除绑定；独立版本避免同号 Squad 切换接受过期更新。运行信息注明当前绑定房间范围，WorkItem 运行另存冻结归属。
-- M02 后端审查修复后复审通过；浏览器创建、保存、重开、窄屏、归档 9 项通过。正在与 M03 整体验收。
+- M02 后端审查修复后复审通过；浏览器创建、保存、重开、窄屏、归档 9 项通过。已随 M03 整体验收通过。
 
-### M03 当前实现与验证中事项
+### M03 实际实现
 
 - 迁移 035–036：独立工作事项、运行关联、审核记录、冻结启动预览；源房间/源消息可追溯，原消息/工作包/费用不复制。
 - 默认任务列表，Backlog/To Do/In Progress/In Review/Done，真实 owner/等待原因；项目和消息创建；双动作只分配/分配并开始。仅根执行完成进入审核，人工确认才 Done。
@@ -374,7 +374,7 @@ Created [PR #151](https://github.com/Haosen-Zhang/Socrates/pull/151), closing is
 
 ### 后续依赖
 
-M03 可选 Board 不引入；M04 生命周期、M05 提及/收件箱/Leader 再评估、M06 运行交互、M07 完整压力验收仍属后续。没有付费模型实测、发布、合并或安装包验证。完成最终修复和验证后按授权自动提交 PR。
+M03 可选 Board 不引入；M04 生命周期、M05 提及/收件箱/Leader 再评估、M06 运行交互、M07 完整压力验收仍属后续。没有付费模型实测、发布、合并或安装包验证。最终修复、验证及 PR 提交已完成，见本节末尾。
 
 
 ### M02–M03 最终验收（通过）
@@ -384,4 +384,4 @@ M03 可选 Board 不引入；M04 生命周期、M05 提及/收件箱/Leader 再�
 - M02 活跃 WorkItem 计数和“分配任务”入口已随 M03 完成。两阶段审查与全分支最终复审通过。
 - 实际实现、复用决定、接口、复验命令、证据和边界见 `doc/multica-m02-m03-acceptance.md`；机器记录及合成截图在 `doc/assets/multica-m02-m03/`。
 - 本轮选择项目作用域 Squad、默认列表、独立冻结执行房间；不会改变源房间。未使用的预览保留本地隐藏记录，暂不自动清理；可选 Board 与 M04–M07 待后续。不含付费模型、真实 Tauri 窗口/OS 输入法/屏幕阅读器或安装包验收。原 Vite 大 chunk 警告保留。
-- 保留所有用户修改及既有 output 目录，没有合并、发布或调用付费 API；按授权提交并创建 PR，链接将在提交后补记。
+- 保留所有用户修改及既有 output 目录，没有合并、发布或调用付费 API；按授权提交并创建 PR：[PR #153](https://github.com/Haosen-Zhang/Socrates/pull/153)，实现提交 `12719df`。未合并、未发布。
