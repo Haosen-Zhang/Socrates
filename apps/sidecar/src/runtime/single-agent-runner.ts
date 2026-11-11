@@ -1,3 +1,4 @@
+import { assertWorkItemAdmission } from "../services/work-item-admission";
 import { assertTaskWorkflowCompatible } from "../services/workflow-compatibility";
 import type { Database } from "bun:sqlite";
 import { ToolExecutionJournal } from "../tools/execution-journal";
@@ -1159,6 +1160,8 @@ export class SingleAgentRunner {
     return this.db.query<{id:string;root_task_id:string},[string,string]>("SELECT a.id,a.root_task_id FROM adaptive_attempts a JOIN room_commands c ON c.id=a.root_task_id WHERE c.room_id=? AND json_extract(a.attempt_json,'$.clientTurnKey')=?").get(sessionId,clientTurnKey);
   }
 
+  assertPublicStart(sessionId:string):void { assertWorkItemAdmission(this.db,sessionId); }
+
   continuationInput(runId: string, options:{allowInterrupted?:boolean;allowRouted?:boolean}={}): AgentRunInput {
     assertTaskWorkflowCompatible(this.db,runId);
     const row = this.db.query<{ session_id: string; prompt: string; status: string; error: string | null;
@@ -1305,15 +1308,21 @@ export class SingleAgentRunner {
       turn_id: string | null;
       agent_id: string | null;
       status: string;
+      error: string | null;
     }, [string]>(`
-      SELECT agent_runs.session_id, agent_runs.turn_id, agent_runs.status,
+      SELECT agent_runs.session_id, agent_runs.turn_id, agent_runs.status, agent_runs.error,
              COALESCE(conversation_turns.agent_id, sessions.primary_agent_id) AS agent_id
       FROM agent_runs
       JOIN sessions ON sessions.id = agent_runs.session_id
       LEFT JOIN conversation_turns ON conversation_turns.id = agent_runs.turn_id
       WHERE agent_runs.id = ?
     `).get(runId);
-    if (!active && (!prepared || prepared.status !== "preparing" || !prepared.agent_id)) {
+    if(prepared?.turn_id){
+      const latest=this.db.query<{id:string},[string]>('SELECT id FROM agent_runs WHERE turn_id=? ORDER BY attempt_no DESC,created_at DESC LIMIT 1').get(prepared.turn_id);
+      if(latest?.id!==runId)throw new Error('agent_run_superseded');
+    }
+    const paused = prepared?.status === "interrupted" && (prepared.error === "budget_exhausted" || isCostBudgetPause(prepared.error));
+    if (!active && (!prepared || (prepared.status !== "preparing" && !paused) || !prepared.agent_id)) {
       throw new Error("agent_run_not_active");
     }
     this.events.append({
@@ -1325,6 +1334,14 @@ export class SingleAgentRunner {
       coordinates: { turnId: active?.turnId ?? prepared!.turn_id! },
       payload: { reason: "user_cancelled" },
     });
+    if(paused){
+      const now=new Date().toISOString();
+      this.events.append({eventId:`run-cancelled:${runId}`,sessionId:prepared!.session_id,runId,agentId:prepared!.agent_id!,type:'run.cancelled',coordinates:{turnId:prepared!.turn_id!},payload:{reason:'user_cancelled'}},()=>{
+        this.db.query("UPDATE agent_runs SET status='cancelled',error='user_cancelled',completed_at=? WHERE id=?").run(now,runId);
+        this.db.query("UPDATE conversation_turns SET status='cancelled',updated_at=?,completed_at=? WHERE id=?").run(now,now,prepared!.turn_id);
+        this.db.query("UPDATE sessions SET status='cancelled',updated_at=? WHERE id=? AND NOT EXISTS (SELECT 1 FROM agent_runs WHERE session_id=? AND status IN ('preparing','running','awaiting_approval'))").run(now,prepared!.session_id,prepared!.session_id);
+      });
+    }
     if (!active) return;
     active.cancelled = true;
     // The supervisor-owned AbortSignal is the final cancellation authority.

@@ -1,0 +1,42 @@
+{
+  "baseline": "26a4352",
+  "scope": "M02-M03",
+  "tests": {
+    "pass": 1261,
+    "fail": 0,
+    "assertions": 23729,
+    "files": 218
+  },
+  "typecheck": "passed",
+  "desktopBuild": "passed",
+  "lint": {
+    "files": 554,
+    "status": "passed"
+  },
+  "browser": {
+    "checks": 23,
+    "model": "controlled local substitutes",
+    "database": "temporary SQLite",
+    "workspace": "temporary",
+    "externalRequests": 0,
+    "rendererErrors": 0
+  },
+  "screenshots": {
+    "squad-detail.png": "4b2b26090924fbdfc79b3c2856836ddfdc65d6da1e5d505f3fc2714214e65496",
+    "task-preview.png": "e8c536481835815b9dec3fdfa6f2a3e6b6288c1d2423092b9212ffbce61f49e7",
+    "handoff-history.png": "355e1a6de51ffbfcd536dfda56b586edd601f4acbe8113514a2004eb40d30d6d",
+    "task-narrow.png": "d9801237c7127f1af021d06547354cabc01d228e13f8c9cdd565db41a47000f4"
+  },
+  "unverified": [
+    "paid providers",
+    "native Tauri window",
+    "real OS IME",
+    "screen reader",
+    "installer"
+  ],
+  "knownLimitations": [
+    "unused hidden previews retained locally",
+    "existing Vite bundle-size warning",
+    "Board deferred as optional"
+  ]
+}

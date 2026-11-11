@@ -1,3 +1,5 @@
+> 2026-11-11 M02–M03 已落实下述 Squad/WorkItem 设计：034–036 迁移、独立 bindingVersion、持续 owner 与运行快照、显式预览/启动及人工审核。现行接口和验收以 [M02–M03 实现记录](multica-m02-m03-acceptance.md) 为准；下文含 M00 原始设计，不代表后续 M04–M07 已实现。
+
 # Work 交互领域、状态权威与迁移边界
 
 审计日期：2026-11-07（Asia/Singapore）。源码基线：`b71a8265b9e296947c1f5ef7879f08feca899852`，分支 `codex/multica-ux-m00-m01`。本文件服务于 **RUN_SCOPE=M00–M01**：核对已有运行链，增加可复用交互和只读执行记录投影；Squad 持久化、长期负责人、分配后启动、Agent 生命周期与 Inbox 属于 M02–M07。

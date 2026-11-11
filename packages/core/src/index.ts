@@ -39,3 +39,7 @@ export * from "./routing";
 export * from "./flight-recorder";
 export * from "./project-memory";
 export * from "./arena";
+
+export * from "./squad";
+
+export * from "./work-item";

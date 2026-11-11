@@ -77,16 +77,16 @@ export class MultiTaskStore {
   }
 
   async create(input: { sessionId: string; prompt: string; config: MultiTaskConfig }): Promise<MultiTaskRecord> {
-    const session = this.db.query<{ kind:string; mode: string; workspace_id: string | null; status: string }, [string]>("SELECT kind, mode, workspace_id, status FROM sessions WHERE id = ?").get(input.sessionId);
+    const session = this.db.query<{ kind:string; mode: string; workspace_id: string | null; status: string; strategy:string|null }, [string]>("SELECT kind, mode, workspace_id, status, json_extract(collaboration_json, '$.strategy') AS strategy FROM sessions WHERE id = ?").get(input.sessionId);
     const frozenRoute=input.config.routeDecisionId?this.db.query("SELECT id FROM routing_decisions WHERE id=? AND root_task_id=? AND room_id=?").get(input.config.routeDecisionId,input.config.costRootTaskId??"",input.sessionId):null;
     if(input.config.routeDecisionId&&!frozenRoute)throw new Error("routing_decision_missing");
-    if (!session || (frozenRoute?session.kind!=="cowork":session.mode !== "multi_agent")) throw new Error("multi_agent_session_required");
+    if (!session || (frozenRoute?session.kind!=="cowork":session.mode !== "multi_agent" && !(session.kind === "cowork" && session.strategy === "team"))) throw new Error("multi_agent_session_required");
     if (!session.workspace_id) throw new Error("multi_agent_workspace_required");
     if (!input.prompt.trim()) throw new Error("multi_agent_prompt_required");
     if (!Number.isInteger(input.config.maxRounds) || input.config.maxRounds < 1 || input.config.maxRounds > 20) throw new Error("multi_agent_rounds_invalid");
     const snapshots = this.db.query<{ agent_id: string; execution_eligible: number; snapshot_json: string }, [string]>("SELECT agent_id, execution_eligible, snapshot_json FROM session_agents WHERE session_id = ? ORDER BY position").all(input.sessionId).filter(item=>!input.config.allowedAgentIds || input.config.allowedAgentIds.includes(item.agent_id));
     const ids = new Set(snapshots.map((item) => item.agent_id));
-    if (input.config.speakingOrder.length < (frozenRoute?1:2) || new Set(input.config.speakingOrder).size !== input.config.speakingOrder.length || input.config.speakingOrder.some((id) => !ids.has(id))) throw new Error("multi_agent_order_invalid");
+    if (input.config.speakingOrder.length < (frozenRoute||session.strategy==="team"?1:2) || new Set(input.config.speakingOrder).size !== input.config.speakingOrder.length || input.config.speakingOrder.some((id) => !ids.has(id))) throw new Error("multi_agent_order_invalid");
     if (!ids.has(input.config.synthesizerId)) throw new Error("multi_agent_synthesizer_invalid");
     if (!snapshots.some((item) => item.agent_id === input.config.executionAgentId && item.execution_eligible === 1)) throw new Error("multi_agent_executor_invalid");
     for (const [agentId, effort] of Object.entries(input.config.effortByAgent ?? {})) {

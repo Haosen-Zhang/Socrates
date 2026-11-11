@@ -1,3 +1,4 @@
+import { assertWorkItemAdmission } from "../services/work-item-admission";
 import { assertTaskWorkflowCompatible } from "../services/workflow-compatibility";
 import { taskVerificationTarget, type WorkVerification } from "../services/work-verification";
 import type { Database } from "bun:sqlite";
@@ -251,6 +252,8 @@ export class MultiAgentCoordinator {
       this.complete(taskId);
     }
   }
+
+  assertPublicStart(sessionId:string):void { assertWorkItemAdmission(this.db,sessionId); }
 
   cancel(taskId: string): void {
     const controller = this.controllers.get(taskId);

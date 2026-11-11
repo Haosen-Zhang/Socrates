@@ -69,6 +69,15 @@ type RewindProjectionIntent = {
 };
 
 export class SessionStore {
+  private squadApplication = false;
+  applySquadBinding<T>(apply:()=>T):T {
+    const prior=this.squadApplication;this.squadApplication=true;
+    try{return apply();}finally{this.squadApplication=prior;}
+  }
+  private guardSquadBinding(sessionId:string) {
+    if(!this.squadApplication && this.db.query('SELECT room_id FROM squad_room_bindings WHERE room_id=?').get(sessionId))throw new Error('squad_bound_room_detach_required');
+  }
+
   constructor(private readonly db: Database, private readonly history?: HistoryStore) {
     history?.registerProjectionHandler("session.rewind", (record) => {
       const input = record.projectionIntent!.payload as unknown as RewindProjectionIntent;
@@ -88,7 +97,7 @@ export class SessionStore {
     collaborationDefaults?: RoomCollaborationSettings;
     legacyRoomId?: string | null;
     agents: Array<{ agentId: string; snapshot: Record<string, unknown>; executionEligible: boolean }>;
-  }): ConversationSession {
+  }, onCreated?: (id: string) => void): ConversationSession {
     const agentIds = input.agents.map((agent) => agent.agentId);
     const errors = validateConversation({ mode: input.mode, agentIds });
     if (errors.length) throw new Error(errors[0]);
@@ -122,7 +131,8 @@ export class SessionStore {
       if (!eligible.includes(defaults.assignment.coordinatorAgentId ?? "")) {
         defaults.assignment.coordinatorAgentId = eligible.includes(primaryAgentId) ? primaryAgentId : eligible[0] ?? primaryAgentId;
       }
-      if (eligible.length < 2) defaults.strategy = "single";
+      if (input.agents.length === 1 && eligible.length === 1 && input.collaborationDefaults?.strategy === "team") defaults.strategy = "team";
+      if (eligible.length < 2 && (input.agents.length > 1 || input.collaborationDefaults?.strategy !== "team")) defaults.strategy = "single";
     }
     const collaborationJson = kind === "cowork" ? JSON.stringify(defaults) : null;
     this.db.exec("BEGIN IMMEDIATE");
@@ -151,6 +161,7 @@ export class SessionStore {
       input.agents.forEach((agent, position) => {
         insertAgent.run(id, agent.agentId, JSON.stringify(agent.snapshot), position, agent.executionEligible ? 1 : 0);
       });
+      onCreated?.(id);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -195,7 +206,7 @@ export class SessionStore {
   }
 
   list(): ConversationSession[] {
-    return this.db.query<{ id: string }, []>("SELECT id FROM sessions ORDER BY archived, updated_at DESC").all()
+    return this.db.query<{ id: string }, []>("SELECT id FROM sessions WHERE NOT EXISTS (SELECT 1 FROM work_item_previews p WHERE json_extract(p.preview_json, '$.executionRoomId')=sessions.id) OR EXISTS (SELECT 1 FROM work_item_runs r WHERE r.execution_room_id=sessions.id) ORDER BY archived, updated_at DESC").all()
       .map((row) => this.get(row.id)!)
       .filter(Boolean);
   }
@@ -279,6 +290,7 @@ export class SessionStore {
   }
 
   bindWorkspace(sessionId: string, workspaceId: string | null): ConversationSession {
+    this.guardSquadBinding(sessionId);
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
     const shapeErrors = validateRoomShape({ kind: session.kind, workspaceId, agentIds: session.agents.map((a) => a.agentId) });
@@ -302,6 +314,7 @@ export class SessionStore {
     settings: RoomCollaborationSettings,
     primaryAgentId?: string,
   ): ConversationSession {
+    this.guardSquadBinding(sessionId);
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
     if (!SessionStore.INACTIVE.includes(session.status)) {
@@ -336,6 +349,7 @@ export class SessionStore {
   }
 
   updatePrimaryAgent(sessionId: string, primaryAgentId: string): ConversationSession {
+    this.guardSquadBinding(sessionId);
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
     if (!SessionStore.INACTIVE.includes(session.status)) {
@@ -353,6 +367,7 @@ export class SessionStore {
     sessionId: string,
     defaults: RoomCollaborationSettings,
   ): ConversationSession {
+    this.guardSquadBinding(sessionId);
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
     return this.updateCollaboration(
@@ -385,6 +400,7 @@ export class SessionStore {
   private static readonly INACTIVE = ["idle", "completed", "failed", "cancelled", "interrupted"];
 
   updateAgentSnapshot(sessionId: string, agentId: string, snapshot: Record<string, unknown>): ConversationSession {
+    this.guardSquadBinding(sessionId);
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
     if (!SessionStore.INACTIVE.includes(session.status)) throw new Error("active_session_members_locked");
@@ -403,6 +419,7 @@ export class SessionStore {
   }
 
   addAgent(sessionId: string, agentId: string, snapshot: Record<string, unknown>): ConversationSession {
+    this.guardSquadBinding(sessionId);
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
     if (!SessionStore.INACTIVE.includes(session.status)) throw new Error("active_session_members_locked");
@@ -416,6 +433,7 @@ export class SessionStore {
   }
 
   removeAgent(sessionId: string, agentId: string): ConversationSession {
+    this.guardSquadBinding(sessionId);
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
     if (!SessionStore.INACTIVE.includes(session.status)) throw new Error("active_session_members_locked");
@@ -481,6 +499,7 @@ export class SessionStore {
   }
 
   async remove(sessionId: string, withinTransaction?: () => void): Promise<void> {
+    if (this.db.query("SELECT id FROM work_item_runs WHERE execution_room_id=? LIMIT 1").get(sessionId)) throw new Error("work_item_execution_history_retained");
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
     if (this.hasUnfinishedRouting(sessionId) || !["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) throw new Error("active_session_delete_locked");
@@ -519,6 +538,7 @@ export class SessionStore {
 
   /** Context-only rewind: it never attempts to reverse workspace files or shell side effects. */
   async rewind(sessionId: string, messageId: string): Promise<void> {
+    if (this.db.query("SELECT id FROM work_item_runs WHERE execution_room_id=? LIMIT 1").get(sessionId)) throw new Error("work_item_execution_history_retained");
     const session = this.get(sessionId);
     if (!session) throw new Error("session_not_found");
     if (this.hasUnfinishedRouting(sessionId) || !["idle", "completed", "failed", "cancelled", "interrupted"].includes(session.status)) throw new Error("active_session_rewind_locked");

@@ -1,0 +1,12 @@
+import {writeFileSync,unlinkSync} from 'node:fs';
+import {setupCostFlowFixture} from '../apps/sidecar/src/services/cost-flow-fixture';
+const f=await setupCostFlowFixture({routingFixture:true,nativeToolCalls:()=>[]});
+f.sessions.rename(f.roomIds.work,'Squad acceptance lab');
+f.db.query("INSERT INTO session_messages(id,session_id,role,kind,content,status,created_at) VALUES('source-message',?,'user','text','A persistent goal from this room','completed',?)").run(f.roomIds.work,new Date().toISOString());
+f.app.get('/__multica/counts',c=>c.json({native:f.nativeCalls.length,gateway:f.gatewayCalls.length,runs:f.db.query('SELECT count(*) AS n FROM agent_runs').get(),commands:f.db.query('SELECT count(*) AS n FROM room_commands').get()}));
+const metadataPath=process.env.SOCRATES_MULTICA_METADATA??'/private/tmp/socrates-multica-m02-m03.json';
+const server=Bun.serve({hostname:'127.0.0.1',port:0,idleTimeout:0,fetch:f.app.fetch});
+writeFileSync(metadataPath,JSON.stringify({source:'synthetic-multica-m02-m03',port:server.port,token:f.token,roomIds:f.roomIds,workspaceId:f.workspace.id}));
+console.log('M02–M03 synthetic fixture ready');
+let closing=false;
+for(const signal of ['SIGINT','SIGTERM'] as const)process.on(signal,()=>{if(closing)return;closing=true;server.stop(true);void f.close().finally(()=>{try{unlinkSync(metadataPath);}catch{}process.exit(0);});});

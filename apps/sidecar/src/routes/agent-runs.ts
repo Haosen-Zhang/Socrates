@@ -38,6 +38,7 @@ export function agentRunRoutes(
     if (typeof body?.prompt !== "string" || !body.prompt.trim()) return c.json({ error: "prompt_required" }, 400);
     const runtimeKind = typeof body.runtimeKind === "string" ? body.runtimeKind : "native_ai_sdk";
     try {
+      runner.assertPublicStart(c.req.param("sessionId"));
       const started = await supervisor.start({
         sessionId: c.req.param("sessionId"),
         runtimeKind,
