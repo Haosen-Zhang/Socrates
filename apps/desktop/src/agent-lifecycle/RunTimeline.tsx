@@ -1,4 +1,4 @@
-import {timelineGroups} from "./timelineGroups";
+import {timelineGroups,timelineEventStreams} from "./timelineGroups";
 import {useStorePick} from "../selectors";
 import {useEffect,useRef,useState} from 'react';
 import type {FlightArtifactDiff,FlightPage,FlightRecord,VerificationView,WorkspaceGitDiff,WorkspaceGitStatus} from '@socrates/core';
@@ -42,14 +42,14 @@ export default function RunTimeline({target,handshake,en,onOpenRoom}:{target:Tim
  return <section className="space-y-3 min-w-0" data-run-timeline>
   <h3 className="font-bold">{tr('运行时间线','Run timeline')}</h3><p className="break-all text-xs">{target.rootTaskId}</p>
   <div className="flex flex-wrap gap-2"><button className="pixel-button px-2 py-1" onClick={()=>onOpenRoom(target.roomId)}>{tr('打开关联房间','Open related room')}</button><button className="pixel-button px-2 py-1" onClick={()=>void loadEvidence()}>{tr('查看当前测试证据','View current test evidence')}</button>{target.workspaceId&&<button className="pixel-button px-2 py-1" onClick={()=>void loadChanges()}>{tr('查看当前工作区变更','View current workspace changes')}</button>}</div>
-  {error&&<ErrorNotice message={error}/>}<p className="text-xs">{tr('事件按持久序号分页。状态快照与不可变事件分别显示；工具仅展示参数类型、长度和 hash。','Paged by durable sequence. State snapshots and immutable events are distinct; tool arguments show types, lengths and hashes only.')}</p>
+  {error&&<ErrorNotice message={error}/>}<p className="text-xs">{tr('记录按游标分页；各事件流按自身持久序号显示。当前快照不表示执行顺序；工具参数仅展示类型、长度和 hash。','Cursor-paged records; each journal keeps its own durable sequence. Current snapshots do not imply execution order; tool arguments show types, lengths and hashes only.')}</p>
   {timelineGroups(page?.records??[]).map(group=><section key={group.id} className="space-y-2 border-t pt-2" data-timeline-group={group.id}>
    <h4 className="font-bold break-all">{group.id}{group.attemptNo&&` · attempt ${group.attemptNo}`}</h4>{group.workPackageId&&<p className="text-xs break-all">WorkPackage · {group.workPackageId}</p>}
-   {group.snapshots.map(r=><button className="pixel-button block w-full px-2 py-1 text-left text-xs break-all" key={r.id} data-run-status-snapshot onClick={()=>setSelected(r)}>{tr('当前快照','Current snapshot')}: {r.type} · {r.agentId?agents.find(a=>a.id===r.agentId)?.nickname??r.agentId:'—'}</button>)}
-   <ol className="space-y-2">{group.events.map(r=><li key={r.id}><button className="pixel-button w-full text-left px-2 py-2 break-all" onClick={()=>setSelected(r)} aria-pressed={selected?.id===r.id}>
-    <strong>{r.type}</strong><small className="block">#{r.sequence} · {r.agentId?agents.find(a=>a.id===r.agentId)?.nickname??r.agentId:'—'} · {r.occurredAt?new Date(r.occurredAt).toLocaleString():'—'}{r.fields.attemptNo!=null&&` · ${r.source==='invocation'?'invocation ':''}attempt ${r.fields.attemptNo}`}{r.fields.providerAttemptNo!=null&&` · provider attempt ${r.fields.providerAttemptNo}`}</small>
+   {group.snapshots.length>0&&<div data-timeline-snapshots className="space-y-1"><h5 className="text-sm font-bold">{tr('状态与证据快照','State and evidence snapshots')}</h5>{group.snapshots.map(r=><button className="pixel-button block w-full px-2 py-1 text-left text-xs break-all" key={r.id} data-run-status-snapshot onClick={()=>setSelected(r)}>{tr('当前快照','Current snapshot')}: {r.type} · {r.agentId?agents.find(a=>a.id===r.agentId)?.nickname??r.agentId:'—'}</button>)}</div>}
+   {timelineEventStreams(group.events).map(stream=><section key={stream.source} data-timeline-source={stream.source}><h5 className="text-sm font-bold">{stream.source==='runtime'?tr('执行事件','Execution events'):stream.source==='command-event'?tr('命令事件','Command events'):tr('任务事件','Task events')}</h5><ol className="space-y-2">{stream.records.map(r=><li key={r.id}><button className="pixel-button w-full text-left px-2 py-2 break-all" onClick={()=>setSelected(r)} aria-pressed={selected?.id===r.id}>
+    <strong>{r.type}</strong><small className="block">#{r.sourceSequence} · {r.agentId?agents.find(a=>a.id===r.agentId)?.nickname??r.agentId:'—'} · {r.occurredAt?new Date(r.occurredAt).toLocaleString():'—'}{r.fields.attemptNo!=null&&` · ${r.source==='invocation'?'invocation ':''}attempt ${r.fields.attemptNo}`}{r.fields.providerAttemptNo!=null&&` · provider attempt ${r.fields.providerAttemptNo}`}</small>
     <small className="block">{r.fields.errorCode??r.fields.status??''} {r.fields.willRetry===true?tr('将重试','Will retry'):''}</small>
-   </button></li>)}</ol>
+   </button></li>)}</ol></section>)}
   </section>)}
   {page?.records.length===0&&<p>{tr('此任务暂无可见记录。','No visible records for this task.')}</p>}
   <div className="flex gap-2"><button className="pixel-button px-2 py-1" disabled={after===0} onClick={()=>setAfter(0)}>{tr('第一页','First page')}</button><button className="pixel-button px-2 py-1" disabled={page?.next==null} onClick={()=>setAfter(page!.next!)}>{tr('下一页','Next page')}</button></div>

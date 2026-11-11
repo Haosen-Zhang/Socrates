@@ -47,3 +47,24 @@ test('optional exporter failure cannot erase or prevent local records',async()=>
   expect(service.diagnostics(room.id).records.some(r=>r.id==='event:offline-proof')).toBe(true);
  } finally {await service.shutdown();db.close();}
 });
+
+test('first inspection after Native completion keeps tool snapshots outside execution chronology across page boundaries',async()=>{
+ const {timelineGroups,timelineEventStreams}=await import('../../../desktop/src/agent-lifecycle/timelineGroups');
+ const f=await setupCostFlowFixture();const service=new FlightRecorderService(f.db);
+ try{
+  const room=f.sessions.get(f.roomIds.work)!;f.sessions.updateCollaboration(room.id,{...room.collaboration,strategy:'single'});
+  const command=await f.commands.submit({roomId:room.id,clientRequestId:'late-timeline-inspection',content:'Create the controlled result',intent:'execute',mentions:[]});
+  await untilCostFlow(()=>f.commands.get(command.commandId)?.status==='completed','late inspection completion');
+  let after=0;const execution:import('@socrates/core').FlightRecord[]=[],snapshots:import('@socrates/core').FlightRecord[]=[];
+  do{
+   const page=service.list(room.id,{rootTaskId:command.commandId,after,limit:1});
+   for(const group of timelineGroups(page.records)){snapshots.push(...group.snapshots);for(const stream of timelineEventStreams(group.events))if(stream.source==='runtime')execution.push(...stream.records);}
+   if(page.next===null)break;after=page.next;
+  }while(true);
+  expect(snapshots.some(r=>r.type==='tool.write_file')).toBe(true);expect(snapshots.some(r=>r.type==='tool.read_file')).toBe(true);
+  expect(execution[0]!.type).toBe('run.created');expect(execution.findIndex(r=>r.type==='turn.started')).toBeLessThan(execution.findIndex(r=>r.type==='run.started'));
+  expect(execution.findIndex(r=>r.type==='run.started')).toBeLessThan(execution.findIndex(r=>r.type==='tool.operation.requested'));
+  expect(execution.some(r=>r.source==='tool')).toBe(false);
+  expect(execution.map(r=>r.sourceSequence)).toEqual([...execution.map(r=>r.sourceSequence)].sort((a,b)=>a-b));
+ }finally{await service.shutdown();await f.close();}
+});

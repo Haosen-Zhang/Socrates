@@ -23,11 +23,11 @@ export class FlightRecorderService {
  private rows(sql:string,...args:any[]):Row[]{return this.db.query(/\bLIMIT\b/i.test(sql)?sql:sql+' LIMIT 5000').all(...args) as Row[];}
  private exists(table:string){return !!this.db.query('SELECT name FROM sqlite_master WHERE type=\'table\' AND name=?').get(table);}
  private own(roomId:string){if(!this.db.query('SELECT id FROM sessions WHERE id=?').get(roomId))throw Error('flight_room_not_found');}
- private root(roomId:string,id:string):string{const packageRoot=this.db.query<{id:string},[string,string]>("SELECT COALESCE(c.id,t.id) AS id FROM work_package_attempts a JOIN work_packages p ON p.id=a.package_id JOIN multi_tasks t ON t.id=p.task_id LEFT JOIN room_commands c ON c.task_id=t.id AND c.room_id=t.session_id WHERE t.session_id=? AND a.run_id=? LIMIT 1").get(roomId,id);if(packageRoot)return packageRoot.id;const command=this.db.query('SELECT id FROM room_commands WHERE room_id=? AND (id=? OR task_id=? OR run_id=?) LIMIT 1').get(roomId,id,id,id) as Row|null;if(command)return command.id;const invocation=this.db.query('SELECT root_task_id FROM cost_invocations WHERE room_id=? AND run_id=? LIMIT 1').get(roomId,id) as Row|null;if(invocation)return invocation.root_task_id;const attempt=this.db.query("SELECT a.root_task_id FROM adaptive_attempts a JOIN adaptive_workflows w ON w.root_task_id=a.root_task_id WHERE w.room_id=? AND json_extract(a.attempt_json,'$.child.id')=? LIMIT 1").get(roomId,id) as Row|null;return attempt?.root_task_id??id;}
+ private root(roomId:string,id:string):string{const packageRoot=this.db.query<{id:string},[string,string]>("SELECT COALESCE(c.id,NULLIF(json_extract(t.config_json,'$.costRootTaskId'),''),t.id) AS id FROM work_package_attempts a JOIN work_packages p ON p.id=a.package_id JOIN multi_tasks t ON t.id=p.task_id LEFT JOIN room_commands c ON c.task_id=t.id AND c.room_id=t.session_id WHERE t.session_id=? AND a.run_id=? LIMIT 1").get(roomId,id);if(packageRoot)return packageRoot.id;const command=this.db.query('SELECT id FROM room_commands WHERE room_id=? AND (id=? OR task_id=? OR run_id=?) LIMIT 1').get(roomId,id,id,id) as Row|null;if(command)return command.id;const task=this.db.query<{root:string|null},[string,string]>("SELECT json_extract(config_json,'$.costRootTaskId') AS root FROM multi_tasks WHERE session_id=? AND id=?").get(roomId,id);if(task?.root)return task.root;const invocation=this.db.query('SELECT root_task_id FROM cost_invocations WHERE room_id=? AND run_id=? LIMIT 1').get(roomId,id) as Row|null;if(invocation)return invocation.root_task_id;const attempt=this.db.query("SELECT a.root_task_id FROM adaptive_attempts a JOIN adaptive_workflows w ON w.root_task_id=a.root_task_id WHERE w.room_id=? AND json_extract(a.attempt_json,'$.child.id')=? LIMIT 1").get(roomId,id) as Row|null;return attempt?.root_task_id??id;}
  private put(roomId:string,root:string,source:string,key:string,seq:number,type:string,at:string,fields:Row={},agent?:string,parent?:string){
   root=this.root(roomId,root);
   if(this.db.query("SELECT 1 FROM room_commands WHERE room_id=? AND id=? AND status='revoked'").get(roomId,root))return;
-  const id=`${source}:${safeId(key)}`,stage=type.split('.')[0]!,clean=flightFields(fields),content=JSON.stringify([clean,type,parent??null]);
+  const id=`${source}:${safeId(key)}`,stage=type.split('.')[0]!,clean=flightFields(fields),content=JSON.stringify([clean,type,parent??null,root]);
   if(this.db.query('SELECT id FROM flight_deleted WHERE id=?').get(id))return;
   const old=this.db.query('SELECT content_hash,record_json FROM flight_records WHERE id=?').get(id) as Row|null;if(old?.content_hash===hash(content))return;
   if(source!=='root'&&!this.db.query('SELECT id FROM flight_records WHERE id=?').get(`root:${root}`))this.put(roomId,root,'root',root,0,'task.root',at);
@@ -35,9 +35,22 @@ export class FlightRecorderService {
   const traceId=hash(`${roomId}:${root}`).slice(0,32),parentSpanId=hash(parent??`root:${root}`).slice(0,16);
   const span=this.provider.getTracer('socrates.flight-recorder','1').startSpan(safeId(type),{attributes:{'socrates.source':source,'socrates.sequence':seq,'socrates.root_task_id':safeId(root)}},source==='root'?ROOT_CONTEXT:trace.setSpanContext(ROOT_CONTEXT,{traceId,spanId:parentSpanId,traceFlags:TraceFlags.SAMPLED}));
   const record:FlightRecord={id,sequence:0,roomId,rootTaskId:root,parentId:source==='root'?null:parent??`root:${root}`,source,sourceSequence:seq,stage,type:safeId(type),agentId:agent?safeId(agent):null,occurredAt:/^\d{4}-\d{2}-\d{2}T/.test(at??'')?at:'',traceId,spanId:old?parse(old.record_json).spanId:span.spanContext().spanId,version:1,fields:clean};span.end();
-  this.db.query('INSERT INTO flight_records(id,room_id,root_task_id,source,source_sequence,stage,agent_id,record_json,content_hash) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json,content_hash=excluded.content_hash').run(id,roomId,root,source,seq,stage,record.agentId,JSON.stringify(record),hash(content));
+  this.db.query('INSERT INTO flight_records(id,room_id,root_task_id,source,source_sequence,stage,agent_id,record_json,content_hash) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET root_task_id=excluded.root_task_id,record_json=excluded.record_json,content_hash=excluded.content_hash').run(id,roomId,root,source,seq,stage,record.agentId,JSON.stringify(record),hash(content));
+ }
+ private reconcileRoots(roomId:string){
+  // Existing journal rows keep their pagination sequence when older child ownership is resolved.
+  for(const row of this.db.query<{root_task_id:string},[string]>('SELECT DISTINCT root_task_id FROM flight_records WHERE room_id=?').all(roomId)){
+   const root=this.root(roomId,row.root_task_id);if(root===row.root_task_id)continue;
+   const records=this.db.query<{id:string;record_json:string},[string,string]>("SELECT id,record_json FROM flight_records WHERE room_id=? AND root_task_id=? AND source!='root'").all(roomId,row.root_task_id);
+   for(const item of records){const r=JSON.parse(item.record_json) as FlightRecord;r.rootTaskId=root;r.traceId=hash(`${roomId}:${root}`).slice(0,32);if(r.parentId===`root:${row.root_task_id}`)r.parentId=`root:${root}`;
+    this.db.query('UPDATE flight_records SET root_task_id=?,record_json=?,content_hash=? WHERE id=?').run(root,JSON.stringify(r),hash(JSON.stringify([r.fields,r.type,r.parentId,root])),item.id);
+   }
+   this.db.query("DELETE FROM flight_records WHERE room_id=? AND source='root' AND root_task_id=?").run(roomId,row.root_task_id);
+   if(records.length)this.put(roomId,root,'root',root,0,'task.root',(JSON.parse(records[0]!.record_json) as FlightRecord).occurredAt);
+  }
  }
  sync(roomId:string){this.own(roomId);const revision=(this.db.query('SELECT total_changes() n').get() as {n:number}).n;if(this.revisions.get(roomId)===revision)return;this.db.transaction(()=>{
+  this.reconcileRoots(roomId);
   const cursor=(this.db.query("SELECT cursor FROM flight_cursors WHERE room_id=? AND source='events'").get(roomId) as Row|null)?.cursor??0;
   const events=this.rows('SELECT * FROM task_events WHERE session_id=? AND seq>? ORDER BY seq LIMIT 5000',roomId,cursor);
   for(const e of events){const p=parse(e.payload_json);if(!/delta|token|reasoning/i.test(e.type))this.put(roomId,e.task_id??p.rootTaskId??'room','event',e.event_id,e.seq,e.type,e.occurred_at,{...p,selectedCount:Array.isArray(p.selected)?p.selected.length:undefined},p.agentId,p.invocationId?`invocation:${p.invocationId}`:undefined);}
