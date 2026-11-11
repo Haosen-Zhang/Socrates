@@ -118,3 +118,7 @@ The residual state edge is repaired in `7790a43` / `c7e4245`: an exact, task-mat
 On source `c7e4245`: **1312 tests pass / 0 fail / 24102 assertions / 226 files** (42.98s), root typecheck, desktop build (2.72s), lint583 and diff-check pass. The final 32-check Chrome capture is from `f9b4f56`; subsequent changes touch only backend lifecycle projection and its real-service regression, with no UI/harness changes. The final full-suite log is `/private/tmp/socrates-m04-m05-verified-tests.log`. [Validation metadata](assets/multica-m04-m05/validation.json) records these exact boundaries.
 
 M04 and M05 are complete. M06/M07, optional shortcut menus and the native/real-provider verification limitations above remain outside this run scope.
+
+## Submission
+
+[PR #155](https://github.com/Haosen-Zhang/Socrates/pull/155) targets `main` from `codex/multica-ux-m04-m05`, closes issue #154 on merge. Code validation head is `c7e4245`; later commits contain evidence/progress documentation only. All blocking review findings are closed. No merge or release was performed; the host worktree and prior untracked output artifacts remain available.

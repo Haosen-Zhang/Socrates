@@ -414,3 +414,5 @@ M03 可选 Board 不引入；M04 生命周期、M05 提及/收件箱/Leader 再�
 - 最终复审残留的“父任务完成后真实 Leader 评价被显示为空闲/中断”已修复（`7790a43`、`c7e4245`），实际调用回调验证近期记录与工作负载一致且只计一次；陈旧未结束记录仍标记中断。**最终复审通过，五项问题全部关闭。**
 - 最终代码 `c7e4245` 全量 **1312 pass / 0 fail / 24102 assertions / 226 files**（42.98s），typecheck、desktop build、lint583、diff-check 全通过。Chrome32 项取自 `f9b4f56`；之后仅改后端状态投影并经真实服务回归验证，无 UI/harness 变更。精确验证边界见 `doc/assets/multica-m04-m05/validation.json`。
 - M04、M05 均达到本轮验收条件；M06、M07 仍为后续阶段。按既有授权自动提交 PR，不合并、不发布。
+
+- 已按授权推送 `codex/multica-ux-m04-m05` 并创建 [PR #155](https://github.com/Haosen-Zhang/Socrates/pull/155)，关联 issue #154。代码验收 HEAD 为 `c7e4245`，后续为证据/进度文档提交；最终 review approved。未合并、未发布。GitHub 连接器创建权限不足，改用已配置 gh 完成；原工作区和既有未跟踪输出保留。
