@@ -139,3 +139,33 @@ test('invalid Leader decision and interrupted pending call fail closed without a
   expect(f.db.query<{status:string},[string]>('SELECT status FROM leader_evaluations WHERE id=?').get(row.id)!.status).toBe('blocked');expect(f.gatewayCalls.filter(c=>c.purpose==='review')).toHaveLength(1);
  }finally{await recovered?.shutdown();await f.close();}
 });
+test('Will trigger alreadyQueued reflects durable target-specific instructions, not a future queue intent',async()=>{
+ const f=await setupCostFlowFixture();try{
+  const {item}=await squadItem(f),scope={workItemId:item.id};
+  const request=input('queued-fact',{delivery:'queue',mentions:[{type:'agent',agentId:'fixture-b'}]});
+  const before=f.interactions.preview(scope,request);expect(before.targets[0]!.alreadyQueued).toBe(false);expect(before.queued).toBe(false);
+  await f.interactions.submit(scope,request);
+  const after=f.interactions.preview(scope,request);expect(after.targets[0]!.alreadyQueued).toBe(true);expect(after.queued).toBe(true);
+  expect(f.interactions.preview(scope,input('different',{delivery:'queue',mentions:[{type:'agent',agentId:'fixture-a'}]})).targets[0]!.alreadyQueued).toBe(false);
+ }finally{await f.close();}
+});
+for(const pendingState of ['created','sent','outcome_unknown'] as const)test(`unsettled ${pendingState} model cost blocks queue dispatch and restart without a dollar budget`,async()=>{
+ const f=await setupCostFlowFixture({nativeToolCalls:()=>[]});try{
+  const {item,roomId}=await squadItem(f),scope={workItemId:item.id};
+  const queued=await f.interactions.submit(scope,input('cost-queue',{delivery:'queue',mentions:[{type:'agent',agentId:'fixture-b'}]}));
+  const original=f.broker.ledger.list({rootTaskId:item.currentRun!.commandId!})[0]!;
+  f.broker.ledger.begin({...original,invocationId:'unsettled-model',logicalStepId:'unsettled-step'},original.priceSnapshotId);
+  if(pendingState!=='created')f.broker.ledger.markSent('unsettled-model');
+  if(pendingState==='outcome_unknown')f.broker.ledger.markUnknown('unsettled-model');
+  await f.commands.cancel(item.currentRun!.commandId!);await f.interactions.pump();
+  expect(f.interactions.get(queued.id)!.status).toBe('blocked');expect(f.interactions.get(queued.id)!.reason).toBe('model_cost_settlement_required');
+  const restart=input('cost-restart',{delivery:'stop_restart',mentions:[{type:'agent',agentId:'fixture-b'}]});
+  expect(f.interactions.preview(scope,restart).reasons).toContain('model_cost_settlement_required');
+  await expect(f.interactions.submit(scope,restart)).rejects.toThrow('model_cost_settlement_required');expect(f.nativeCalls).toHaveLength(0);
+  if(pendingState==='created')f.broker.ledger.releaseUnsent('unsettled-model');
+  else {if(pendingState==='sent')f.broker.ledger.markUnknown('unsettled-model');f.broker.ledger.reconcile('unsettled-model',{requestId:'invoice',totalAtomic:'0',currency:'USD',reason:'Controlled invoice confirms no charge'});}
+  const resumed=await f.interactions.submit(scope,restart);expect(resumed.status).toBe('dispatched');
+  await untilCostFlow(()=>f.commands.get(resumed.commandId!)?.status==='completed','settled model charge');expect(f.nativeCalls).toHaveLength(1);
+  expect(f.interactions.get(queued.id)!.status).toBe('blocked');
+ }finally{await f.close();}
+});

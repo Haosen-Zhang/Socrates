@@ -16,6 +16,12 @@ const terminal=new Set(['completed','failed','cancelled','interrupted','revoked'
 export function unknownRoomEffects(db:Database,roomId:string):boolean {
  return !!db.query("SELECT id FROM tool_calls WHERE session_id=? AND status IN ('outcome_unknown','running') LIMIT 1").get(roomId);
 }
+export function unsettledRoomModelCost(db:Database,roomId:string,includeActive=true):boolean {
+ return !!db.query(`SELECT i.id FROM cost_invocations i WHERE i.room_id=? AND
+  ((?=1 AND i.state IN ('created','sent')) OR
+   ((i.state='outcome_unknown' OR i.state='finished' AND i.status NOT IN ('priced','estimated'))
+    AND NOT EXISTS(SELECT 1 FROM cost_adjustments a WHERE a.invocation_id=i.id AND a.actual_total_atomic IS NOT NULL))) LIMIT 1`).get(roomId,includeActive?1:0);
+}
 export class WorkInteractionService {
  private timer:ReturnType<typeof setInterval>|null=null;
  private pumping:Promise<void>|null=null;
@@ -62,6 +68,7 @@ export class WorkInteractionService {
   if(createsRun){
    if(!target.roomId||target.item&&!target.item.currentRun)reasons.push('Start this work item with an approved owner preview before requesting execution');
    else if(this.db.query("SELECT id FROM tool_calls WHERE session_id=? AND status='outcome_unknown' LIMIT 1").get(target.roomId))reasons.push('unknown_side_effect_requires_review');
+   if(target.roomId&&unsettledRoomModelCost(this.db,target.roomId,!active))reasons.push('model_cost_settlement_required');
    if(active&&delivery==='now'&&input.action==='message')reasons.push('Choose queue or stop_restart while a run is active');
    try{
     if(input.action==='message'&&target.roomId){const resolved=this.commands.preview(this.command(input,target.roomId,'preview'));agentIds=resolved.agentIds;rule=input.mentions.some(m=>m.type==='agent')?'explicit_agent':input.mentions.some(m=>m.type==='squad')?'explicit_squad_leader':resolved.resolved.kind;}
@@ -117,6 +124,7 @@ export class WorkInteractionService {
     if(active&&input.action==='message'&&input.delivery!=='stop_restart')continue;
     if(active&&input.action==='message'){await this.commands.cancel(active.commandId);if(this.active(row.room_id))throw new Error('cancellation_not_settled');}
     if(row.room_id&&unknownRoomEffects(this.db,row.room_id))throw new Error('unknown_side_effect_requires_review');
+    if(row.room_id&&unsettledRoomModelCost(this.db,row.room_id))throw new Error('model_cost_settlement_required');
     if(input.action==='reevaluate'||input.action==='delegate_package'){
      const taskId=target.item?.currentRun?.commandId?this.commands.get(target.item.currentRun.commandId)?.taskId:undefined;
      if(!target.item||!taskId)throw new Error('squad_execution_required');
@@ -165,6 +173,7 @@ export class WorkInteractionService {
   try{
    const item=this.items.get(evaluation.work_item_id)!,task=this.tasks.get(evaluation.task_id)!;
    if(unknownRoomEffects(this.db,task.sessionId))throw new Error('unknown_side_effect_requires_review');
+   if(unsettledRoomModelCost(this.db,task.sessionId))throw new Error('model_cost_settlement_required');
    const packages=this.packages.list(task.id);
    decision=await this.coordinator.evaluateLeader(task.id,evaluation.id,{title:item.title,objective:item.objective,taskState:task.state,packages:packages.map(p=>({id:p.id,state:p.state,result:p.result?.slice(0,2000),executorAgentId:p.executorAgentId})),request:this.db.query<{reason:string},[string]>('SELECT reason FROM leader_evaluations WHERE id=?').get(evaluation.id)?.reason,limits:LEADER_LIMITS},AbortSignal.any([controller.signal,AbortSignal.timeout(LEADER_LIMITS.maxDurationMs)]));
    const answer=decision as {action:string;reason:string;packageId?:string};reason=answer.reason;
