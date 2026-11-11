@@ -1,5 +1,6 @@
 import { useStore } from "../store";
 export const arenaLabels: Record<string, [string, string]> = {
+ arena_admission_disabled: ["New Arena experiments are disabled. Existing experiments can still resume.", "新 Arena 實驗已停用；已有實驗仍可恢復。"],
 	计划样本: ["Planned samples", "計畫樣本"],
 	已开始: ["Started", "已開始"],
 	已结束样本: ["Terminal samples", "已結束樣本"],
@@ -226,6 +227,7 @@ export const arenaLabels: Record<string, [string, string]> = {
 	],
 };
 const arenaChinese: Record<string, string> = {
+ arena_admission_disabled: "新 Arena 实验已停用；已有实验仍可恢复。",
 	verified_success: "通过验收",
 	completed_unverified: "已完成但未验收",
 	verification_failed: "验收失败",

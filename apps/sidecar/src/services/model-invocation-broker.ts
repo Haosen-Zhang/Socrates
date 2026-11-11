@@ -1,3 +1,4 @@
+import { assertTaskWorkflowCompatible } from "./workflow-compatibility";
 import { assertArenaInvocationAllowed } from "./arena-budget";
 import { ProjectMemoryService } from "./project-memory";
 import type { Database } from "bun:sqlite";
@@ -178,6 +179,7 @@ export class ModelInvocationBroker {
   }
 
   private assertCurrentPermission(context: GatewayInvocationContext, request: InvocationRequest): void {
+    if(context.rootTaskId)assertTaskWorkflowCompatible(this.db,context.rootTaskId);
     assertArenaInvocationAllowed(this.db, context.roomId, context.agentId, context.providerConnectionId);
     const provider = this.db.query<{ enabled: number; base_url: string; type: string }, [string]>("SELECT enabled,base_url,type FROM providers WHERE id=?").get(context.providerConnectionId);
     if (!provider?.enabled || provider.base_url !== request.baseUrl || provider.type !== request.providerType) throw new Error("invocation_provider_unavailable");

@@ -133,3 +133,5 @@ Found a problem or have an idea? [Open an issue](https://github.com/Haosen-Zhang
   <sub>Built for the conversations that lead somewhere.</sub><br><br>
   <a href="README.zh-CN.md">阅读中文版 →</a>
 </p>
+
+Cost-aware Work: [user guide (Chinese)](doc/cost-aware-user-guide.md) · [P08 acceptance evidence](doc/cost-aware-p08-scenarios.md).

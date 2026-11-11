@@ -1,0 +1,24 @@
+{
+  "date": "2026-11-11",
+  "base": "b7ef93c8d5853173336d0089e30871ed8f7fc123",
+  "tests": {
+    "pass": 1241,
+    "fail": 0,
+    "files": 215,
+    "assertions": 23582
+  },
+  "typecheck": "pass",
+  "desktopBuild": "pass, existing warnings",
+  "lint": "pass,534 files",
+  "diffCheck": "pass",
+  "nativeCompile": "cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --offline: pass",
+  "browserChecks": 132,
+  "promptfoo": {
+    "successes": 1,
+    "failures": 0,
+    "nativeRequests": 2,
+    "network": "forbidden"
+  },
+  "review": "P1 reproduced then fixed; 45 assertions across actual HTTP mutation boundaries; full suite green",
+  "scope": "temporary SQLite/workspaces, controlled model transports; no paid/live model or user data"
+}

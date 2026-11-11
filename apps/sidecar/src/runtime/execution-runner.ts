@@ -1,3 +1,4 @@
+import { assertTaskWorkflowCompatible } from "../services/workflow-compatibility";
 import type { Database } from "bun:sqlite";
 import { isCostBudgetPause } from "../services/model-invocation-broker";
 import { toolWithinPlanScope, executionEventToRuntimeEvent, type ApprovalDecision, type RuntimeEvent, type StructuredPlan, type ConversationStoredMessage, type ReasoningEffort } from "@socrates/core";
@@ -242,6 +243,7 @@ export class ExecutionRunner {
   }
 
   async run(taskId: string, emit: (event: RuntimeEvent) => void | Promise<void> = () => {}): Promise<void> {
+    assertTaskWorkflowCompatible(this.db,taskId);
     if (this.active.has(taskId)) throw new Error("execution_already_running");
     const task = this.tasks.get(taskId);
     const plan = task?.approvedPlanVersion ? this.tasks.getPlan(taskId, task.approvedPlanVersion) : null;
@@ -494,6 +496,7 @@ export class ExecutionRunner {
   async decide(requestId: string, input: { clientDecisionKey: string; decision: ApprovalDecision; reason?: string }): Promise<DurableApprovalDecision> {
     const request = this.approvals.getRequest(requestId);
     if (!request) throw new Error("approval_request_not_found");
+    assertTaskWorkflowCompatible(this.db,request.taskId);
     const taskId = request.taskId;
     if (!request.subjectId.startsWith(`${taskId}:`)) throw new Error("approval_subject_invalid");
     const runtimeRequestId = request.subjectId.slice(taskId.length + 1);

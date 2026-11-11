@@ -1,0 +1,605 @@
+{
+  "date": "2026-11-11",
+  "source": "Production React/services; disposable SQLite/workspaces and controlled model transport",
+  "flows": [
+    {
+      "flow": "arena",
+      "passed": 18,
+      "checks": [
+        {
+          "name": "User entry freezes four isolated variants with the same starting snapshot",
+          "ok": true
+        },
+        {
+          "name": "Preflight alone starts no trial",
+          "ok": true
+        },
+        {
+          "name": "Controlled runs are labelled as simulated model tests",
+          "ok": true
+        },
+        {
+          "name": "Both direct variants execute through real task entries",
+          "ok": true
+        },
+        {
+          "name": "Planning and review variants retain actual child identities and objective evidence",
+          "ok": true
+        },
+        {
+          "name": "Results report four real successes and preserved costs",
+          "ok": true
+        },
+        {
+          "name": "Completed experiments and samples cannot be stopped again",
+          "ok": true
+        },
+        {
+          "name": "Raw task and variant counts retain the planned denominator",
+          "ok": true
+        },
+        {
+          "name": "Category selection retains all four matching samples",
+          "ok": true
+        },
+        {
+          "name": "Time breakdown distinguishes unmeasured human time",
+          "ok": true
+        },
+        {
+          "name": "Export retains reproducible snapshot identity without raw copied files",
+          "ok": true
+        },
+        {
+          "name": "CSV export contains actual samples",
+          "ok": true
+        },
+        {
+          "name": "JSONL export contains actual samples",
+          "ok": true
+        },
+        {
+          "name": "Artifact application requires a selected file and explicit confirmation",
+          "ok": true
+        },
+        {
+          "name": "One-task simulated evidence cannot automatically change the routing policy",
+          "ok": true
+        },
+        {
+          "name": "Arena remains within a narrow scrollable project page",
+          "ok": true
+        },
+        {
+          "name": "Reload retains completed trials without running them again",
+          "ok": true
+        },
+        {
+          "name": "Local browser flow has no external requests or renderer exceptions",
+          "ok": true
+        }
+      ],
+      "rendererErrors": 0,
+      "externalRequests": 0
+    },
+    {
+      "flow": "cost-aware",
+      "passed": 22,
+      "checks": [
+        {
+          "name": "Model output allowance is automatic in the composer",
+          "ok": true
+        },
+        {
+          "name": "Real quote contains Manager, execution, review and retry stages",
+          "ok": true
+        },
+        {
+          "name": "A refreshed quote after a dropped response reuses the original command envelope",
+          "ok": true
+        },
+        {
+          "name": "The real room command service commits one task after a lost response",
+          "ok": true
+        },
+        {
+          "name": "Budget pause is visible with its bound task",
+          "ok": true
+        },
+        {
+          "name": "Double-click increase commits one budget revision",
+          "ok": true
+        },
+        {
+          "name": "Budget resume requires no token-limit decision",
+          "ok": true
+        },
+        {
+          "name": "Resume preserves the root task with automatic output management",
+          "ok": true
+        },
+        {
+          "name": "Ledger contains real Manager, Worker and Reviewer invocations",
+          "ok": true
+        },
+        {
+          "name": "Known amounts reconcile and no reservation remains after completion",
+          "ok": true
+        },
+        {
+          "name": "JSON export contains ledger facts and no conversation text",
+          "ok": true
+        },
+        {
+          "name": "CSV export contains ledger facts and no conversation text",
+          "ok": true
+        },
+        {
+          "name": "Room switching keeps the second room draft and cost projection separate",
+          "ok": true
+        },
+        {
+          "name": "IME confirmation does not submit a task",
+          "ok": true
+        },
+        {
+          "name": "A dropped provider result retains unknown exposure and original price evidence",
+          "ok": true
+        },
+        {
+          "name": "Manual reconciliation starts disabled before bill confirmation",
+          "ok": true
+        },
+        {
+          "name": "Manual reconciliation commits once and preserves unknown usage plus frozen price",
+          "ok": true
+        },
+        {
+          "name": "Custom price shows a labelled synthetic example",
+          "ok": true
+        },
+        {
+          "name": "Custom and catalog imports preserve historical invocation prices and totals",
+          "ok": true
+        },
+        {
+          "name": "Cost controls remain inside the resized viewport",
+          "ok": true
+        },
+        {
+          "name": "No renderer errors",
+          "ok": true,
+          "evidence": []
+        },
+        {
+          "name": "No external browser requests",
+          "ok": true,
+          "evidence": []
+        }
+      ],
+      "rendererErrors": 0,
+      "externalRequests": 0
+    },
+    {
+      "flow": "flight-recorder",
+      "passed": 12,
+      "checks": [
+        {
+          "name": "Task details open records from the actual Native execution",
+          "ok": true
+        },
+        {
+          "name": "Invocation, price and machine verification share the selected task",
+          "ok": true
+        },
+        {
+          "name": "Stage filter returns model records only",
+          "ok": true
+        },
+        {
+          "name": "Tree and details expose persisted parent and price identities",
+          "ok": true
+        },
+        {
+          "name": "Search empty state is explicit",
+          "ok": true
+        },
+        {
+          "name": "Previewed download includes schema and references without prompt text",
+          "ok": true
+        },
+        {
+          "name": "Imported diagnostic commands remain inert and secret fields disappear",
+          "ok": true
+        },
+        {
+          "name": "Another room cannot read the selected task trace",
+          "ok": true
+        },
+        {
+          "name": "Durable pagination does not repeat the previous event",
+          "ok": true
+        },
+        {
+          "name": "Narrow drawer keeps record controls scrollable",
+          "ok": true
+        },
+        {
+          "name": "Read/export/import actions do not add invocation charges",
+          "ok": true
+        },
+        {
+          "name": "No renderer errors or external requests",
+          "ok": true
+        }
+      ],
+      "rendererErrors": 0,
+      "externalRequests": 0
+    },
+    {
+      "flow": "p08-interactions",
+      "passed": 12,
+      "checks": [
+        {
+          "name": "Work draft survives Chat navigation",
+          "ok": true
+        },
+        {
+          "name": "Chat draft remains separately scoped",
+          "ok": true
+        },
+        {
+          "name": "Chinese composition Enter does not submit",
+          "ok": true
+        },
+        {
+          "name": "Keyboard newline does not submit",
+          "ok": true
+        },
+        {
+          "name": "Dark theme applies through settings",
+          "ok": true
+        },
+        {
+          "name": "Light theme applies through settings",
+          "ok": true
+        },
+        {
+          "name": "Narrow Chat has no document horizontal overflow",
+          "ok": true
+        },
+        {
+          "name": "Narrow input remains reachable",
+          "ok": true
+        },
+        {
+          "name": "Keyboard focus moves to another visible control",
+          "ok": true
+        },
+        {
+          "name": "Long persisted room title does not push narrow controls outside viewport",
+          "ok": true
+        },
+        {
+          "name": "Composer has an accessible task-input name",
+          "ok": true
+        },
+        {
+          "name": "No renderer errors or external requests",
+          "ok": true
+        }
+      ],
+      "rendererErrors": 0,
+      "externalRequests": 0
+    },
+    {
+      "flow": "p08-stress",
+      "passed": 10,
+      "checks": [
+        {
+          "name": "A reset event connection reconnects and reaches durable task completion",
+          "ok": true
+        },
+        {
+          "name": "Reconnect creates one command only",
+          "ok": true
+        },
+        {
+          "name": "Recovered Work events never appear in Chat",
+          "ok": true
+        },
+        {
+          "name": "Navigation and reload do not repeat model calls",
+          "ok": true
+        },
+        {
+          "name": "Two currencies remain separate in durable ledger and visible UI",
+          "ok": true
+        },
+        {
+          "name": "Tiny amount stays nonzero and unknown price remains explicit",
+          "ok": true
+        },
+        {
+          "name": "Long verification logs load from real command output in a bounded page",
+          "ok": true
+        },
+        {
+          "name": "Next log page retrieves different persisted output",
+          "ok": true
+        },
+        {
+          "name": "Long log retains scrolling and reachable close control in narrow drawer",
+          "ok": true
+        },
+        {
+          "name": "Stress UI makes no external requests or renderer errors",
+          "ok": true
+        }
+      ],
+      "rendererErrors": 0,
+      "externalRequests": 0
+    },
+    {
+      "flow": "project-memory",
+      "passed": 14,
+      "checks": [
+        {
+          "name": "Project Memory entry opens real project service",
+          "ok": true
+        },
+        {
+          "name": "Create persists a proposed entry without silent trust",
+          "ok": true
+        },
+        {
+          "name": "Explicit confirmation persists a new version",
+          "ok": true
+        },
+        {
+          "name": "Chinese query finds the real persisted constraint",
+          "ok": true
+        },
+        {
+          "name": "Editing appends version and returns change to proposed",
+          "ok": true
+        },
+        {
+          "name": "Version history is visible through the service",
+          "ok": true
+        },
+        {
+          "name": "Export is versioned and retains portable provenance",
+          "ok": true
+        },
+        {
+          "name": "Import preview does not mutate memory",
+          "ok": true
+        },
+        {
+          "name": "Imported content remains proposed and unpinned",
+          "ok": true
+        },
+        {
+          "name": "Repeated import is idempotent",
+          "ok": true
+        },
+        {
+          "name": "Project memory remains within a narrow viewport",
+          "ok": true
+        },
+        {
+          "name": "Chat explicitly shares selected project background",
+          "ok": true
+        },
+        {
+          "name": "Revoking Chat sharing clears permission",
+          "ok": true
+        },
+        {
+          "name": "Local UI uses no external requests or renderer errors",
+          "ok": true
+        }
+      ],
+      "rendererErrors": 0,
+      "externalRequests": 0
+    },
+    {
+      "flow": "routing",
+      "passed": 25,
+      "checks": [
+        {
+          "name": "Opening a legacy room does not silently enable adaptive routing",
+          "ok": true
+        },
+        {
+          "name": "economy preserves the permitted member subset",
+          "ok": true
+        },
+        {
+          "name": "balanced preserves the permitted member subset",
+          "ok": true
+        },
+        {
+          "name": "quality preserves the permitted member subset",
+          "ok": true
+        },
+        {
+          "name": "custom preserves the permitted member subset",
+          "ok": true
+        },
+        {
+          "name": "A three-member room routes a small task to one real executor without a manager call",
+          "ok": true
+        },
+        {
+          "name": "economy dispatches the quoted frozen workflow and records actual attempts",
+          "ok": true
+        },
+        {
+          "name": "balanced dispatches the quoted frozen workflow and records actual attempts",
+          "ok": true
+        },
+        {
+          "name": "quality dispatches the quoted frozen workflow and records actual attempts",
+          "ok": true
+        },
+        {
+          "name": "custom dispatches the quoted frozen workflow and records actual attempts",
+          "ok": true
+        },
+        {
+          "name": "The same offline task has explainably different preset workflows",
+          "ok": true
+        },
+        {
+          "name": "Choosing a real alternative reprices and dispatches that exact frozen workflow",
+          "ok": true
+        },
+        {
+          "name": "An explicit mention overrides the custom default without broadening the member pool",
+          "ok": true
+        },
+        {
+          "name": "The explicitly targeted member is the recorded execution identity",
+          "ok": true
+        },
+        {
+          "name": "A real failed assertion produces an explicit fallback proposal with evidence and additional cost",
+          "ok": true
+        },
+        {
+          "name": "Reload restores the durable approval without executing another model call",
+          "ok": true
+        },
+        {
+          "name": "Waiting for approval shows its actual disabled-input placeholder without a failure or working spinner",
+          "ok": true
+        },
+        {
+          "name": "Approval starts a distinct allowed-member attempt and repeated failure stops the loop",
+          "ok": true
+        },
+        {
+          "name": "Denying a member change records the decision without another model call",
+          "ok": true
+        },
+        {
+          "name": "Cancelling a paused route clears its pending approval",
+          "ok": true
+        },
+        {
+          "name": "An explicit empty provider permission blocks execution without an implicit fallback",
+          "ok": true
+        },
+        {
+          "name": "Advanced routing stays within a narrow scrollable drawer",
+          "ok": true
+        },
+        {
+          "name": "Closing advanced routing leaves the composer within the viewport",
+          "ok": true
+        },
+        {
+          "name": "Chat does not expose execution routing controls",
+          "ok": true
+        },
+        {
+          "name": "The browser used only local synthetic services without renderer exceptions",
+          "ok": true
+        }
+      ],
+      "rendererErrors": 0,
+      "externalRequests": 0
+    },
+    {
+      "flow": "verification",
+      "passed": 19,
+      "checks": [
+        {
+          "name": "Saving a plan persists proposed checks without silently approving or running them",
+          "ok": true
+        },
+        {
+          "name": "A passing baseline is not presented as a verified task",
+          "ok": true
+        },
+        {
+          "name": "Closing plan configuration restores focus without moving the composer out of view",
+          "ok": true
+        },
+        {
+          "name": "Reload restores the approved room plan from its persisted identity",
+          "ok": true
+        },
+        {
+          "name": "Submitting through the real composer binds and executes the approved plan",
+          "ok": true
+        },
+        {
+          "name": "A changed artifact invalidates displayed success",
+          "ok": true
+        },
+        {
+          "name": "A real assertion failure is displayed separately from completed execution",
+          "ok": true
+        },
+        {
+          "name": "Explicit acceptance retains failed verification and never creates a green result",
+          "ok": true
+        },
+        {
+          "name": "A revised repository check is a new approved version with frozen definitions",
+          "ok": true
+        },
+        {
+          "name": "Real command checks stop for exact command approval",
+          "ok": true
+        },
+        {
+          "name": "The approved check records a real process exit and positive test count",
+          "ok": true
+        },
+        {
+          "name": "Evidence details retrieve actual captured command output",
+          "ok": true
+        },
+        {
+          "name": "An in-flight approved command continues polling and keeps Stop usable",
+          "ok": true
+        },
+        {
+          "name": "Stop terminates the real long command without waiting for its timeout",
+          "ok": true
+        },
+        {
+          "name": "Long verification configuration stays in a narrow scrollable drawer",
+          "ok": true
+        },
+        {
+          "name": "Closing the narrow drawer leaves the composer usable",
+          "ok": true
+        },
+        {
+          "name": "A changed test definition requires an explicit new plan instead of silently becoming green",
+          "ok": true
+        },
+        {
+          "name": "Verification does not give Chat a workspace execution entry",
+          "ok": true
+        },
+        {
+          "name": "Browser actions did not access external services or raise renderer exceptions",
+          "ok": true
+        }
+      ],
+      "rendererErrors": 0,
+      "externalRequests": 0
+    }
+  ],
+  "passed": 132,
+  "limits": [
+    "Native Tauri window, OS IME candidate UI and screen-reader speech unverified",
+    "No paid/live model benchmark or installer signing/release"
+  ]
+}

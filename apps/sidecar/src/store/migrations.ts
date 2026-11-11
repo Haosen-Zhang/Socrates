@@ -28,6 +28,16 @@ export function createConsistentBackup(db: Database, targetPath: string): void {
   db.query("VACUUM INTO ?").run(targetPath);
 }
 
+/** Read-only compatibility preflight: refuse a newer or drifted schema before opening writes. */
+export function assertMigrationCompatibility(db: Database, migrations: readonly Migration[]): void {
+  if (!db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get()) return;
+  for (const record of db.query<AppliedMigration, []>("SELECT version,name,checksum FROM schema_migrations ORDER BY version").all()) {
+    const migration = migrations.find(candidate => candidate.version === record.version);
+    if (!migration) throw new Error(`unknown_applied_migration:${record.version}`);
+    if (migration.checksum !== record.checksum && !migration.acceptsAppliedChecksum?.(db, record.checksum)) throw new Error(`migration_checksum_mismatch:${record.version}`);
+  }
+}
+
 export function runMigrations(db: Database, migrations: readonly Migration[]): number[] {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

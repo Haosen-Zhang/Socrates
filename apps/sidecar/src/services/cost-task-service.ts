@@ -1,3 +1,4 @@
+import { assertTaskWorkflowCompatible } from "./workflow-compatibility";
 import type { Database } from "bun:sqlite";
 import { MAX_AUTOMATIC_OUTPUT_TOKENS, requestCostUpperBound, type RoomCommandInput, type RouteDecision } from "@socrates/core";
 import type { RoomCommandService } from "./room-command-service";
@@ -41,6 +42,7 @@ export class CostTaskService {
     return operation;
   }
   private async performResume(rootTaskId: string, input: { requestId: string; maxOutputTokens?: number }): Promise<unknown> {
+    assertTaskWorkflowCompatible(this.db,rootTaskId);
     const previous = this.db.query<{ state: string; result_json: string | null }, [string, string]>("SELECT state,result_json FROM cost_actions WHERE root_task_id=? AND request_id=? AND kind='resume'").get(rootTaskId, input.requestId);
     if (previous) {
       const saved = previous.result_json ? JSON.parse(previous.result_json) as { maxOutputTokens?: number; error?: string } : {};

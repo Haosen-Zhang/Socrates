@@ -1,3 +1,4 @@
+import { assertTaskWorkflowCompatible } from "../services/workflow-compatibility";
 import type { RoomCollaborationSettings } from "@socrates/core";
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
@@ -194,6 +195,7 @@ export class MultiTaskStore {
   }
 
   resumeNewAttempt(id: string, options: { allowOutcomeUnknown?: boolean } = {}): MultiTaskRecord {
+    assertTaskWorkflowCompatible(this.db,id);
     return this.db.transaction(() => {
       const task = this.get(id);
       if (!task) throw new Error("multi_task_not_found");
@@ -329,6 +331,7 @@ export class MultiTaskStore {
   }
 
   async addPlan(input: { taskId: string; content: StructuredPlan; createdBy: string; parentVersion?: number | null }): Promise<PlanVersionRecord> {
+    assertTaskWorkflowCompatible(this.db,input.taskId);
     this.validatePlan(input.taskId, input.content);
     const contentHash = await hashStructuredPlan(input.content);
     const evidenceHash = await hashStructuredPlan({ ...input.content, objective: "evidence", summary: "evidence", steps: [] });
@@ -336,6 +339,7 @@ export class MultiTaskStore {
   }
 
   async editAndApprovePlan(input: { taskId: string; version: number; hash: string; content: StructuredPlan; clientDecisionKey: string; reason?: string }): Promise<{ plan: PlanVersionRecord; decision: { id: string; decision: string; replayed: boolean } }> {
+    assertTaskWorkflowCompatible(this.db,input.taskId);
     if (validateStructuredPlan(input.content).length) throw new Error("structured_plan_invalid");
     // Hash outside SQLite; after awaiting, recheck both the approval revision
     // and every member/assignment inside one synchronous transaction. These
@@ -371,6 +375,7 @@ export class MultiTaskStore {
   }
 
   decidePlan(input: { taskId: string; version: number; hash: string; clientDecisionKey: string; decision: "approve_exact_plan" | "request_replan" | "reject"; reason?: string }): { id: string; decision: string; replayed: boolean } {
+    assertTaskWorkflowCompatible(this.db,input.taskId);
     return this.db.transaction(() => {
       const duplicate = this.db.query<{ id: string; task_id: string; plan_hash: string; decision: string }, [string]>("SELECT id, task_id, plan_hash, decision FROM plan_decisions WHERE client_decision_key = ?").get(input.clientDecisionKey);
       if (duplicate) {

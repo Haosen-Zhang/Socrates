@@ -133,3 +133,5 @@ bun run --cwd apps/desktop build
   <sub>为那些值得继续的讨论而做。</sub><br><br>
   <a href="README.md">Read in English →</a>
 </p>
+
+成本感知 Work：[使用指南](doc/cost-aware-user-guide.md) · [P08 验收证据](doc/cost-aware-p08-scenarios.md)。

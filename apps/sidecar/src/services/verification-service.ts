@@ -1,3 +1,4 @@
+import { assertTaskWorkflowCompatible } from "./workflow-compatibility";
 import type { Database } from "bun:sqlite";
 import Ajv from "ajv";
 import { evaluatePermission, verificationConclusion, type CheckEvidence, type PrepareVerificationInput, type VerificationCheck, type VerificationPlan, type VerificationRun, type VerificationTarget, type VerificationView, type VerifyOptions, type ToolContext } from "@socrates/core";
@@ -44,6 +45,7 @@ export class VerificationService {
     return row ? JSON.parse(row.plan_json) : null;
   }
   prepare(input: PrepareVerificationInput): VerificationPlan {
+    if(input.rootTaskId)assertTaskWorkflowCompatible(this.db,input.rootTaskId);
     this.validateInput(input);
     const requestHash = hashToolInput(input);
     const prior = this.db.query<StoredPlan & { request_hash: string }, [string,string]>("SELECT plan_json,request_hash FROM verification_plans WHERE room_id=? AND request_id=?").get(input.roomId,input.requestId);
@@ -69,6 +71,7 @@ export class VerificationService {
   }
   approve(planId: string,requestId: string): VerificationPlan {
     const plan = this.requirePlan(planId);
+    assertTaskWorkflowCompatible(this.db,plan.target.rootTaskId);
     const fingerprint=hashToolInput({kind:"approve",planId});
     const previous=this.request(plan.target.roomId,requestId,fingerprint); if(previous)return previous as VerificationPlan;
     const {policy,workspace}=this.scope(plan.target,true);
@@ -80,6 +83,7 @@ export class VerificationService {
     return approved;
   }
   bind(planId:string,target:VerificationTarget):VerificationPlan {
+    assertTaskWorkflowCompatible(this.db,target.rootTaskId);
     const source=this.requirePlan(planId);this.scope(target);
     if(source.target.roomId!==target.roomId)throw new Error("verification_target_mismatch");
     if(source.approvalStatus!=="approved")throw new Error("verification_plan_approval_required");
@@ -130,6 +134,7 @@ export class VerificationService {
     return view;
   }
   async verify(target:VerificationTarget,options:VerifyOptions={}):Promise<VerificationView>{
+    assertTaskWorkflowCompatible(this.db,target.rootTaskId);
     const current=this.view(target);if(!current.plan)return current;
     const plan=current.plan;
     if(!options.baseline && plan.approvalStatus!=="approved")throw new Error("verification_plan_approval_required");
@@ -158,6 +163,7 @@ export class VerificationService {
     const approval=this.approvals.getRequest(approvalId);if(!approval)throw new Error("verification_approval_not_found");
     const run=approval.taskId.startsWith("verification:")?this.getRun(approval.taskId.slice("verification:".length)):null;
     if(!run||approval.sessionId!==run.target.roomId)throw new Error("verification_approval_not_found");
+    assertTaskWorkflowCompatible(this.db,run.target.rootTaskId);
     const fingerprint=hashToolInput({kind:"decide",approvalId,decision:input.decision});
     if(this.request(run.target.roomId,input.requestId,fingerprint))return this.active.get(run.id)?.promise ?? this.view(run.target);
     this.scope(run.target,true);
@@ -183,6 +189,7 @@ export class VerificationService {
     return this.view(target);
   }
   acceptUnverified(target:VerificationTarget,requestId:string):VerificationView{
+    assertTaskWorkflowCompatible(this.db,target.rootTaskId);
     const current=this.view(target);if(!current.plan)throw new Error("verification_plan_not_found");
     if(this.activeFor(target)||current.run?.status==="running")throw new Error("verification_already_running");
     const fingerprint=hashToolInput({kind:"accept",target,planId:current.plan.id});

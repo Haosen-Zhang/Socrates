@@ -88,8 +88,9 @@ export class RoomCommandService {
     const room = this.sessions.get(input.roomId);
     if (!room || room.archived) throw new Error("room_not_found");
     const quotes=new TaskQuoteService(this.db,this.sessions,this.deps.routing);
-    let quote=quotes.validate(input);
     let resolved = resolveRoomCommand({ ...room, agentIds: room.agents.map((a) => a.agentId) }, input);
+    if(isRoutingEnabled(room,input) && resolved.kind!=="discussion" && room.collaboration.strategy === "adaptive" && process.env.SOCRATES_AUTOMATIC_ADMISSION_ENABLED === "false") throw new Error("automatic_new_task_admission_disabled");
+    let quote=quotes.validate(input);
     let route:RoutePreview|undefined;
     if(isRoutingEnabled(room,input)&&resolved.kind!=="discussion"){
       if(!this.deps.routing||!this.deps.adaptive)throw new Error("routing_runtime_unavailable");

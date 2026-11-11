@@ -1,3 +1,4 @@
+import { assertTaskWorkflowCompatible } from "../services/workflow-compatibility";
 import type { Database } from "bun:sqlite";
 import { ToolExecutionJournal } from "../tools/execution-journal";
 import { repairToolHistory } from "../tools/repair-history";
@@ -537,6 +538,8 @@ export class SingleAgentRunner {
     input: AgentRunInput,
     emit: (event: RuntimeEvent) => void | Promise<void> = () => {},
   ): Promise<AgentRunResult> {
+    if(input.runtimeOptions?.costRootTaskId)assertTaskWorkflowCompatible(this.db,String(input.runtimeOptions.costRootTaskId));
+    if(input.clientTurnKey){const owner=this.routingAttempt(input.sessionId,input.clientTurnKey);if(owner)assertTaskWorkflowCompatible(this.db,owner.root_task_id);}
     const session = this.db.query<SessionRow, [string]>(
       "SELECT id, mode, kind, workspace_id, primary_agent_id, status FROM sessions WHERE id = ?",
     ).get(input.sessionId);
@@ -1157,6 +1160,7 @@ export class SingleAgentRunner {
   }
 
   continuationInput(runId: string, options:{allowInterrupted?:boolean;allowRouted?:boolean}={}): AgentRunInput {
+    assertTaskWorkflowCompatible(this.db,runId);
     const row = this.db.query<{ session_id: string; prompt: string; status: string; error: string | null;
       thread_id: string; turn_id: string; client_turn_key: string; agent_id: string; context_json: string | null; runtime_kind: string | null }, [string]>(`
       SELECT agent_runs.session_id, agent_runs.prompt, agent_runs.status, agent_runs.error,
@@ -1219,6 +1223,7 @@ export class SingleAgentRunner {
   async decide(requestId: string, input: { clientDecisionKey: string; decision: ApprovalDecision; reason?: string }): Promise<DurableApprovalDecision> {
     const request = this.approvals.getRequest(requestId);
     if (!request) throw new Error("approval_request_not_found");
+    assertTaskWorkflowCompatible(this.db,request.taskId);
     const separator = request.subjectId.indexOf(":");
     if (separator < 1) throw new Error("approval_subject_invalid");
     const runId = request.taskId;

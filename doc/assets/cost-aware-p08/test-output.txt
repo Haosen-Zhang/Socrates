@@ -1,0 +1,14 @@
+Actual final command: bun test
+
+ 1241 pass
+ 0 fail
+ 23582 expect() calls
+Ran 1241 tests across 215 files. [35.52s]
+
+$ tsc -p .
+$ biome lint
+Checked 534 files in 103ms. No fixes applied.
+
+Desktop build: ✓ built in 2.52s
+Native offline locked check: passed
+Browser final exit: 0; all eight flows passed
