@@ -198,12 +198,13 @@ export default function RoomComposer({
   );
   return (
     <form
-      className="composer-dock"
+      className="composer-dock composer-dock--bounded"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
       }}
     >
+      <div className="composer-options">
       <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-neutral-600">
         <select
           aria-label={t("response_mode")}
@@ -360,6 +361,7 @@ export default function RoomComposer({
         trailing={work && behavior !== "discuss" ? <VerificationControls roomId={session.id} disabled={running} onPlanChange={setVerificationPlanId} /> : undefined} />}
       {work&&<WillTrigger preview={triggerPreview} error={triggerError} loading={!!draft.trim()} en={en}/>}
       {work&&handshake&&<InteractionHistory path={interactionPath} handshake={handshake} en={en} roomId={session.id} revision={interactionRevision}/>}
+      </div>
       <ResizableComposer label={t("composer_resize")}>
         <span className="pixel-composer-chevron mt-1 shrink-0 self-start">
           ›

@@ -13,6 +13,7 @@ const api = async (path, body, method = 'POST') => { const response = await fetc
 page.on('pageerror', e => errors.push(String(e)));
 page.on('request', r => { const u = new URL(r.url()); if (['http:', 'https:'].includes(u.protocol) && !['127.0.0.1', 'localhost'].includes(u.hostname)) external.push(u.href); });
 await page.addInitScript(({ port, token }) => { localStorage.setItem('socrates.lang', 'en'); window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} }; window.__TAURI_INTERNALS__ = { invoke: async c => c === 'sidecar_handshake' ? { port, token } : null, metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } }, transformCallback: () => 0, unregisterCallback() {} }; }, metadata);
+async function dismissToasts(){await until(async()=>await page.locator('.foundation-notification').count()===0,'transient notifications to expire');}
 async function openWork() {
   await page.getByRole('tab', { name: 'Work', exact: true }).click();
   const sidebar = page.locator('[data-navigation-sidebar]');
@@ -89,10 +90,16 @@ try {
   check('Structured @agent invokes only its target and preserves owner',afterTarget.native===beforeTarget.native+1&&afterTarget.gateway===beforeTarget.gateway&&(await api(`/work-items/${metadata.itemId}`)).ownerId==='fixture-a');
   await page.getByRole('button',{name:'Close task detail',exact:true}).click();
   await openItem('Inbox and queue lab');
-  await page.getByRole('combobox',{name:'Action',exact:true}).selectOption('message');await pick('This message target','@Fixture Reviewer');
+  await page.getByRole('combobox',{name:'Action',exact:true}).selectOption('message');await pick('This message target','@Fixture Specialist');
   await submitDiscussion('Queue this reviewer instruction after the active plan.');
   let queued=(await api(`/work-items/${metadata.teamItemId}/interactions`)).find(r=>r.input.content==='Queue this reviewer instruction after the active plan.');
   check('Active plan accepts a durable next-round instruction',queued?.status==='queued');
+  const queuedWorkload=(await api('/agent-lifecycle/fixture-c')).workload;
+  check('Durable next-round queue appears in Agent workload before any Run exists',queuedWorkload.counts.queued===1&&queuedWorkload.items.some(i=>i.id===queued.id&&i.kind==='instruction'&&i.runId===null&&i.rootTaskId===null));
+  await page.getByRole('button',{name:'Close task detail',exact:true}).click();await page.getByRole('tab',{name:'Squads',exact:true}).click();await page.locator('[data-squads] .work-task-row').filter({hasText:'Lifecycle squad'}).click();
+  await page.getByRole('button',{name:'View agent Fixture Specialist',exact:true}).click();await page.locator('[data-agent-detail] button').filter({hasText:queued.id}).click();
+  check('Agent queued instruction opens its room without fabricating an empty Run timeline',await page.locator('form.composer-dock textarea').isEnabled()&&await page.locator('[data-run-timeline]').count()===0);
+  await openItem('Inbox and queue lab');
   await page.getByRole('button',{name:'Open execution room (approvals, cost and resume)',exact:true}).click();
   check('Work composer stays editable while approval is pending',await page.locator('form.composer-dock textarea').isEnabled());
   await page.locator('form.composer-dock textarea').fill('An unsent draft remains local.');
@@ -141,10 +148,38 @@ try {
   check('Room structured Squad mention is quoted and executed through the existing command path',true);
   await composer.locator('textarea').fill('This draft must not send while inspecting a run.');
   await composer.locator('[data-interaction-history] summary').click();await composer.getByRole('button',{name:'View this run',exact:true}).first().click();
-  const beforeInspect=await api('/__multica/counts');await composer.getByRole('button',{name:'View current test evidence',exact:true}).click();
+  const beforeInspect=await api('/__multica/counts');await page.locator('.foundation-drawer').last().getByRole('button',{name:'View current test evidence',exact:true}).click();
   check('Read-only timeline buttons do not submit an unsent room draft',await composer.locator('textarea').inputValue()==='This draft must not send while inspecting a run.'&&JSON.stringify(beforeInspect)===JSON.stringify(await api('/__multica/counts')));
-  await page.screenshot({path:`${out}/room-instructions.png`});
+  const instructionDrawer=page.getByRole('dialog',{name:'Instruction run detail',exact:true});
+  await instructionDrawer.locator('[data-timeline-source="runtime"] button').first().click();
+  await instructionDrawer.getByText('Safe diagnostic detail',{exact:false}).waitFor();
+  for(const viewport of [{width:1440,height:1000},{width:650,height:600}]){
+   await page.setViewportSize(viewport);
+   check(`Expanded history evidence stays inside a scrollable portal ${viewport.width}x${viewport.height}`,await instructionDrawer.evaluate(el=>{const r=el.getBoundingClientRect();const content=el.querySelector('.foundation-detail-panel__content');return r.top>=0&&r.bottom<=innerHeight+1&&content.scrollHeight>content.clientHeight&&document.scrollingElement.scrollTop===0&&document.scrollingElement.scrollHeight<=innerHeight+1;}));
+   await instructionDrawer.locator('.foundation-detail-panel__content').evaluate(el=>el.scrollTop=el.scrollHeight);
+   await dismissToasts();await page.screenshot({path:`${out}/room-instructions-${viewport.width}.png`});
+   await page.getByRole('button',{name:'Close instruction run detail',exact:true}).click();
+   check(`Original composer, send and navigation remain reachable ${viewport.width}x${viewport.height}`,await composer.evaluate(el=>{const visible=node=>{const r=node.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight+1;};return visible(el.querySelector('textarea'))&&visible(el.querySelector('button[type="submit"]'))&&visible(document.querySelector('[data-navigation-sidebar]'))&&visible(document.querySelector('.pixel-window-toolbar'))&&document.scrollingElement.scrollTop===0&&document.scrollingElement.scrollHeight<=innerHeight+1;}));
+   await composer.locator('textarea').click();assert.equal(await composer.locator('textarea').inputValue(),'This draft must not send while inspecting a run.');
+   await dismissToasts();await page.screenshot({path:`${out}/room-composer-${viewport.width}.png`});
+   await composer.getByRole('button',{name:'View this run',exact:true}).first().click();
+   await instructionDrawer.getByRole('button',{name:'View current test evidence',exact:true}).click();
+   await instructionDrawer.locator('[data-timeline-source="runtime"] button').first().click();
+  }
+  await page.getByRole('button',{name:'Close instruction run detail',exact:true}).click();await page.setViewportSize({width:1440,height:1000});
+  await dismissToasts();await page.screenshot({path:`${out}/room-instructions.png`});
   await composer.locator('textarea').fill('');
+  const actualApproval=await api('/__multica/tool-approval',{});
+  await page.getByRole('tab',{name:'Inbox',exact:true}).click();await page.locator(`[data-inbox-id="${actualApproval.entry.id}"]`).click();
+  const approvalDetail=page.locator('[data-inbox-detail]');await approvalDetail.locator('[data-timeline-source="runtime"] button').first().waitFor();
+  check('Real Native tool approval Inbox opens its canonical command timeline with Run events',actualApproval.entry.link.rootTaskId===actualApproval.commandId&&!!actualApproval.entry.link.runId&&await approvalDetail.locator(`[data-timeline-group="${actualApproval.entry.link.runId}"] [data-timeline-source="runtime"]`).count()===1);
+  await dismissToasts();await page.screenshot({path:`${out}/inbox-tool-approval.png`});await approvalDetail.locator('[data-timeline-source="runtime"]').first().scrollIntoViewIfNeeded();await page.screenshot({path:`${out}/inbox-tool-approval-events.png`});await page.getByRole('button',{name:'Close inbox detail',exact:true}).click();await api(`/room-commands/${actualApproval.commandId}/cancel`,{});
+
+  const adaptive=await api('/__multica/adaptive-history',{});
+  await page.getByRole('tab',{name:'Squads',exact:true}).click();await page.locator('[data-squads] .work-task-row').filter({hasText:'Lifecycle squad'}).click();await page.getByRole('button',{name:'View agent Fixture Builder',exact:true}).click();
+  await page.locator('[data-agent-detail] button').filter({hasText:adaptive.turnId}).click();await page.locator('[data-run-timeline] [data-run-status-snapshot]').filter({hasText:'discussion.synthesizing.completed'}).waitFor();
+  check('Agent detail opens older adaptive planning turn at its frozen command root',await page.locator('[data-run-timeline]').innerText().then(text=>text.includes(adaptive.commandId)));
+  await dismissToasts();await page.locator('[data-agent-detail]').evaluate(el=>{const content=el.closest('.foundation-detail-panel__content'),timeline=el.querySelector('[data-run-timeline]');content.scrollTop+=timeline.getBoundingClientRect().top-content.getBoundingClientRect().top;});await page.screenshot({path:`${out}/agent-adaptive-history.png`});await page.getByRole('button',{name:'Close agent detail',exact:true}).click();await page.getByRole('button',{name:'Close squad detail',exact:true}).click();
   const blocked=await api('/__multica/blocked-instruction',{});const beforeResolve=await api('/__multica/counts');
   await page.getByRole('tab',{name:'Inbox',exact:true}).click();await page.locator(`[data-inbox-id="interaction:${blocked.interactionId}"]`).click();
   await page.getByRole('textbox',{name:'Resolution',exact:true}).fill('Discard this obsolete instruction; do not retry.');await page.getByRole('button',{name:'Record resolution and resolve',exact:true}).click();

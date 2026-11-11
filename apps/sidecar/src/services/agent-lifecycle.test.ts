@@ -169,14 +169,17 @@ test.each([false,true])('older adaptive team children keep their frozen root and
    store.finish(item.id,{status:'failed',runId:item.runId!,result:'',reason:'provider_network_error'});
    if(attemptNo===1){store.retry(item.id);item=store.start(item.id);}
   }
+  const now=new Date().toISOString();
+  db.query("INSERT INTO multi_task_attempts(id,task_id,attempt_no,status,started_at) VALUES('old-turn-attempt','t',1,'active',?)").run(now);
+  for(const phase of ['synthesizing','reviewing'])db.query("INSERT INTO multi_turns(id,task_id,attempt_id,stable_key,phase,round,participant_index,agent_id,snapshot_json,status,started_at,completed_at) VALUES(?,'t','old-turn-attempt',?,?,1,0,'a','{}','completed',?,?)").run('old-'+phase,'old-'+phase,phase,now,now);
   const previous=alreadyProjected?recorder.list('s',{rootTaskId:'t',limit:200}).records.filter(r=>r.source!=='root'):[];
   expect(alreadyProjected?previous.length>0:true).toBe(true);
   db.query("UPDATE multi_tasks SET config_json=? WHERE id='t'").run(JSON.stringify({costRootTaskId:'root-command'}));
   db.exec("INSERT INTO multi_tasks(id,session_id,prompt,state,config_json,created_at,updated_at) VALUES('new-child','s','next','executing','{}','now','now'); INSERT INTO room_commands(id,room_id,client_request_id,fingerprint,input_json,kind,status,task_id,created_at,updated_at) VALUES('root-command','s','root-request','fixture','{}','team','running','new-child','now','now')");
-  const recent=lifecycle.detail('a')!.recentRuns.runs;expect(recent.map(r=>r.rootTaskId)).toEqual(['root-command','root-command']);
+  const recent=lifecycle.detail('a')!.recentRuns.runs;expect(recent.map(r=>r.rootTaskId)).toEqual(Array(4).fill('root-command'));expect(recent.filter(r=>r.kind==='discussion')).toHaveLength(2);
   let after=0;const linked:import('@socrates/core').FlightRecord[]=[];
   do{const page=recorder.list('s',{rootTaskId:recent[0]!.rootTaskId,after,limit:2});linked.push(...page.records);if(page.next===null)break;after=page.next;}while(true);
-  expect(linked.filter(r=>r.source==='run')).toHaveLength(2);expect(linked.filter(r=>r.source==='runtime')).toHaveLength(4);expect(linked.filter(r=>r.source==='package')).toHaveLength(2);
+  expect(linked.filter(r=>r.source==='run')).toHaveLength(2);expect(linked.filter(r=>r.source==='runtime')).toHaveLength(4);expect(linked.filter(r=>r.source==='package')).toHaveLength(2);expect(linked.filter(r=>r.source==='discussion')).toHaveLength(2);
   expect(new Set(linked.map(r=>r.id)).size).toBe(linked.length);expect(linked.every(r=>r.rootTaskId==='root-command')).toBe(true);expect(linked.every(r=>r.parentId!=='root:t')).toBe(true);
   for(const before of previous)expect(linked.find(r=>r.id===before.id)?.sequence).toBe(before.sequence);
   expect(recorder.list('s',{rootTaskId:'t'}).records).toHaveLength(0);

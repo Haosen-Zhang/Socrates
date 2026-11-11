@@ -3,6 +3,9 @@ import {projectAgentAvailability,projectAgentWorkload,type AgentLifecycleDetail,
 import {toAgent,type AgentRow} from '../agents';
 import type {SecretStore} from '../secrets';
 import {providerFingerprint} from './provider-connection-evidence';
+import {SessionStore} from '../store/session-store';
+import {queuedMessageAgents} from './command-room';
+import {resolveExecutionRoot} from './execution-root';
 import {CostLedger} from './cost-ledger';
 
 type ProviderRow={id:string;name:string;enabled:number;type:string;base_url:string;api_key_ref:string;updated_at:string};
@@ -22,7 +25,7 @@ const runsSql=`WITH runs AS (
  FROM work_package_attempts a JOIN work_packages p ON p.id=a.package_id JOIN multi_tasks t ON t.id=p.task_id JOIN sessions s ON s.id=t.session_id
  WHERE NOT EXISTS(SELECT 1 FROM agent_runs r WHERE r.id=a.run_id)
  UNION ALL
- SELECT v.id,'discussion',t.session_id,s.workspace_id,v.agent_id,COALESCE(c.id,t.id),NULL,a.attempt_no,CASE WHEN v.status='running' AND t.state IN ('completed','failed','cancelled') THEN 'interrupted' ELSE v.status END,v.error,NULL,v.started_at,v.completed_at
+ SELECT v.id,'discussion',t.session_id,s.workspace_id,v.agent_id,COALESCE(c.id,NULLIF(json_extract(t.config_json,'$.costRootTaskId'),''),t.id),NULL,a.attempt_no,CASE WHEN v.status='running' AND t.state IN ('completed','failed','cancelled') THEN 'interrupted' ELSE v.status END,v.error,NULL,v.started_at,v.completed_at
  FROM multi_turns v JOIN multi_tasks t ON t.id=v.task_id JOIN multi_task_attempts a ON a.id=v.attempt_id JOIN sessions s ON s.id=t.session_id LEFT JOIN room_commands c ON c.task_id=t.id AND c.room_id=t.session_id
  UNION ALL
  SELECT c.id||':'||json_extract(profile.value,'$.agentId'),'discussion_command',c.room_id,s.workspace_id,json_extract(profile.value,'$.agentId'),c.id,NULL,1,c.status,c.error,NULL,c.created_at,CASE WHEN c.status IN ('completed','failed','cancelled','interrupted') THEN c.updated_at END
@@ -75,7 +78,28 @@ export class AgentLifecycleService {
   for(const p of packages){const state:AgentWorkState=p.taskState==='paused'||p.state==='budget_stopped'?'paused':p.taskState==='awaiting_plan_approval'?'awaiting_approval':p.failureReason==='workspace_write_lease_busy'?'workspace_waiting':['ready','waiting'].includes(p.state)?'queued':p.state as AgentWorkState;items.push({id:p.id,kind:'work_package',roomId:p.roomId,rootTaskId:p.rootTaskId,runId:p.runId,workPackageId:p.id,attemptNo:p.attemptNo,state,createdAt:p.createdAt});}
   const tasks=this.db.query<{id:string;roomId:string;rootTaskId:string;state:string;attemptNo:number;createdAt:string},[string]>(`SELECT t.id,t.session_id AS roomId,COALESCE(c.id,json_extract(t.config_json,'$.costRootTaskId'),t.id) AS rootTaskId,t.state,t.attempt_no AS attemptNo,t.created_at AS createdAt FROM multi_tasks t LEFT JOIN room_commands c ON c.task_id=t.id AND c.room_id=t.session_id WHERE json_extract(t.config_json,'$.synthesizerId')=? AND t.state IN ('preparing','synthesizing','revising_plan','awaiting_plan_approval','awaiting_tool_approval','paused') AND COALESCE(c.status,'')!='revoked'`).all(agentId);
   for(const t of tasks){if(items.some(i=>i.rootTaskId===t.rootTaskId))continue;const state:AgentWorkState=t.state==='paused'?'paused':t.state.includes('approval')?'awaiting_approval':t.state==='preparing'?'queued':'running';items.push({id:t.id,kind:'task',roomId:t.roomId,rootTaskId:t.rootTaskId,runId:null,workPackageId:null,attemptNo:t.attemptNo,state,createdAt:t.createdAt});}
-  return projectAgentWorkload(items);
+  const sessions=new SessionStore(this.db);
+  const pending=this.db.query<{id:string;room_id:string;work_item_id:string|null;input_json:string;status:string;created_at:string},[]>("SELECT * FROM work_interactions WHERE status IN ('queued','dispatching','blocked') AND room_id IS NOT NULL AND (status!='dispatching' OR NOT EXISTS(SELECT 1 FROM room_commands c WHERE c.client_request_id='interaction:'||work_interactions.id)) AND NOT EXISTS(SELECT 1 FROM leader_report_receipts r WHERE r.event_id='user:'||work_interactions.id AND r.evaluation_id IS NOT NULL)").all();
+  for(const instruction of pending){
+   const room=sessions.get(instruction.room_id);if(!room)continue;
+   const input=JSON.parse(instruction.input_json);
+   let targets:string[]=[];
+   try{
+    if(input.action==='message')targets=queuedMessageAgents(this.db,room,input);
+    else if(['reevaluate','delegate_package'].includes(input.action)&&instruction.work_item_id){
+     const leader=this.db.query<{agent_id:string},[string,string]>("SELECT json_extract(t.config_json,'$.synthesizerId') AS agent_id FROM work_item_runs r JOIN room_commands c ON c.id=r.command_id JOIN multi_tasks t ON t.id=c.task_id WHERE r.work_item_id=? AND r.execution_room_id=? ORDER BY r.rowid DESC LIMIT 1").get(instruction.work_item_id,room.id);
+     if(leader)targets=[leader.agent_id];
+    }
+   }catch{continue;}
+   if(targets.includes(agentId))items.push({id:instruction.id,kind:'instruction',roomId:room.id,rootTaskId:null,runId:null,workPackageId:null,attemptNo:0,state:instruction.status==='blocked'?'paused':'queued',createdAt:instruction.created_at});
+  }
+  const evaluations=this.db.query<{id:string;roomId:string;taskId:string;status:string;createdAt:string},[string]>("SELECT e.id,t.session_id AS roomId,t.id AS taskId,e.status,e.created_at AS createdAt FROM leader_evaluations e JOIN multi_tasks t ON t.id=e.task_id WHERE json_extract(t.config_json,'$.synthesizerId')=? AND e.status IN ('pending','running','blocked','awaiting_review')").all(agentId);
+  for(const evaluation of evaluations){
+   // The actual running Leader turn already owns this work; pending work has its own durable identity.
+   if(evaluation.status==='running'&&this.db.query("SELECT 1 FROM multi_turns WHERE task_id=? AND phase='leader_evaluation' AND status='running'").get(evaluation.taskId))continue;
+   items.push({id:evaluation.id,kind:'leader_evaluation',roomId:evaluation.roomId,rootTaskId:resolveExecutionRoot(this.db,evaluation.roomId,evaluation.taskId),runId:null,workPackageId:null,attemptNo:0,state:evaluation.status==='pending'?'queued':evaluation.status==='blocked'?'paused':evaluation.status==='awaiting_review'?'awaiting_review':'running',createdAt:evaluation.createdAt});
+  }
+  return projectAgentWorkload(items.filter(item=>!item.rootTaskId||!this.db.query("SELECT 1 FROM room_commands WHERE id=? AND status='revoked'").get(item.rootTaskId)));
  }
  detail(agentId:string,after?:string,limit=20):AgentLifecycleDetail|null {
   const presence=this.presence(agentId);if(!presence)return null;

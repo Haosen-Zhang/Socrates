@@ -1,5 +1,6 @@
 import { normalizeWorkspaceRelativePath, type FlightArtifactDiff } from "@socrates/core";
 import { isSecretWorkspacePath } from "../workspace/path-policy";
+import { resolveExecutionRoot } from './execution-root';
 import { ToolOutputStore } from "../tools/output-store";
 import {createHash} from 'node:crypto';
 import type {Database} from 'bun:sqlite';
@@ -23,9 +24,9 @@ export class FlightRecorderService {
  private rows(sql:string,...args:any[]):Row[]{return this.db.query(/\bLIMIT\b/i.test(sql)?sql:sql+' LIMIT 5000').all(...args) as Row[];}
  private exists(table:string){return !!this.db.query('SELECT name FROM sqlite_master WHERE type=\'table\' AND name=?').get(table);}
  private own(roomId:string){if(!this.db.query('SELECT id FROM sessions WHERE id=?').get(roomId))throw Error('flight_room_not_found');}
- private root(roomId:string,id:string):string{const packageRoot=this.db.query<{id:string},[string,string]>("SELECT COALESCE(c.id,NULLIF(json_extract(t.config_json,'$.costRootTaskId'),''),t.id) AS id FROM work_package_attempts a JOIN work_packages p ON p.id=a.package_id JOIN multi_tasks t ON t.id=p.task_id LEFT JOIN room_commands c ON c.task_id=t.id AND c.room_id=t.session_id WHERE t.session_id=? AND a.run_id=? LIMIT 1").get(roomId,id);if(packageRoot)return packageRoot.id;const command=this.db.query('SELECT id FROM room_commands WHERE room_id=? AND (id=? OR task_id=? OR run_id=?) LIMIT 1').get(roomId,id,id,id) as Row|null;if(command)return command.id;const task=this.db.query<{root:string|null},[string,string]>("SELECT json_extract(config_json,'$.costRootTaskId') AS root FROM multi_tasks WHERE session_id=? AND id=?").get(roomId,id);if(task?.root)return task.root;const invocation=this.db.query('SELECT root_task_id FROM cost_invocations WHERE room_id=? AND run_id=? LIMIT 1').get(roomId,id) as Row|null;if(invocation)return invocation.root_task_id;const attempt=this.db.query("SELECT a.root_task_id FROM adaptive_attempts a JOIN adaptive_workflows w ON w.root_task_id=a.root_task_id WHERE w.room_id=? AND json_extract(a.attempt_json,'$.child.id')=? LIMIT 1").get(roomId,id) as Row|null;return attempt?.root_task_id??id;}
+
  private put(roomId:string,root:string,source:string,key:string,seq:number,type:string,at:string,fields:Row={},agent?:string,parent?:string){
-  root=this.root(roomId,root);
+  root=resolveExecutionRoot(this.db,roomId,root);
   if(this.db.query("SELECT 1 FROM room_commands WHERE room_id=? AND id=? AND status='revoked'").get(roomId,root))return;
   const id=`${source}:${safeId(key)}`,stage=type.split('.')[0]!,clean=flightFields(fields),content=JSON.stringify([clean,type,parent??null,root]);
   if(this.db.query('SELECT id FROM flight_deleted WHERE id=?').get(id))return;
@@ -40,7 +41,7 @@ export class FlightRecorderService {
  private reconcileRoots(roomId:string){
   // Existing journal rows keep their pagination sequence when older child ownership is resolved.
   for(const row of this.db.query<{root_task_id:string},[string]>('SELECT DISTINCT root_task_id FROM flight_records WHERE room_id=?').all(roomId)){
-   const root=this.root(roomId,row.root_task_id);if(root===row.root_task_id)continue;
+   const root=resolveExecutionRoot(this.db,roomId,row.root_task_id);if(root===row.root_task_id)continue;
    const records=this.db.query<{id:string;record_json:string},[string,string]>("SELECT id,record_json FROM flight_records WHERE room_id=? AND root_task_id=? AND source!='root'").all(roomId,row.root_task_id);
    for(const item of records){const r=JSON.parse(item.record_json) as FlightRecord;r.rootTaskId=root;r.traceId=hash(`${roomId}:${root}`).slice(0,32);if(r.parentId===`root:${row.root_task_id}`)r.parentId=`root:${root}`;
     this.db.query('UPDATE flight_records SET root_task_id=?,record_json=?,content_hash=? WHERE id=?').run(root,JSON.stringify(r),hash(JSON.stringify([r.fields,r.type,r.parentId,root])),item.id);
@@ -99,7 +100,7 @@ export class FlightRecorderService {
   if(!path||isSecretWorkspacePath(path)||typeof value.diff!=='string'||typeof value.newSha256!=='string'||!/^[a-f0-9]{64}$/.test(value.newSha256))throw Error('artifact_diff_unavailable');
   return {toolCallId,runId:row.task_id,relativePath:path,oldSha256:typeof value.oldSha256==='string'&&/^[a-f0-9]{64}$/.test(value.oldSha256)?value.oldSha256:null,newSha256:value.newSha256,patch:value.diff.slice(0,65536),truncated:value.diffTruncated===true||value.diff.length>65536,basis:'recorded_tool_output'};
  }
- ownsRun(roomId:string,id:string){return this.liveRun(id)&&!!this.db.query('SELECT 1 FROM runtime_events WHERE session_id=? AND run_id=? LIMIT 1').get(roomId,id)&&!this.db.query("SELECT 1 FROM room_commands WHERE room_id=? AND id=? AND status='revoked'").get(roomId,this.root(roomId,id));}
+ ownsRun(roomId:string,id:string){return this.liveRun(id)&&!!this.db.query('SELECT 1 FROM runtime_events WHERE session_id=? AND run_id=? LIMIT 1').get(roomId,id)&&!this.db.query("SELECT 1 FROM room_commands WHERE room_id=? AND id=? AND status='revoked'").get(roomId,resolveExecutionRoot(this.db,roomId,id));}
  runTerminal(id:string){return !!this.db.query("SELECT 1 FROM runtime_events WHERE run_id=? AND type IN ('run.completed','run.failed','run.cancelled','run.interrupted') LIMIT 1").get(id);}
  private liveRun(id:string){return !!this.db.query('SELECT 1 FROM agent_runs WHERE id=? UNION ALL SELECT 1 FROM work_package_attempts WHERE run_id=? LIMIT 1').get(id,id);}
  private removeStale(roomId:string){

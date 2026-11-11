@@ -14,6 +14,6 @@ export interface WorkInteraction {
  status:'queued'|'dispatching'|'dispatched'|'saved'|'awaiting_review'|'resolved'|'blocked'|'failed'|'no_action';
  commandId:string|null; evaluationId?:string; reason:string|null; createdAt:string; updatedAt:string;
 }
-export interface InboxLink { workspaceId:string|null; workItemId?:string; roomId?:string; commandId?:string; taskId?:string; packageId?:string; runId?:string; approvalId?:string; interactionId?:string; evaluationId?:string; toolOperationId?:string }
+export interface InboxLink { workspaceId:string|null; rootTaskId?:string; workItemId?:string; roomId?:string; commandId?:string; taskId?:string; packageId?:string; runId?:string; approvalId?:string; interactionId?:string; evaluationId?:string; toolOperationId?:string }
 export interface InboxItem { id:string; kind:'approval'|'verification'|'unknown_side_effect'|'budget'|'blocked'|'human_review'; title:string; reason:string; link:InboxLink; revision:number; unread:boolean }
 export interface InboxNotification { id:string; itemId:string; revision:number; kind:string; createdAt:string }

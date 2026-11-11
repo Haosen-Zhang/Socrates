@@ -1,6 +1,6 @@
 import type { Database } from 'bun:sqlite';
-import { resolveRoomCommand, LEADER_LIMITS, type WorkInteraction, type WorkInteractionInput, type TriggerPreview, type RoomCommandInput } from '@socrates/core';
-import { commandRoom } from './command-room';
+import { LEADER_LIMITS, type WorkInteraction, type WorkInteractionInput, type TriggerPreview, type RoomCommandInput } from '@socrates/core';
+import { queuedMessageAgents } from './command-room';
 import { SessionStore } from '../store/session-store';
 import { ConversationMemoryStore } from '../store/conversation-memory-store';
 import { WorkItemService } from './work-items';
@@ -88,7 +88,7 @@ export class WorkInteractionService {
   }
   const pending=this.db.query<{client_request_id:string;input_json:string},[string]>("SELECT client_request_id,input_json FROM work_interactions WHERE scope_key=? AND status='queued'").all(target.key);
   const queued=pending.some(p=>p.client_request_id===input.clientRequestId);
-  const queuedAgents=new Set(pending.flatMap(p=>{try{const room=target.roomId?this.sessions.get(target.roomId):null;return room?resolveRoomCommand(commandRoom(this.db,room),this.command(JSON.parse(p.input_json),room.id,'preview')).agentIds:[];}catch{return [];}}));
+  const queuedAgents=new Set(pending.flatMap(p=>{try{const room=target.roomId?this.sessions.get(target.roomId):null;return room?queuedMessageAgents(this.db,room,JSON.parse(p.input_json)):[];}catch{return [];}}));
   return {agentIds,rule,changesOwner:false,queued,available:!reasons.length,reasons,roomId:target.roomId,workItemId:target.item?.id??null,
    inRunInjection:{supported:false,reason:'Native Runtime does not provide durable in-run instruction delivery receipts'},limits:LEADER_LIMITS,
    targets:agentIds.map(agentId=>({agentId,label:String(this.sessions.get(target.roomId!)?.agents.find(m=>m.agentId===agentId)?.snapshot.nickname??agentId),reason:rule,alreadyQueued:queuedAgents.has(agentId),...(reasons[0]?{blockedReason:reasons[0]}:{})})),createsRun,canSubmit:!reasons.length,delivery,...(active?{activeCommandId:active.commandId}:{}),supportsInRun:false};

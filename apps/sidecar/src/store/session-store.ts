@@ -506,6 +506,17 @@ export class SessionStore {
     const stagedHistory = this.history ? await this.history.stageSessionDeletion(sessionId) : null;
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      // History staging awaits IO; a queued instruction may have started in the meantime.
+      if (this.db.query("SELECT id FROM work_item_runs WHERE execution_room_id=? LIMIT 1").get(sessionId)) throw new Error("work_item_execution_history_retained");
+      const current = this.get(sessionId);
+      if (!current) throw new Error("session_not_found");
+      if (this.hasUnfinishedRouting(sessionId) || !["idle", "completed", "failed", "cancelled", "interrupted"].includes(current.status)) throw new Error("active_session_delete_locked");
+      // Remove room-owned routing references before their command/task parents; billing stays retained.
+      this.db.query("DELETE FROM inbox_notifications WHERE item_id IN (SELECT id FROM inbox_delivery WHERE json_extract(fingerprint,'$.link.roomId')=?)").run(sessionId);
+      this.db.query("DELETE FROM inbox_delivery WHERE json_extract(fingerprint,'$.link.roomId')=?").run(sessionId);
+      this.db.query("DELETE FROM leader_report_receipts WHERE event_id IN (SELECT 'user:'||id FROM work_interactions WHERE room_id=?) OR evaluation_id IN (SELECT e.id FROM leader_evaluations e JOIN multi_tasks t ON t.id=e.task_id WHERE t.session_id=?)").run(sessionId,sessionId);
+      this.db.query("DELETE FROM work_interactions WHERE room_id=?").run(sessionId);
+      this.db.query("DELETE FROM leader_evaluations WHERE task_id IN (SELECT id FROM multi_tasks WHERE session_id=?)").run(sessionId);
       this.db.query("DELETE FROM usage_records WHERE session_id = ?").run(sessionId);
       this.db.query("DELETE FROM multi_tasks WHERE session_id = ?").run(sessionId);
       this.db.query("DELETE FROM agent_runs WHERE session_id = ?").run(sessionId);

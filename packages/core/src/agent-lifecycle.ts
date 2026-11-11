@@ -37,7 +37,7 @@ export function projectAgentAvailability(f: AvailabilityFacts): AgentAvailabilit
 }
 export type AgentWorkState = 'queued' | 'workspace_waiting' | 'running' | 'awaiting_approval' | 'paused' | 'awaiting_verification' | 'awaiting_review';
 export interface AgentWorkItem {
-  id: string; kind: 'run' | 'work_package' | 'task' | 'command' | 'discussion'; roomId: string; rootTaskId: string;
+  id: string; kind: 'run' | 'work_package' | 'task' | 'command' | 'discussion' | 'instruction' | 'leader_evaluation'; roomId: string; rootTaskId: string | null;
   runId: string | null; workPackageId: string | null; attemptNo: number; state: AgentWorkState; createdAt: string;
 }
 export interface AgentWorkloadProjection {

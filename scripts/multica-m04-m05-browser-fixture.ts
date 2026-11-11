@@ -2,9 +2,10 @@ import { writeFileSync, unlinkSync } from 'node:fs';
 import { setupCostFlowFixture, untilCostFlow } from '../apps/sidecar/src/services/cost-flow-fixture';
 
 // Only synthetic data and the controlled local provider; no real user store is opened.
-const f = await setupCostFlowFixture({ routingFixture: true, nativeToolCalls: () => [] });
+let approvalMode=false;
+const f = await setupCostFlowFixture({ routingFixture: true, nativeToolCalls: () => approvalMode ? undefined : [] });
 f.sessions.rename(f.roomIds.work, 'Lifecycle acceptance lab');
-const squad = f.squads.create({ workspaceId: f.workspace.id, name: 'Lifecycle squad', avatar: 'robot', leaderAgentId: 'fixture-a', description: 'Synthetic lifecycle verification', instructions: 'Use approved work packages.', members: [{ agentId: 'fixture-a', responsibility: 'Build' }, { agentId: 'fixture-b', responsibility: 'Review' }] });
+const squad = f.squads.create({ workspaceId: f.workspace.id, name: 'Lifecycle squad', avatar: 'robot', leaderAgentId: 'fixture-a', description: 'Synthetic lifecycle verification', instructions: 'Use approved work packages.', members: [{ agentId: 'fixture-a', responsibility: 'Build' }, { agentId: 'fixture-b', responsibility: 'Review' }, { agentId: 'fixture-c', responsibility: 'Specialist' }] });
 f.squads.bind(squad.id, squad.revision, f.roomIds.work, null);
 const item = f.workItems.create({ workspaceId: f.workspace.id, roomId: f.roomIds.work, title: 'Inspect a completed run', objective: 'Return a controlled completion', acceptanceCriteria: ['Human reviews the result'], ownerKind: 'agent', ownerId: 'fixture-a', priority: 'normal' });
 const preview = f.workItemLaunch.preview(item.id, { expectedRevision: item.revision, ownerKind: 'agent', ownerId: 'fixture-a' });
@@ -31,6 +32,26 @@ f.app.post('/__multica/blocked-instruction',async c=>{
  try{await f.commands.cancel(f.workItems.get(target.id)!.currentRun!.commandId!);await untilCostFlow(()=>f.interactions.get(queued.id)?.status==='blocked','disabled-provider queued instruction');}
  finally{await f.app.request('/providers/fixture-provider',{method:'PUT',headers:f.headers,body:JSON.stringify({enabled:true})});}
  return c.json({interactionId:queued.id,itemId:target.id});
+});
+f.app.post('/__multica/tool-approval',async c=>{
+ const source=f.sessions.get(f.roomIds.work)!;
+ const room=f.sessions.create({title:'Actual tool approval lab',mode:source.mode,kind:'cowork',workspaceId:f.workspace.id,primaryAgentId:'fixture-a',agents:source.agents.map(a=>({agentId:a.agentId,snapshot:a.snapshot,executionEligible:a.executionEligible}))});
+ f.sessions.updateCollaboration(room.id,{...room.collaboration,strategy:'single'});f.sessions.updateApprovalPolicy(room.id,'ask');approvalMode=true;
+ const command=await f.interactions.submit({roomId:room.id},{clientRequestId:'actual-write-approval',action:'message',content:'Request a controlled write approval',mentions:[{type:'agent',agentId:'fixture-a'}]});
+ await untilCostFlow(()=>f.commands.get(command.commandId!)?.status==='awaiting_approval','actual write approval');
+ const entry=f.inbox.list().items.find(i=>i.link.roomId===room.id&&i.link.approvalId)!;
+ return c.json({roomId:room.id,commandId:command.commandId,entry});
+});
+f.app.post('/__multica/adaptive-history',async c=>{
+ approvalMode=false;const source=f.sessions.get(f.roomIds.work)!;
+ const room=f.sessions.create({title:'Adaptive history lab',mode:source.mode,kind:'cowork',workspaceId:f.workspace.id,primaryAgentId:'fixture-a',agents:source.agents.map(a=>({agentId:a.agentId,snapshot:a.snapshot,executionEligible:a.executionEligible}))});
+ f.sessions.updateCollaboration(room.id,source.collaboration);
+ const command=await f.commands.submit({roomId:room.id,clientRequestId:'old-planning',content:'Create controlled plan',intent:'execute',mentions:[]});
+ await untilCostFlow(()=>f.commands.get(command.commandId)?.status==='awaiting_plan_approval','adaptive original plan');
+ const task=f.tasks.get(f.commands.get(command.commandId)!.taskId!)!;const turn=f.db.query<{id:string},[string]>("SELECT id FROM multi_turns WHERE task_id=? AND phase='synthesizing'").get(task.id)!;
+ await f.commands.cancel(command.commandId);task.config.costRootTaskId=command.commandId;f.db.query('UPDATE multi_tasks SET config_json=? WHERE id=?').run(JSON.stringify(task.config),task.id);
+ const next=await f.coordinator.create({sessionId:room.id,prompt:'Later controlled adaptive child',config:{...task.config,clientRequestId:'later-planning'}});f.db.query('UPDATE room_commands SET task_id=? WHERE id=?').run(next.id,command.commandId);
+ return c.json({roomId:room.id,commandId:command.commandId,turnId:turn.id});
 });
 f.app.get('/__multica/counts', c => c.json({ native: f.nativeCalls.length, gateway: f.gatewayCalls.length, runs: f.db.query('SELECT count(*) AS n FROM agent_runs').get(), commands: f.db.query('SELECT count(*) AS n FROM room_commands').get() }));
 const metadataPath = process.env.SOCRATES_MULTICA_METADATA ?? '/private/tmp/socrates-multica-m04-m05.json';

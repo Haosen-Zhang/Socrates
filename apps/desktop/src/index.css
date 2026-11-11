@@ -1029,6 +1029,11 @@ details[open] > summary .tool-activity-disclosure { transform: rotate(90deg); }
 .md-body a { color: #6546d7; text-decoration: underline; }
 .md-body hr { border: none; border-top: 1px solid #d5cdb6; margin: 8px 0; }
 
+/* Keep the draft reachable while history, cost and routing controls scroll locally. */
+.composer-dock--bounded { display: flex; flex-direction: column; min-height: 0; max-height: 60vh; }
+.composer-options { min-height: 0; overflow-y: auto; padding-bottom: 8px; }
+.composer-dock--bounded > .pixel-composer { flex-shrink: 0; max-height: 40vh; }
+
 /* Reasonix 风格聊天输入区 */
 .composer-dock {
   border-top: 1px solid color-mix(in srgb, var(--pixel-ink) 18%, transparent);
