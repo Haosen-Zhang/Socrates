@@ -34,3 +34,16 @@ test('incremental reads drain event backlog past the first bounded batch',async(
  db.transaction(()=>{for(let i=0;i<5001;i++)events.appendInTransaction({eventId:`backlog-${i}`,sessionId:room.id,taskId:'task',type:'task.progress',payload:{status:'running'}});})();
  service.list(room.id);const last=service.list(room.id,{search:'backlog-5000'});expect(last.records.some(r=>r.id==='event:backlog-5000')).toBe(true);expect(db.query("SELECT cursor FROM flight_cursors WHERE room_id=? AND source='events'").get(room.id)).toEqual({cursor:5001});await service.shutdown();db.close();
 });
+
+test('optional exporter failure cannot erase or prevent local records',async()=>{
+ const db=openDb(':memory:');ensure(db);
+ const room=new SessionStore(db).create({title:'Offline audit',mode:'chat',primaryAgentId:'a',agents:[{agentId:'a',snapshot:{},executionEligible:false}]});
+ let exports=0;
+ const service=new FlightRecorderService(db,{exporter:{export(_spans,result){exports++;result({code:1,error:new Error('offline exporter')});},shutdown:async()=>{}}});
+ try {
+  new EventStore(db).append({eventId:'offline-proof',sessionId:room.id,taskId:'offline-task',type:'verification.finished',payload:{status:'passed'}});
+  expect(service.list(room.id).records.some(r=>r.id==='event:offline-proof')).toBe(true);
+  await service.flush();expect(exports).toBeGreaterThan(0);
+  expect(service.diagnostics(room.id).records.some(r=>r.id==='event:offline-proof')).toBe(true);
+ } finally {await service.shutdown();db.close();}
+});

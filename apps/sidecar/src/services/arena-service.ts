@@ -162,6 +162,8 @@ export class ArenaService {
 				throw new Error("arena_request_conflict");
 			return this.view(prior.id);
 		}
+		if (process.env.SOCRATES_ARENA_ADMISSION_ENABLED === "false")
+			throw new Error("arena_admission_disabled");
 		const source = this.deps.sessions.get(input.roomId);
 		if (
 			!source ||

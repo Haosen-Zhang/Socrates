@@ -185,3 +185,16 @@ Base: merged PR #147, origin/main `2275657`; branch `codex/cost-aware-p05-p07`. 
 Ownership: flight_recorder owns P05 and migration029; project_memory owns P06 and migration030 plus single/coordinator context; agent_arena owns P07 and migration031. Root owns shared assembly/index/navigation, integration fixture/browser gates, review and submission. New SDK dependencies must be coordinated; no concurrent edits to shared files.
 
 Final acceptance: 1,228 tests / 0 failures, types/build/lint; 44 actual Chrome checks; promptfoo full-task evaluation 1/0. P08 remains unstarted. See implementation-progress.md and doc/assets/cost-aware-p05-p07/validation.json.
+
+## P08 integration and delivery gate (2026-11-11)
+
+Base b7ef93c; branch codex/cost-aware-p08. P05-P07 PR #149 merged. Existing untracked outputs preserved.
+- [x] Execute S01-S12 against actual services; close cross-stage evidence gaps.
+- [x] Verify compatibility, upgrade backup, future-schema rejection, frozen workflow versions and admission-only controls.
+- [x] Fresh real UI checks, minimal usability fixes, current screenshots.
+- [x] Audit production reuse, write user guide and bounded release draft.
+- [x] Full tests/types/build/lint, review, progress evidence and PR.
+
+Ruling: Follow explicit prompt authorization for independent agent work; owners are scenario tests (agent_arena), compatibility (project_memory), browser/UI (flight_recorder), assembly/docs/gates (root). No broad rewrite or new evaluation framework.
+
+P08 final: 1,241/0 tests, types/build/lint/diff and native offline compile; 132/132 real browser checks. Review P1 child-version bypass reproduced then fixed with mutation-free HTTP regression. See implementation-progress.md for exact scope and release limits.

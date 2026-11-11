@@ -53,6 +53,30 @@ describe("durable adaptive LangGraph workflow",()=>{
   afterEach(async()=>{await service.shutdown();db.close();rmSync(base,{recursive:true,force:true});});
   async function run(){service.start(rootTaskId);return (await service.wait(rootTaskId))!;}
 
+  it("unknown graph versions remain readable but cannot reinterpret persisted approval or resume",async()=>{
+    results=[{status:"paused_budget",reason:"budget_insufficient"}];await run();
+    db.query("UPDATE adaptive_workflows SET state_json=json_set(state_json,'$.version','future-graph','$.status','running'),status='running' WHERE root_task_id=?").run(rootTaskId);
+    const before=db.query("SELECT * FROM adaptive_workflows WHERE root_task_id=?").get(rootTaskId);
+    service.recoverInterrupted();
+    expect(service.get(rootTaskId)).toMatchObject({version:"future-graph",status:"interrupted",reason:"adaptive_workflow_version_incompatible"});
+    await expect(service.resume(rootTaskId,"future-resume")).rejects.toThrow("adaptive_workflow_version_incompatible");
+    expect(launches).toHaveLength(1);expect(resumes).toBe(0);
+    await service.shutdown();expect(db.query("SELECT * FROM adaptive_workflows WHERE root_task_id=?").get(rootTaskId)).toEqual(before);
+  });
+  it("an approval from an unsupported graph is preserved without authorizing its successor",async()=>{
+    decision.limits.maxRetries=0;results=[{status:"failed",reason:"verification_assertion_failed",failureSignature:"first",artifactSnapshotHash:"original"}];
+    const paused=await run();expect(paused.pendingApproval).not.toBeNull();
+    db.query("UPDATE adaptive_workflows SET state_json=json_set(state_json,'$.version','future-graph') WHERE root_task_id=?").run(rootTaskId);
+    const before=db.query("SELECT * FROM adaptive_approvals WHERE root_task_id=?").all(rootTaskId);
+    await expect(service.decide(paused.pendingApproval!.id,{requestId:"future-approval",decision:"allow"})).rejects.toThrow("adaptive_workflow_version_incompatible");
+    expect(db.query("SELECT * FROM adaptive_approvals WHERE root_task_id=?").all(rootTaskId)).toEqual(before);expect(launches).toHaveLength(1);
+  });
+  it("turning off new automatic admission leaves frozen workflow resume intact",async()=>{
+    results=[{status:"paused_budget",reason:"budget_insufficient"}];await run();
+    const previous=process.env.SOCRATES_AUTOMATIC_ADMISSION_ENABLED;
+    process.env.SOCRATES_AUTOMATIC_ADMISSION_ENABLED="false";
+    try{await service.resume(rootTaskId,"existing-resume");await service.wait(rootTaskId);expect(resumes).toBe(1);expect(service.get(rootTaskId)?.status).toBe("completed");expect(launches).toHaveLength(1);}finally{if(previous===undefined)delete process.env.SOCRATES_AUTOMATIC_ADMISSION_ENABLED;else process.env.SOCRATES_AUTOMATIC_ADMISSION_ENABLED=previous;}
+  });
   for(const workflow of ["direct","plan_execute","execute_review","team"] as const)it(`dispatches the frozen ${workflow} host assignment through real checkpointed nodes`,async()=>{
     decision.selected=candidate("cheap",workflow);decision.selectedCandidateId=decision.selected.id;decision.candidates.push(decision.selected);
     const view=await run();expect(view.status).toBe("completed");expect(launches).toHaveLength(1);

@@ -1,5 +1,7 @@
 # Socrates 软件架构总览
 
+> 2026-11-11：P08 增加数据库写入前兼容检查、版本化工作流恢复边界及新任务准入开关；使用与备份说明见 [使用指南](cost-aware-user-guide.md)，本轮可复验场景见 [P08 证据](cost-aware-p08-scenarios.md)。
+
 > 2026-11-08 增补：P05 [本地执行记录](cost-aware-flight-recorder.md)、P06 [项目记忆](cost-aware-project-memory.md) 和 P07 [Arena](cost-aware-arena.md) 已接入项目入口及 sidecar。记录为只读业务投影；记忆在命令时冻结并在每次请求复核授权；Arena 复用原任务入口、预算、Native 工具循环及独立验证。迁移 029–033 只追加新领域表，原房间/历史/账本保留。
 
 > 2026-11-08 增补：P03 真实产物验收与 P04 成本路由已接生产。Work 选择自动预设/Custom 后由持久 LangGraph 父工作流调度现有 Native/Team 子执行器；旧 single/team 与 Chat 保持原路径。冻结决策、状态与权限边界见 [成本路由与验证](cost-aware-routing.md)。

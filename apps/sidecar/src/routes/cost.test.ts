@@ -39,3 +39,24 @@ test("cost HTTP routes validate exact price ownership, keep exports text-free an
     expect(f.broker.budgets.get(command.commandId)?.limitAtomic).toBe("1001000000000");
   } finally { await f.close(); }
 });
+
+test("P08 catalog HTTP import prices an actual invocation and future override does not rewrite it",async()=>{
+ const f=await setupCostFlowFixture();
+ try {
+  f.db.exec('DELETE FROM cost_price_snapshots');
+  const post=(path:string,body:unknown)=>f.app.request(path,{method:'POST',headers:f.headers,body:JSON.stringify(body)});
+  const mapping={providerConnectionId:'fixture-provider',modelId:'fixture-model-a',catalogProviderId:'openai',catalogModelId:'gpt-5',protocol:'openai_chat_completions',baseUrl:'https://fixture.invalid/v1',confirmedMapping:true};
+  const response=await post('/cost/prices/import',mapping);expect(response.status).toBe(201);
+  const catalog=await response.json() as {id:string};
+  const first=await f.commands.submit({roomId:f.roomIds.chat,clientRequestId:'catalog-first',content:'Controlled catalogue request',intent:'respond',mentions:[]});
+  await untilCostFlow(()=>f.commands.get(first.commandId)?.status==='completed','catalog_call');
+  expect(f.broker.ledger.list({rootTaskId:first.commandId})[0]?.priceSnapshotId).toBe(catalog.id);
+  const override=await post('/cost/prices',{...mapping,currency:'USD',rates:{input:'2',output:'3',cacheRead:'0',cacheWrite:'0'},source:'user_confirmed',sourceVersion:'p08-explicit-override'});
+  expect(override.status).toBe(201);const saved=await override.json() as {id:string};
+  const next=await f.commands.submit({roomId:f.roomIds.chat,clientRequestId:'catalog-second',content:'Controlled override request',intent:'respond',mentions:[]});
+  await untilCostFlow(()=>f.commands.get(next.commandId)?.status==='completed','override_call');
+  expect(f.broker.ledger.list({rootTaskId:next.commandId})[0]?.priceSnapshotId).toBe(saved.id);
+  expect(f.broker.ledger.list({rootTaskId:first.commandId})[0]?.priceSnapshotId).toBe(catalog.id);
+  expect((await post('/cost/prices/import',{...mapping,catalogModelId:'missing-model'})).status).toBe(409);
+ } finally {await f.close();}
+});

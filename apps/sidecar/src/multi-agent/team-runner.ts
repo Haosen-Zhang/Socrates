@@ -1,3 +1,4 @@
+import { assertTaskWorkflowCompatible } from "../services/workflow-compatibility";
 import type { Database } from "bun:sqlite";
 import type { RuntimeEvent, StructuredPlan } from "@socrates/core";
 import type { EventStore } from "../store/event-store";
@@ -36,6 +37,7 @@ export class TeamRunner {
   summary(taskId: string) { return this.packages.summary(taskId); }
 
   async run(taskId: string): Promise<void> {
+    assertTaskWorkflowCompatible(this.db,taskId);
     if (this.active.has(taskId)) throw new Error("team_already_running");
     const task = this.tasks.get(taskId);
     const approved = task?.approvedPlanVersion ? this.tasks.getPlan(taskId, task.approvedPlanVersion) : null;

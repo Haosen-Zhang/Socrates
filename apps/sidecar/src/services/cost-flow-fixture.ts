@@ -83,7 +83,11 @@ const PLAN: StructuredPlan = {
 };
 
 /** Real production services; only the Provider stream and disposable test files are controlled. */
-export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: boolean; reasoningPlanner?: boolean; writeApprovalFlow?: boolean; scopeExpansion?: boolean; invalidWriteHash?: boolean; automaticPricingView?: boolean; routingFixture?:boolean; nativeToolCalls?:(body:unknown)=>Array<{id:string;type:string;function:{name:string;arguments:string}}>|undefined; onNativeRequest?:(body:unknown)=>void; onGatewayRequest?:(request:unknown)=>void } = {}) {
+export async function setupCostFlowFixture(options: { strictBoundFixture?: boolean; missingFirstNativeUsage?: boolean; reasoningPlanner?: boolean; writeApprovalFlow?: boolean; scopeExpansion?: boolean; invalidWriteHash?: boolean; automaticPricingView?: boolean; routingFixture?:boolean; nativeToolCalls?:(body:unknown)=>Array<{id:string;type:string;function:{name:string;arguments:string}}>|undefined; onNativeRequest?:(body:unknown)=>void; onGatewayRequest?:(request:unknown)=>void } = {}) {
+  // Synthetic trusted-bound metadata only: Native fetch still targets fixture.invalid
+  // through controlledFetch; planning/review use the local generator below.
+  const admissionBaseUrl = options.strictBoundFixture ? "https://api.openai.com/v1" : "https://fixture.invalid/v1";
+  const catalogBound = (id:string) => options.strictBoundFixture ? {tokens:id === "fixture-c" ? 128000 : 1024,providerId:"openai",revision:"synthetic-strict-bound-fixture/1"} : undefined;
   const directory = mkdtempSync(join(tmpdir(), "socrates-cost-flow-"));
   const workspacePath = join(directory, "workspace");
   mkdirSync(workspacePath);
@@ -95,6 +99,7 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
   const now = new Date().toISOString();
   db.query(`INSERT INTO providers(id,name,type,base_url,default_model,api_key_ref,enabled,created_at,updated_at)
     VALUES ('fixture-provider','Controlled fixture Provider','openai_compatible','https://fixture.invalid/v1','fixture-model-a','fixture-key',1,?,?)`).run(now, now);
+  if(options.strictBoundFixture)db.query("UPDATE providers SET base_url=? WHERE id='fixture-provider'").run(admissionBaseUrl);
   const snapshots = (options.routingFixture?["a","b","c"]:["a", "b"]).map(suffix => ({ id: `fixture-${suffix}`, nickname: suffix === "a" ? "Fixture Builder" : suffix === "b" ? "Fixture Reviewer" : "Fixture Specialist", avatar: suffix === "a" ? "/avatars/owl-engineer.webp" : "/avatars/cat-astronaut.webp",
     providerId: "fixture-provider", modelId: `fixture-model-${suffix}`, role: "Controlled fixture member", systemPrompt: "Operate only on synthetic test input.",
     reasoningEffort: "auto", configurationVersion: "fixture-v1", modelCapabilities: { textInput: true, imageInput: false, fileInput: false, toolCalling: true, streaming: true,
@@ -113,7 +118,7 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
   const events = new EventStore(db), executionEvents = new ExecutionEventStore(db), approvals = new ApprovalManager(db);
   const outputs = new ToolOutputStore(db), leases = new WorkspaceLeaseManager(db, "cost-fixture-instance");
   const runtimes = new RuntimeManager(db, executionEvents), broker = new ModelInvocationBroker(db);
-  for (const s of snapshots) broker.prices.save({ providerConnectionId: s.providerId, modelId: s.modelId, protocol: "openai_chat_completions", baseUrl: "https://fixture.invalid/v1",
+  for (const s of snapshots) broker.prices.save({ providerConnectionId: s.providerId, modelId: s.modelId, protocol: options.strictBoundFixture ? "openai_responses" : "openai_chat_completions", baseUrl: admissionBaseUrl,
     currency: "USD", rates: { input: options.routingFixture && s.id === "fixture-c" ? "3" : "1", output: options.routingFixture && s.id === "fixture-c" ? "3" : "1", cacheRead: "0", cacheWrite: "0" }, source: "user_confirmed", sourceVersion: "synthetic-fixture/1",
     usageSemantics: { inputIncludesCacheRead: true, inputIncludesCacheWrite: true, outputIncludesReasoning: true } });
   if (options.automaticPricingView) {
@@ -235,10 +240,10 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
       permissionForTool: definition => evaluatePermission({ action: definition.capability === "workspace_read" ? "workspace.read" : "workspace.write", resource: definition.name,
         risk: definition.risk, mode: "single_agent", phase: "executing", capabilityAllowed: room.kind !== "chat", policyVersion: room.approvalPolicy.version, approvalMode: room.approvalPolicy.mode, rules: [] }),
       stream: createAiSdkNativeStream(createAiSdkModel({ providerType: "openai_compatible", baseUrl: "https://fixture.invalid/v1", modelId: profile.modelId,
-        apiKey: "fixture-not-a-real-key", fetchImpl: controlledFetch }), undefined, { providerType: "openai_compatible", baseUrl: "https://fixture.invalid/v1", modelId: profile.modelId,
+        apiKey: "fixture-not-a-real-key", fetchImpl: controlledFetch }), undefined, { providerType: "openai_compatible", baseUrl: admissionBaseUrl, modelId: profile.modelId,
         broker, invocation: { roomId: room.id, rootTaskId: String(input.runtimeOptions?.costRootTaskId ?? input.agentSessionId), runId: String(input.runtimeOptions?.costRunId ?? input.agentSessionId),
           agentId: input.agentId, providerConnectionId: profile.providerId, runProfileVersion: profile.configurationVersion, logicalStepId: input.agentSessionId,
-          purpose: room.kind === "chat" ? "respond" : "execute", contextWindowTokens: profile.contextWindowTokens,
+          purpose: room.kind === "chat" ? "respond" : "execute", contextWindowTokens: profile.contextWindowTokens, catalogContextWindow: catalogBound(input.agentId),
           ...(typeof input.runtimeOptions?.costRouteAttemptId === "string" ? { routeAttemptId: input.runtimeOptions.costRouteAttemptId } : {}),
         ...(typeof input.runtimeOptions?.costWorkPackageId === "string" ? { workPackageId: input.runtimeOptions.costWorkPackageId } : {}) } }) });
   });
@@ -254,8 +259,8 @@ export async function setupCostFlowFixture(options: { missingFirstNativeUsage?: 
   const resolveAgent = (agentId: string, snapshot: Record<string, unknown>): OrchestrationAgent => {
     const profile = resolveRunProfile(agentId, snapshot);
     return { id: agentId, nickname: profile.nickname, avatar: profile.avatar, modelId: profile.modelId, role: profile.role, systemPrompt: profile.systemPrompt,
-      providerType: "openai_compatible", baseUrl: "https://fixture.invalid/v1", apiKey: "fixture-not-a-real-key", providerConnectionId: profile.providerId,
-      runProfileVersion: profile.configurationVersion, contextWindowTokens: profile.contextWindowTokens, reasoningEffort: profile.reasoningEffort };
+      providerType: "openai_compatible", baseUrl: admissionBaseUrl, apiKey: "fixture-not-a-real-key", providerConnectionId: profile.providerId,
+      runProfileVersion: profile.configurationVersion, contextWindowTokens: profile.contextWindowTokens, catalogContextWindow: catalogBound(agentId), reasoningEffort: profile.reasoningEffort };
   };
   const coordinator = new MultiAgentCoordinator(db, tasks, events, gateway, resolveAgent,undefined,verification);
   const execution = new ExecutionRunner(db, tasks, runtimes, leases, approvals, events, executionEvents,undefined,verification);

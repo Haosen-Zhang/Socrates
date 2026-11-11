@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
+import { ADAPTIVE_WORKFLOW_VERSION } from "@socrates/core";
 import type { AdaptiveAttempt, GatewayInvocationContext, GatewayRequest, RoomCollaborationSettings } from "@socrates/core";
 import { openDb } from "../db";
 import { SessionStore } from "../store/session-store";
@@ -39,7 +40,7 @@ function setup(options: { customDiscussion?: boolean; maxCalls?: number } = {}) 
   db.query("INSERT INTO room_commands(id,room_id,client_request_id,fingerprint,input_json,kind,status,created_at,updated_at) VALUES ('root',?,'fixture','fixture',?,'direct','running','now','now')")
     .run(room.id, JSON.stringify(input));
   const decision = routes.freeze("root", preview, null);
-  db.query("INSERT INTO adaptive_workflows(root_task_id,room_id,decision_id,status,state_json,created_at,updated_at) VALUES ('root',?,?,'running','{}','now','now')").run(room.id, decision.id);
+  db.query("INSERT INTO adaptive_workflows(root_task_id,room_id,decision_id,status,state_json,created_at,updated_at) VALUES ('root',?,?,'running',?,'now','now')").run(room.id, decision.id,JSON.stringify({version:ADAPTIVE_WORKFLOW_VERSION}));
   const attempt: AdaptiveAttempt = { id: "attempt", rootTaskId: "root", ordinal: 1, clientTurnKey: "fixture", decisionId: decision.id,
     candidateId: decision.selected!.id, workflow: decision.selected!.workflow, assignments: decision.selected!.assignments,
     kind: "initial", status: "running", child: null, handoff: null, estimatedAdditionalCost: { currency: "USD", lowAtomic: decision.selected!.lowAtomic, highAtomic: decision.selected!.highAtomic },

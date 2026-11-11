@@ -96,7 +96,7 @@ export class AdaptiveWorkflowService {
     const modelCalls=this.hosts.modelCalls(rootTaskId);
     let outcome=root.outcome;
     if(root.status==="completed")try{const current=this.verification.view({roomId:root.roomId,rootTaskId});if(outcome==="verified_success"&&current.outcome!=="verified_success")outcome="completed_unverified";}catch{outcome="completed_unverified";}
-    return {...root,outcome,modelCalls,attempts,pendingApproval};
+    return {...root,...(root.version !== ADAPTIVE_WORKFLOW_VERSION && !TERMINAL.has(root.status) ? {status:"interrupted" as const,reason:"adaptive_workflow_version_incompatible"} : {}),outcome,modelCalls,attempts,pendingApproval};
   }
   async wait(rootTaskId:string):Promise<AdaptiveWorkflowView|null>{await this.active.get(rootTaskId)?.promise;return this.get(rootTaskId);}
   /** Explicit host approval/progress notifications wake observation only. They
@@ -117,6 +117,7 @@ export class AdaptiveWorkflowService {
   private async resumeAction(rootTaskId:string,requestId:string):Promise<AdaptiveWorkflowView> {
     if(this.stopping)throw new Error("adaptive_service_stopping");
     const root=this.requireRoot(rootTaskId),fingerprint=hashToolInput({action:"resume",rootTaskId});
+    this.assertCompatible(root);
     if(this.request(rootTaskId,requestId,fingerprint))return this.get(rootTaskId)!;
     if(TERMINAL.has(root.status))throw new Error("adaptive_workflow_not_resumable");
     if(this.get(rootTaskId)?.pendingApproval)throw new Error("adaptive_escalation_approval_required");
@@ -150,6 +151,7 @@ export class AdaptiveWorkflowService {
     if(this.stopping)throw new Error("adaptive_service_stopping");
     const approval=this.approval(approvalId);if(!approval)throw new Error("adaptive_approval_not_found");
     const root=this.requireRoot(approval.rootTaskId),fingerprint=hashToolInput({action:"decide",approvalId,decision:input.decision});
+    this.assertCompatible(root);
     if(this.request(root.rootTaskId,input.requestId,fingerprint))return this.get(root.rootTaskId)!;
     if(approval.status!=="pending"||root.status!=="awaiting_approval")throw new Error("adaptive_approval_not_pending");
     if(this.active.has(root.rootTaskId))await this.active.get(root.rootTaskId)!.promise;
@@ -181,8 +183,9 @@ export class AdaptiveWorkflowService {
   }
   recoverInterrupted():number {
     const rows=this.db.query<{state_json:string},[]>("SELECT state_json FROM adaptive_workflows WHERE status IN ('pending','running','assessing')").all();
-    for(const row of rows){const root=JSON.parse(row.state_json) as RootState;root.status="interrupted";root.outcome="blocked";root.reason="adaptive_restart_requires_resume";this.saveRoot(root,"routing.workflow.interrupted");}
-    return rows.length;
+    let recovered=0;
+    for(const row of rows){const root=JSON.parse(row.state_json) as RootState;if(root.version!==ADAPTIVE_WORKFLOW_VERSION)continue;recovered++;root.status="interrupted";root.outcome="blocked";root.reason="adaptive_restart_requires_resume";this.saveRoot(root,"routing.workflow.interrupted");}
+    return recovered;
   }
   async shutdown():Promise<void>{
     this.stopping=true;
@@ -190,6 +193,7 @@ export class AdaptiveWorkflowService {
     const roots=this.db.query<{root_task_id:string},[]>("SELECT root_task_id FROM adaptive_workflows WHERE status NOT IN ('completed','failed','blocked','cancelled')").all();
     await Promise.all(roots.map(async({root_task_id:rootTaskId})=>{
       const active=this.active.get(rootTaskId);
+      if(this.root(rootTaskId)?.version!==ADAPTIVE_WORKFLOW_VERSION)return;
       if(active){active.stopping=true;active.controller.abort(new Error("adaptive_shutdown"));}
       const root=this.requireRoot(rootTaskId),attempt=this.latestAttempt(rootTaskId),child=attempt.child ?? await this.hosts.find(attempt.id);
       await Promise.all([child?(this.hosts.interrupt?.(child) ?? this.hosts.cancel(child)):Promise.resolve(),this.verification.cancelRoot(root.roomId,rootTaskId)]);await active?.promise;
@@ -197,7 +201,11 @@ export class AdaptiveWorkflowService {
     }));
   }
 
+  private assertCompatible(root:RootState):void {
+    if(root.version!==ADAPTIVE_WORKFLOW_VERSION)throw new Error("adaptive_workflow_version_incompatible");
+  }
   private kick(rootTaskId:string,resume:boolean):void {
+    this.assertCompatible(this.requireRoot(rootTaskId));
     if(this.active.has(rootTaskId))return;
     const controller=new AbortController();
     const active:Active={controller,cancelling:false,stopping:false,promise:Promise.resolve(),nodes:new Set()};

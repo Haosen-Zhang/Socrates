@@ -1,3 +1,4 @@
+import { assertTaskWorkflowCompatible } from "../services/workflow-compatibility";
 import { taskVerificationTarget, type WorkVerification } from "../services/work-verification";
 import type { Database } from "bun:sqlite";
 import {
@@ -94,6 +95,7 @@ export class MultiAgentCoordinator {
   }
 
   async run(taskId: string, emit: (event: MultiAgentEvent) => void | Promise<void> = () => {}): Promise<void> {
+    assertTaskWorkflowCompatible(this.db,taskId);
     if (this.controllers.has(taskId)) throw new Error("multi_task_already_running");
     emit = this.durableEmitter(taskId, emit);
     const controller = new AbortController();
@@ -309,6 +311,7 @@ export class MultiAgentCoordinator {
   }
 
   async replan(taskId: string, instruction: string, emit: (event: MultiAgentEvent) => void | Promise<void> = () => {}): Promise<void> {
+    assertTaskWorkflowCompatible(this.db,taskId);
     await this.waitUntilStopped(taskId);
     const task = this.store.get(taskId);
     const parent = this.store.getPlan(taskId);

@@ -1,3 +1,4 @@
+import { assertTaskWorkflowCompatible } from "../services/workflow-compatibility";
 import type { Database } from "bun:sqlite";
 import { canPersistApprovalGrant, type ApprovalDecision, type ApprovalRecord, type ToolRisk } from "@socrates/core";
 
@@ -72,6 +73,8 @@ export class ApprovalManager {
   }
 
   decide(requestId: string, input: { clientDecisionKey: string; decision: ApprovalDecision; reason?: string }): DurableApprovalDecision {
+    const owner = this.getRequest(requestId);
+    if(owner)assertTaskWorkflowCompatible(this.db,owner.taskId);
     const duplicate = this.db.query<DecisionRow, [string]>("SELECT * FROM approval_decisions WHERE client_decision_key = ?").get(input.clientDecisionKey);
     if (duplicate) {
       if (duplicate.request_id !== requestId || duplicate.decision !== input.decision) throw new Error("approval_decision_key_conflict");
