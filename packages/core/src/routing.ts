@@ -106,9 +106,8 @@ export function selectRoute(input: RoutingInput): RoutingSelection {
       && requestCostUpperBound(price, 1, 1) !== null;
   };
   const allowed = new Set(input.allowedAgentIds), locked = new Set(input.lockedAgentIds);
-  // Existing explicit-team mentions select workers; its configured control
-  // roles and discussion remain intact. Adaptive @ still selects only that member.
-  const lockedWorkersOnly=input.preset==="custom"&&input.strategy==="team";
+  const explicitSingle=locked.size===1;
+  const lockedWorkersOnly=!explicitSingle&&input.preset==="custom"&&input.strategy==="team";
   const fallbackAgentIds=input.fallbackAgentIds.filter(id=>!locked.size||locked.has(id));
   const eligible = [...input.members].sort((a,b)=>a.agentId.localeCompare(b.agentId)).filter(member => {
     const reasons: string[] = [];
@@ -145,7 +144,7 @@ export function selectRoute(input: RoutingInput): RoutingSelection {
   const machine = input.features.verification === "machine";
   const candidates: RouteCandidate[] = [];
   const make = (workflow:RouteWorkflow,managerId:string|null,executorIds:string[],reviewerId:string|null,reasonCodes:string[],fallbackOnly=false) => {
-    const discussion=input.preset==="custom"&&input.strategy==="team"&&input.discussion?.enabled?input.discussion:null;
+    const discussion=!explicitSingle&&input.preset==="custom"&&input.strategy==="team"&&input.discussion?.enabled?input.discussion:null;
     const ids = [...new Set([...executorIds,...(managerId?[managerId]:[]),...(reviewerId?[reviewerId]:[]),...(discussion?.speakerOrder??[])])];
     if (!executorIds.length || ids.some(id=>!byId.has(id))) return;
     const stages:RouteCostStage[]=[];
@@ -191,7 +190,10 @@ export function selectRoute(input: RoutingInput): RoutingSelection {
       feasible:exclusionReasons.length===0,exclusionReasons,evidence:"rules_only",costStatus,...(fallbackOnly?{fallbackOnly:true}:{})};
     if (!candidates.some(c=>c.id===candidate.id)) candidates.push(candidate);
   };
-  if (input.preset==="custom") {
+  if (explicitSingle) {
+    const id=input.lockedAgentIds[0]!;
+    if(byId.has(id))make("direct",null,[id],null,["explicit_single_member"]);
+  } else if (input.preset==="custom") {
     if (input.strategy==="team") {
       const managerId=input.managerId;
       const executors=input.lockedAgentIds.length?input.lockedAgentIds:input.customExecutorId?[input.customExecutorId]:input.allowedAgentIds;

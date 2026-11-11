@@ -1,3 +1,6 @@
+import { WorkInteractionService } from "./services/work-interactions";
+import { InboxService } from "./services/inbox";
+import { interactionRoutes, inboxRoutes } from "./routes/work-interactions";
 import { AgentLifecycleService } from "./services/agent-lifecycle";
 import { agentLifecycleRoutes } from "./routes/agent-lifecycle";
 import { WorkItemLaunchService } from "./services/work-item-launch";
@@ -271,6 +274,7 @@ const commands = new RoomCommandService(db, sessions, {
   getDirect: (id) => runSupervisor.get(id),
   cancelDirect: (id) => runSupervisor.cancel(id),
   isTeamActive: (id) => teamRunner.isActive(id),
+  cancelTeam:async id=>{multiCoordinator.cancel(id);await multiCoordinator.wait(id);await teamRunner.cancel(id);},
   resolveFileContext: (workspaceId, refs, ids) => resolveRoomFileContext(db, workspaces, attachments, workspaceId, refs, ids),
   createTeam: async ({ sessionId, prompt, clientRequestId, targetAgentIds, inputContext }) => {
     const room = sessions.get(sessionId)!;
@@ -292,11 +296,10 @@ const costTasks = new CostTaskService(db, commands, runSupervisor, agentRuns, mu
 const agentLifecycle=new AgentLifecycleService(db,{secrets,runtimeReady:()=>runtimes.isRegistered("native_ai_sdk")});
 const workItems=new WorkItemService(db,commands);
  const squads=new SquadService(db,sessions,workspaceId=>workItems.list(workspaceId),agentLifecycle);
- const workItemLaunch=new WorkItemLaunchService(db,workItems,sessions,squads,new TaskQuoteService(db,sessions),commands,async id=>{
-  const command=commands.get(id);if(!command)throw new Error('Command not found');
-  if(command.taskId&&!command.adaptive){multiCoordinator.cancel(command.taskId);await multiCoordinator.wait(command.taskId);await teamRunner.cancel(command.taskId);}
-  else await commands.cancel(id);
- });
+ const workItemLaunch=new WorkItemLaunchService(db,workItems,sessions,squads,new TaskQuoteService(db,sessions),commands);
+ const inbox=new InboxService(db,workItems,commands,verification);
+ const interactions=new WorkInteractionService(db,workItems,sessions,commands,multiCoordinator,multiTasks,teamRunner,workPackages,()=>{inbox.list();});
+ interactions.start(500);
  app.get("/health", (c) => c.json({ ok: true }));
 app.route("/config", configRoutes(config));
 app.route("/providers", providerRoutes(db, secrets, proxiedFetch));
@@ -331,7 +334,10 @@ app.route("/flight-recorder",flightRecorderRoutes(flightRecorder,executionEvents
 app.route("/project-memory",projectMemoryRoutes(projectMemory));
 app.route("/verification",verificationRoutes(verification));
 app.route("/routing",routingRoutes(routing,adaptive));
-app.route("/work-items", workItemRoutes(workItems,workItemLaunch));
+app.route("/work-items",interactionRoutes(interactions,'item'));
+  app.route("/room-commands/rooms",interactionRoutes(interactions,'room'));
+  app.route("/inbox",inboxRoutes(inbox));
+  app.route("/work-items", workItemRoutes(workItems,workItemLaunch));
 app.route("/cost", costRoutes(db, sessions, invocationBroker, new TaskQuoteService(db, sessions,routing), costTasks, commands));
 app.route("/agent", agentRunRoutes(runSupervisor, agentRuns, approvals, executionEvents, (child,key)=>adaptive.notifyChildProgress(child,key).then(()=>{})));
 app.route("/content", contentRoutes(db, workspaces, attachments));
@@ -348,6 +354,7 @@ const server = Bun.serve({
 if (server.port === undefined) throw new Error("TCP server has no port");
 
 stopManagedServices = async () => {
+  await interactions.shutdown();
   await arena.shutdown();
   await adaptive.shutdown();
   await verification.shutdown();

@@ -18,6 +18,6 @@ test("chat rejects execution and local file references", () => {
 });
 test("unknown members rejected and explicit team strategy routes through coordinator", () => {
   expect(() => resolveRoomCommand(room, { intent: "execute", mentions: [{ type: "agent", agentId: "outside" }] })).toThrow("mention_must_be_room_member");
-  expect(resolveRoomCommand({ ...room, collaboration: { ...room.collaboration, strategy: "team" } }, { intent: "execute", mentions: [{ type: "agent", agentId: "b" }] })).toEqual({ kind: "team", agentIds: ["b"] });
+  expect(resolveRoomCommand({ ...room, collaboration: { ...room.collaboration, strategy: "team" } }, { intent: "execute", mentions: [{ type: "agent", agentId: "b" }] })).toEqual({ kind: "direct", agentIds: ["b"] });
   expect(resolveRoomCommand({ ...room, collaboration: { ...room.collaboration, strategy: "team" } }, { intent: "execute", mentions: [{ type: "agent", agentId: "b" }, { type: "agent", agentId: "a" }] })).toEqual({ kind: "team", agentIds: ["b", "a"] });
 });

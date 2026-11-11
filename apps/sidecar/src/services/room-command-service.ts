@@ -1,3 +1,4 @@
+import { commandRoom } from "./command-room";
 import { assertWorkItemAdmission } from "./work-item-admission";
 import { ProjectMemoryService } from "./project-memory";
 import { linkArenaBudget } from "./arena-budget";
@@ -33,6 +34,7 @@ interface Dependencies {
   resolveFileContext?(workspaceId: string | null, refs: string[], attachments: string[]): RoomFileContext;
   cancelDirect?(runId: string): Promise<void>;
   isTeamActive?(taskId: string): boolean;
+  cancelTeam?(taskId:string):Promise<void>;
   resolveAgent(agentId: string, snapshot: Record<string, unknown>): OrchestrationAgent;
   gateway: ModelGateway;
   verification?: VerificationService;
@@ -49,6 +51,27 @@ export class RoomCommandService {
   constructor(private readonly db: Database, private readonly sessions: SessionStore, private readonly deps: Dependencies, history?: HistoryStore) {
     this.memory = new ConversationMemoryStore(db, history);
     this.usage = new UsageCollector(db);
+  }
+  preview(input:RoomCommandInput) {
+    const room=this.sessions.get(input.roomId);
+    if(!room||room.archived)throw new Error("room_not_found");
+    if(room.workspaceId&&this.db.query<{archived:number},[string]>('SELECT archived FROM workspaces WHERE id=?').get(room.workspaceId)?.archived)throw new Error('workspace_archived');
+    const binding=commandRoom(this.db,room);
+    if(binding.squadId&&this.db.query<{archived:number},[string]>('SELECT archived FROM squad_templates WHERE id=?').get(binding.squadId)?.archived)throw new Error('squad_archived_rebind_required');
+    let resolved=resolveRoomCommand(binding,input);
+    const quotes=new TaskQuoteService(this.db,this.sessions,this.deps.routing);
+    quotes.validate(input);
+    const quote=quotes.quote(input);
+    if(quote.route){if(!quote.route.selected)throw new Error("routing_no_feasible_candidate");resolved=quote.route.selected.resolved;}
+    const ids=resolved.kind==='team'?[room.collaboration.assignment.coordinatorAgentId??room.primaryAgentId]:resolved.agentIds;
+    for(const id of ids){
+      const member=room.agents.find(m=>m.agentId===id);
+      if(!member || room.kind==='cowork' && resolved.kind!=='discussion' && !member.executionEligible)throw new Error('member_execution_unavailable');
+      const provider=this.db.query<{enabled:number},[string]>('SELECT enabled FROM providers WHERE id=?').get(String(member.snapshot.providerId??''));
+      if(!provider?.enabled)throw new Error('provider_unavailable');
+      this.deps.resolveAgent(id,structuredClone(member.snapshot));
+    }
+    return {resolved,agentIds:ids};
   }
   recoverInterrupted(): void {
     for (const row of this.db.query<Row, []>("SELECT * FROM room_commands WHERE (kind = 'discussion' AND status = 'running') OR status = 'dispatching'").all()) {
@@ -91,7 +114,7 @@ export class RoomCommandService {
     if (!room || room.archived) throw new Error("room_not_found");
     if(this.db.query('SELECT b.room_id FROM squad_room_bindings b JOIN squad_templates s ON s.id=b.squad_id WHERE b.room_id=? AND s.archived=1').get(room.id))throw new Error('squad_archived_rebind_required');
     const quotes=new TaskQuoteService(this.db,this.sessions,this.deps.routing);
-    let resolved = resolveRoomCommand({ ...room, agentIds: room.agents.map((a) => a.agentId) }, input);
+    let resolved = resolveRoomCommand(commandRoom(this.db,room), input);
     if(isRoutingEnabled(room,input) && resolved.kind!=="discussion" && room.collaboration.strategy === "adaptive" && process.env.SOCRATES_AUTOMATIC_ADMISSION_ENABLED === "false") throw new Error("automatic_new_task_admission_disabled");
     let quote=quotes.validate(input);
     let route:RoutePreview|undefined;
@@ -135,7 +158,10 @@ export class RoomCommandService {
         .run(id, room.id, input.clientRequestId, fingerprint, JSON.stringify({...input,...(quote?{quoteId:quote.id}:{})}), resolved.kind, now, now);
       new ProjectMemoryService(this.db).freeze(id, room.id);
       if(route)this.deps.routing!.freeze(id,route,quote?.id ?? null);
-      if (input.budget) new BudgetLedger(this.db).create({ rootTaskId: id, roomId: room.id, ...input.budget });
+      const budgetLedger=new BudgetLedger(this.db);
+      const interactionParent=input.clientRequestId.startsWith('interaction:')?this.db.query<{command_id:string},[string,string]>(`SELECT r.command_id FROM work_interactions i JOIN work_item_runs r ON r.work_item_id=i.work_item_id AND r.execution_room_id=i.room_id WHERE i.id=? AND i.room_id=? AND i.status='dispatching' ORDER BY r.rowid DESC LIMIT 1`).get(input.clientRequestId.slice(12),room.id):null;
+      const parentBudget=interactionParent?budgetLedger.get(interactionParent.command_id):null;
+      if(input.budget||parentBudget)budgetLedger.create({rootTaskId:id,roomId:room.id,...(input.budget??{mode:parentBudget!.mode,limitAtomic:parentBudget!.limitAtomic}),...(parentBudget?{parentId:parentBudget.rootTaskId}:{})});
       linkArenaBudget(this.db, room.id, id);
       if (input.verificationPlanId) this.deps.verification!.bind(input.verificationPlanId,{roomId:room.id,rootTaskId:id});
     })();
@@ -314,6 +340,7 @@ export class RoomCommandService {
     if(this.deps.adaptive?.get(id)){await this.deps.adaptive.cancel(id);return;}
     await this.deps.verification?.cancelRoot(command.roomId, command.commandId);
     if (command.runId && this.deps.cancelDirect) return this.deps.cancelDirect(command.runId);
+    if(command.taskId && this.deps.cancelTeam) return this.deps.cancelTeam(command.taskId);
     const discussion = this.discussions.get(id);
     if (!discussion) throw new Error("command_not_active");
     discussion.controller.abort("user_cancelled");
