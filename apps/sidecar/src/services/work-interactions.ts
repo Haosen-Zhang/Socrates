@@ -37,7 +37,7 @@ export class WorkInteractionService {
    const cmd=this.db.query<{id:string},[string]>('SELECT id FROM room_commands WHERE client_request_id=?').get('interaction:'+row.id);
    this.update(row.id,cmd?'dispatched':'blocked',cmd?null:'interrupted_dispatch_requires_review',cmd?.id);
   }
-  this.db.query("UPDATE leader_evaluations SET status='blocked',reason='interrupted_evaluation_requires_review' WHERE status='running'").run();
+  for(const evaluation of this.db.query<{id:string;task_id:string},[]>("SELECT id,task_id FROM leader_evaluations WHERE status='running'").all())this.settleEvaluation(evaluation,'blocked','interrupted_evaluation_requires_review',null);
  }
  private scope(scope:InteractionScope){
   if('workItemId'in scope){const item=this.items.get(scope.workItemId);if(!item)throw new Error('work_item_not_found');return {key:'item:'+item.id,item,roomId:item.currentRun?.executionRoomId??item.roomId};}
@@ -76,7 +76,13 @@ export class WorkInteractionService {
      const taskId=target.item?.currentRun?.commandId?this.commands.get(target.item.currentRun.commandId)?.taskId:undefined;
      const task=taskId?this.tasks.get(taskId):null;
      if(!task)reasons.push('An existing Squad execution is required');
-     else {agentIds=[task.config.synthesizerId];if(this.evaluationCount(target.item!.id)>=LEADER_LIMITS.maxEvaluations)reasons.push('leader_evaluation_limit');}
+     else {
+      this.evaluationAuthority({work_item_id:target.item!.id,task_id:task.id});
+      agentIds=[task.config.synthesizerId];
+      if(delivery==='stop_restart')reasons.push('leader_stop_restart_unavailable');
+      if(delivery==='now'&&this.leaderBusy(task.id))reasons.push('leader_execution_in_flight_choose_queue');
+      if(this.evaluationCount(target.item!.id)>=LEADER_LIMITS.maxEvaluations)reasons.push('leader_evaluation_limit');
+     }
     }
    }catch(e){reasons.push(e instanceof Error?e.message:String(e));}
   }
@@ -121,13 +127,17 @@ export class WorkInteractionService {
     const target=this.scope(scope);
     if(target.roomId!==row.room_id)throw new Error('execution_changed_requires_new_instruction');
     const active=this.active(row.room_id);
-    if(active&&input.action==='message'&&input.delivery!=='stop_restart')continue;
+    const leader=input.action==='reevaluate'||input.action==='delegate_package';
+    if(leader&&input.delivery==='stop_restart')throw new Error('leader_stop_restart_unavailable');
+    if(active&&(input.delivery==='queue'||input.action==='message'&&input.delivery!=='stop_restart'))continue;
     if(active&&input.action==='message'){await this.commands.cancel(active.commandId);if(this.active(row.room_id))throw new Error('cancellation_not_settled');}
     if(row.room_id&&unknownRoomEffects(this.db,row.room_id))throw new Error('unknown_side_effect_requires_review');
     if(row.room_id&&unsettledRoomModelCost(this.db,row.room_id))throw new Error('model_cost_settlement_required');
     if(input.action==='reevaluate'||input.action==='delegate_package'){
      const taskId=target.item?.currentRun?.commandId?this.commands.get(target.item.currentRun.commandId)?.taskId:undefined;
      if(!target.item||!taskId)throw new Error('squad_execution_required');
+     this.evaluationAuthority({work_item_id:target.item.id,task_id:taskId});
+     if(this.leaderBusy(taskId))throw new Error('leader_execution_in_flight_choose_queue');
      this.requestEvaluation(target.item.id,taskId,'user:'+row.id,input);
      this.update(row.id,'dispatched','leader_evaluation_requested');continue;
     }
@@ -141,19 +151,32 @@ export class WorkInteractionService {
   this.collectReports();
   for(const evaluation of this.db.query<{id:string;work_item_id:string;task_id:string},[]>("SELECT * FROM leader_evaluations WHERE status='pending' ORDER BY rowid").all()){
    if(this.stopped)return;
-   const task=this.tasks.get(evaluation.task_id);if(!task)continue;
-   if(this.team.isActive(task.id)||['preparing','discussing','synthesizing'].includes(task.state))continue;
+   try{this.evaluationAuthority(evaluation);}catch(error){this.settleEvaluation(evaluation,'blocked',error instanceof Error?error.message:String(error),null);continue;}
+   if(this.leaderBusy(evaluation.task_id))continue;
    await this.evaluate(evaluation);
   }
+ }
+ private evaluationAuthority(evaluation:{work_item_id:string;task_id:string}) {
+  const item=this.items.get(evaluation.work_item_id),task=this.tasks.get(evaluation.task_id);
+  const command=item?.currentRun?.commandId?this.commands.get(item.currentRun.commandId):null;
+  if(!item||!task||!command||command.taskId!==task.id||item.currentRun?.executionRoomId!==task.sessionId)throw new Error('leader_execution_obsolete');
+  if(task.state==='cancelled'||['cancelled','revoked'].includes(command.status))throw new Error('leader_execution_cancelled');
+  return {item,task};
+ }
+ private leaderBusy(taskId:string):boolean {
+  const task=this.tasks.get(taskId);if(!task)return false;
+  const active=this.active(task.sessionId);
+  return this.coordinator.isActive(taskId)||this.team.isActive(taskId)||['preparing','discussing','synthesizing'].includes(task.state)||!!active&&active.taskId!==taskId;
  }
  private evaluationCount(id:string){return this.db.query<{n:number},[string]>('SELECT COUNT(*) n FROM leader_evaluations WHERE work_item_id=?').get(id)!.n;}
  private requestEvaluation(workItemId:string,taskId:string,eventId:string,request?:WorkInteractionInput){
   if(this.db.query('SELECT event_id FROM leader_report_receipts WHERE event_id=?').get(eventId))return;
-  let pending=this.db.query<{id:string},[string]>("SELECT id FROM leader_evaluations WHERE work_item_id=? AND status IN ('pending','running')").get(workItemId);
+  let pending=this.db.query<{id:string;task_id:string},[string]>("SELECT id,task_id FROM leader_evaluations WHERE work_item_id=? AND status IN ('pending','running')").get(workItemId);
+  if(pending&&pending.task_id!==taskId){this.settleEvaluation(pending,'blocked','leader_execution_obsolete',null);pending=null;}
   if(!pending){
    if(this.evaluationCount(workItemId)>=LEADER_LIMITS.maxEvaluations){this.db.query('INSERT INTO leader_report_receipts VALUES(?,NULL)').run(eventId);return;}
    const id=crypto.randomUUID(),now=new Date().toISOString();
-   this.db.query("INSERT INTO leader_evaluations VALUES(?,?,?,'pending',?,NULL,?,?)").run(id,workItemId,taskId,request?JSON.stringify(request):'member_report',now,now);pending={id};
+   this.db.query("INSERT INTO leader_evaluations VALUES(?,?,?,'pending',?,NULL,?,?)").run(id,workItemId,taskId,request?JSON.stringify(request):'member_report',now,now);pending={id,task_id:taskId};
   }
   this.db.query('INSERT INTO leader_report_receipts VALUES(?,?)').run(eventId,pending.id);
  }
@@ -171,11 +194,12 @@ export class WorkInteractionService {
   this.db.query("UPDATE leader_evaluations SET status='running' WHERE id=?").run(evaluation.id);
   let status='no_action',reason='',decision:unknown=null;
   try{
-   const item=this.items.get(evaluation.work_item_id)!,task=this.tasks.get(evaluation.task_id)!;
+   const {item,task}=this.evaluationAuthority(evaluation);
    if(unknownRoomEffects(this.db,task.sessionId))throw new Error('unknown_side_effect_requires_review');
    if(unsettledRoomModelCost(this.db,task.sessionId))throw new Error('model_cost_settlement_required');
    const packages=this.packages.list(task.id);
    decision=await this.coordinator.evaluateLeader(task.id,evaluation.id,{title:item.title,objective:item.objective,taskState:task.state,packages:packages.map(p=>({id:p.id,state:p.state,result:p.result?.slice(0,2000),executorAgentId:p.executorAgentId})),request:this.db.query<{reason:string},[string]>('SELECT reason FROM leader_evaluations WHERE id=?').get(evaluation.id)?.reason,limits:LEADER_LIMITS},AbortSignal.any([controller.signal,AbortSignal.timeout(LEADER_LIMITS.maxDurationMs)]));
+   this.evaluationAuthority(evaluation);
    const answer=decision as {action:string;reason:string;packageId?:string};reason=answer.reason;
    if(answer.action==='human_review')status='awaiting_review';
    if(answer.action==='delegate_package'){
@@ -186,6 +210,9 @@ export class WorkInteractionService {
    }
   }catch(error){status='blocked';reason=error instanceof Error?error.message:String(error);}
   finally{this.evaluationControllers.delete(evaluation.id);}
+  this.settleEvaluation(evaluation,status,reason,decision);
+ }
+ private settleEvaluation(evaluation:{id:string;task_id:string},status:string,reason:string,decision:unknown){
   const now=new Date().toISOString();this.db.query('UPDATE leader_evaluations SET status=?,reason=?,decision_json=?,updated_at=? WHERE id=?').run(status,reason,JSON.stringify(decision),now,evaluation.id);
   for(const receipt of this.db.query<{event_id:string},[string]>("SELECT event_id FROM leader_report_receipts WHERE evaluation_id=? AND event_id LIKE 'user:%'").all(evaluation.id))this.update(receipt.event_id.slice(5),status==='delegated'?'dispatched':status as WorkInteraction['status'],reason);
   const task=this.tasks.get(evaluation.task_id);if(task)new EventStore(this.db).append({eventId:'leader-result:'+evaluation.id,sessionId:task.sessionId,taskId:task.id,type:'multi.leader_settled',payload:{evaluationId:evaluation.id,status,reason,limits:LEADER_LIMITS}});

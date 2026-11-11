@@ -92,6 +92,8 @@ export class MultiAgentCoordinator {
     private readonly verification?: WorkVerification,
   ) { this.compaction = new ContextCompactionService(db); }
 
+  isActive(taskId:string):boolean { return this.controllers.has(taskId); }
+
   async create(input: { sessionId: string; prompt: string; config: MultiTaskConfig }) {
     return this.store.create(input);
   }

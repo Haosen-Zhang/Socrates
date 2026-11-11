@@ -169,3 +169,64 @@ for(const pendingState of ['created','sent','outcome_unknown'] as const)test(`un
   expect(f.interactions.get(queued.id)!.status).toBe('blocked');
  }finally{await f.close();}
 });
+for(const action of ['reevaluate','delegate_package'] as const){
+ test(`${action} queue waits for owner settlement before one evaluation`,async()=>{
+  const f=await setupCostFlowFixture();try{
+   const {item}=await squadItem(f),scope={workItemId:item.id},taskId=f.commands.get(item.currentRun!.commandId!)!.taskId!;
+   const request=input('leader-queue',{action,delivery:'queue'});
+   const queued=await f.interactions.submit(scope,request);expect(queued.status).toBe('queued');
+   await f.interactions.pump();expect(f.interactions.get(queued.id)!.status).toBe('queued');expect(f.gatewayCalls.map(c=>c.purpose)).toEqual(['plan']);
+   f.tasks.transition(taskId,{type:'fail',reason:'Controlled member blocker'});
+   await f.interactions.pump();expect(f.interactions.get(queued.id)!.status).toBe('no_action');expect(f.gatewayCalls.map(c=>c.purpose)).toEqual(['plan','review']);
+   expect(f.tasks.get(taskId)!.state).toBe('failed');
+  }finally{await f.close();}
+ });
+ test(`${action} stop_restart is unavailable and neither cancels nor evaluates the original task`,async()=>{
+  const f=await setupCostFlowFixture();try{
+   const {item}=await squadItem(f),scope={workItemId:item.id},before=f.gatewayCalls.length;
+   const request=input('leader-stop',{action,delivery:'stop_restart'});
+   expect(f.interactions.preview(scope,request).reasons).toContain('leader_stop_restart_unavailable');
+   await expect(f.interactions.submit(scope,request)).rejects.toThrow('leader_stop_restart_unavailable');
+   expect(f.gatewayCalls).toHaveLength(before);expect(f.commands.get(item.currentRun!.commandId!)!.status).toBe('awaiting_plan_approval');
+  }finally{await f.close();}
+ });
+}
+for(const replaceOwnerRun of [false,true])test(`restored pending evaluation ${replaceOwnerRun?'for obsolete owner run':'after cancellation'} settles its interaction without model calls`,async()=>{
+ const f=await setupCostFlowFixture({nativeToolCalls:()=>[]});let recovered:WorkInteractionService|undefined;try{
+  const {item}=await squadItem(f),scope={workItemId:item.id},taskId=f.commands.get(item.currentRun!.commandId!)!.taskId!;
+  const interaction=await f.interactions.submit(scope,input('persisted-evaluation',{action:'reevaluate',delivery:'queue'}));
+  await f.interactions.shutdown();
+  const now=new Date().toISOString();
+  // Recreate the durable checkpoint between evaluation admission and its first model call.
+  f.db.query("INSERT INTO leader_evaluations VALUES('pending-evaluation',?,?,'pending','user request',NULL,?,?)").run(item.id,taskId,now,now);
+  f.db.query("INSERT INTO leader_report_receipts VALUES(?,'pending-evaluation')").run('user:'+interaction.id);
+  f.db.query("UPDATE work_interactions SET status='dispatched' WHERE id=?").run(interaction.id);
+  await f.commands.cancel(item.currentRun!.commandId!);
+  if(replaceOwnerRun){
+   const current=f.workItems.get(item.id)!,preview=f.workItemLaunch.preview(item.id,{expectedRevision:current.revision,ownerKind:'agent',ownerId:'fixture-b'});
+   await f.workItemLaunch.start(item.id,{previewId:preview.id,expectedRevision:current.revision,clientRequestId:'new-owner-run'});
+   await untilCostFlow(()=>f.workItems.get(item.id)!.currentRun?.commandStatus==='completed','replacement run');
+  }
+  const calls={gateway:f.gatewayCalls.length,native:f.nativeCalls.length};
+  recovered=new WorkInteractionService(f.db,f.workItems,f.sessions,f.commands,f.coordinator,f.tasks,f.team,f.packages);recovered.start(5);await recovered.pump();
+  const reason=replaceOwnerRun?'leader_execution_obsolete':'leader_execution_cancelled';
+  expect(f.db.query<{status:string;reason:string},[]>("SELECT status,reason FROM leader_evaluations WHERE id='pending-evaluation'").get()).toEqual({status:'blocked',reason});
+  expect(recovered.get(interaction.id)).toMatchObject({status:'blocked',reason});
+  expect({gateway:f.gatewayCalls.length,native:f.nativeCalls.length}).toEqual(calls);
+ }finally{await recovered?.shutdown();await f.close();}
+});
+test('blocked ordinary instruction can be resolved through Inbox endpoint and stays resolved on reload without replay or clearing cost gate',async()=>{
+ const f=await setupCostFlowFixture();try{
+  const {item}=await squadItem(f),scope={workItemId:item.id};
+  const queued=await f.interactions.submit(scope,input('blocked-instruction',{delivery:'queue',mentions:[{type:'agent',agentId:'fixture-b'}]}));
+  const original=f.broker.ledger.list({rootTaskId:item.currentRun!.commandId!})[0]!;
+  f.broker.ledger.begin({...original,invocationId:'blocked-charge',logicalStepId:'blocked-charge'},original.priceSnapshotId);f.broker.ledger.markSent('blocked-charge');f.broker.ledger.markUnknown('blocked-charge');
+  await f.commands.cancel(item.currentRun!.commandId!);await f.interactions.pump();
+  const before=f.inbox.list().items.find(i=>i.link.interactionId===queued.id)!;expect(before.kind).toBe('blocked');expect(before.link.evaluationId).toBeUndefined();
+  const calls={gateway:f.gatewayCalls.length,native:f.nativeCalls.length};
+  const response=await f.app.request(`/work-items/${item.id}/interactions/${queued.id}/resolve`,{method:'POST',headers:f.headers,body:JSON.stringify({decision:'Close this failed instruction; investigate the charge separately.'})});expect(response.status).toBe(200);
+  const {InboxService}=await import('./inbox');const reloaded=new InboxService(f.db,f.workItems,f.commands,f.verification);
+  expect(reloaded.list().items.some(i=>i.link.interactionId===queued.id)).toBe(false);await f.interactions.pump();expect(f.interactions.get(queued.id)!.status).toBe('resolved');
+  expect(f.interactions.preview(scope,input('next')).reasons).toContain('model_cost_settlement_required');expect({gateway:f.gatewayCalls.length,native:f.nativeCalls.length}).toEqual(calls);
+ }finally{await f.close();}
+});
