@@ -121,7 +121,10 @@ export class ExecutionRunner {
       this.executionEvents.append({ ...identity, eventId: `run-created:${runId}`, type: "run.created", payload: { threadId: thread.id, attemptNo: input.attemptNo } });
       this.executionEvents.append({ ...identity, eventId: `turn-started:${runId}`, type: "turn.started", payload: {} });
       const lease = await this.leases.acquireQueued(workspace.workspace_id, runId, { signal: controller.signal,
-        onWaiting: () => emit({ type: "extension", name: "workspace_queued", payload: { reason: "workspace_write_lease_busy", runId } }) });
+        onWaiting: () => {
+          this.executionEvents.append({...identity,eventId:`workspace-waiting:${runId}`,type:"run.workspace_waiting",payload:{reason:"workspace_write_lease_busy"}});
+          return emit({ type: "extension", name: "workspace_queued", payload: { reason: "workspace_write_lease_busy", runId } });
+        } });
       active.leaseId = lease.id;
       controller.signal.throwIfAborted();
       renewal = setInterval(() => {

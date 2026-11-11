@@ -5,7 +5,7 @@ import type { ExecutionErrorDetail } from "./execution-errors";
 export const EXECUTION_EVENT_SCHEMA_VERSION = 1 as const;
 
 export const EXECUTION_EVENT_TYPES = [
-  "run.created", "run.started", "run.cancel_requested", "run.completed",
+  "run.created", "run.workspace_waiting", "run.started", "run.cancel_requested", "run.completed",
   "run.failed", "run.cancelled", "run.interrupted", "turn.started",
   "turn.completed", "turn.failed", "turn.cancelled", "step.started",
   "step.completed", "step.failed", "provider.attempt.started",
@@ -48,6 +48,7 @@ export type ExecutionCoordinatesFor<T extends ExecutionEventType> =
 
 export interface ExecutionEventPayloadMap {
   "run.created": { threadId: string; attemptNo: number };
+  "run.workspace_waiting": { reason: "workspace_write_lease_busy" };
   "run.started": Record<string, never>;
   "run.cancel_requested": { reason?: string };
   "run.completed": Record<string, never>;
@@ -302,6 +303,7 @@ export function executionEventToRuntimeEvent(event: ExecutionEvent): RuntimeEven
       },
     };
   }
+  if (event.type === "run.workspace_waiting") return { type: "extension", name: "workspace_queued", payload: {runId:event.runId, reason:"workspace_write_lease_busy"} };
   if (event.type === "run.started") return { type: "status", status: "running" };
   if (event.type === "run.completed") return { type: "status", status: "completed" };
   if (event.type === "run.failed") {

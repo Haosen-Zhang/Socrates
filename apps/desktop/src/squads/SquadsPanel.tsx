@@ -1,6 +1,9 @@
+import AgentDetailPanel from "../agent-lifecycle/AgentDetailPanel";
+import AgentPresence from "../agent-lifecycle/AgentPresence";
+import type { AgentAvailabilityProjection, AgentWorkloadProjection } from "@socrates/core";
 import { useEffect, useState } from "react";
 import { AGENT_AVATARS, type SquadTemplate, type SquadRoomBinding } from "@socrates/core";
-import { ActorPicker, ConfirmationDialog, DetailPanel, EmptyState, ErrorNotice, ObjectPage, StatusBadge } from "../foundation";
+import { ActorPicker, ConfirmationDialog, DetailPanel, EmptyState, ErrorNotice, ObjectPage } from "../foundation";
 import { useStorePick } from "../selectors";
 import { requireOk, sidecarFetch, type Handshake } from "../transport";
 import AgentAvatar from "../AgentAvatar";
@@ -9,7 +12,7 @@ import "./squads.css";
 
 type Detail = {
   squad: SquadTemplate;
-  members: Array<{agentId:string; availability:string; reason:string; activeRuns:number}>;
+  members: Array<{agentId:string; availability:string; reason:string; activeRuns:number;availabilityProjection:AgentAvailabilityProjection|null;workload:AgentWorkloadProjection|null}>;
   rooms: Array<{roomId:string; revision:number}>;
   recentRuns: Array<{id:string; agentId?:string; status:string}>;
   activeWorkItems: Array<{id:string; title:string}>;
@@ -18,6 +21,7 @@ type Draft = Pick<SquadTemplate,"workspaceId"|"name"|"avatar"|"leaderAgentId"|"d
 export default function SquadsPanel({workspaceId,handshake,onOpenRoom,onAssign}:{workspaceId:string;handshake:Handshake;onOpenRoom:()=>void;onAssign?:(squadId:string)=>void}) {
   const {agents,providers,sessions,loadSessions,selectAgentSession,lang}=useStorePick("agents","providers","sessions","loadSessions","selectAgentSession","lang");
   const tr=(zh:string,en:string)=>lang!=="en"?zh:en;
+  const [agentDetail,setAgentDetail]=useState<string|null>(null);
   const [rows,setRows]=useState<SquadTemplate[]>([]),[detail,setDetail]=useState<Detail|null>(null);
   const [selected,updateSelected]=useState(()=>sessionStorage.getItem(`socrates.squad.${workspaceId}`)??"");
   const setSelected=(id:string)=>{sessionStorage.setItem(`socrates.squad.${workspaceId}`,id);updateSelected(id);};
@@ -31,7 +35,7 @@ export default function SquadsPanel({workspaceId,handshake,onOpenRoom,onAssign}:
       const result=await sidecarFetch(handshake,`/squads?workspaceId=${encodeURIComponent(workspaceId)}`,{signal:controller.signal}).then(requireOk<SquadTemplate[]>);
       const current=selected?await sidecarFetch(handshake,`/squads/${encodeURIComponent(selected)}`,{signal:controller.signal}).then(requireOk<Detail>):null;
       if(!controller.signal.aborted){setRows(result);setDetail(current);setError("");}
-    }catch(e){if(!controller.signal.aborted)setError(String(e));}finally{if(!controller.signal.aborted)timer=setTimeout(()=>void load(),4000);}};
+    }catch(e){if(!controller.signal.aborted){setError(String(e));setDetail(null);}}finally{if(!controller.signal.aborted)timer=setTimeout(()=>void load(),4000);}};
     void load();return()=>{controller.abort();clearTimeout(timer);};
   },[handshake,workspaceId,selected,revision]);
   useEffect(()=>{
@@ -50,14 +54,14 @@ export default function SquadsPanel({workspaceId,handshake,onOpenRoom,onAssign}:
       <div className="work-task-filters"><input type="search" className="pixel-input px-3 py-2" aria-label={tr("搜索 Squad","Search squads")} value={query} onChange={e=>setQuery(e.target.value)}/><label><input type="checkbox" checked={archived} onChange={e=>setArchived(e.target.checked)}/> {tr("包含归档","Include archived")}</label></div>
       {error&&<ErrorNotice message={error}/>} {!visible.length&&<EmptyState title={tr("暂无匹配的团队","No matching squads")}/>}
       <ul className="work-task-list">{visible.map(s=><li key={s.id}><button className="work-task-row" aria-pressed={selected===s.id} onClick={()=>{setSelected(s.id);setDetail(null);setBindRoom("");}}>
-        <AgentAvatar src={s.avatar??agents.find(a=>a.id===s.leaderAgentId)?.avatar} label={s.name} size={36} lively={false}/><span className="work-task-row__main"><strong>{s.name}</strong><small>Leader: {agents.find(a=>a.id===s.leaderAgentId)?.nickname??s.leaderAgentId} · v{s.revision}{s.archived?` · ${tr("已归档","Archived")}`:""}</small><small>{unavailable(s)?tr("成员或供应商不可用，请查看详情","Member or provider unavailable; see details"):tr("连接未验证","Connection unverified")}</small><small>{tr("活跃工作事项","Active work items")}: {s.activeWorkItemCount??0} · {new Date(s.updatedAt).toLocaleString()}</small><small>{s.members.map(m=>agents.find(a=>a.id===m.agentId)?.nickname??m.agentId).join(" · ")}</small></span>
+        <AgentAvatar src={s.avatar??agents.find(a=>a.id===s.leaderAgentId)?.avatar} label={s.name} size={36} lively={false}/><span className="work-task-row__main"><strong>{s.name}</strong><small>Leader: {agents.find(a=>a.id===s.leaderAgentId)?.nickname??s.leaderAgentId} · v{s.revision}{s.archived?` · ${tr("已归档","Archived")}`:""}</small><small>{unavailable(s)?tr("成员或供应商不可用，请查看详情","Member or provider unavailable; see details"):tr("查看成员可用性与当前工作","View member availability and current work")}</small><small>{tr("活跃工作事项","Active work items")}: {s.activeWorkItemCount??0} · {new Date(s.updatedAt).toLocaleString()}</small><small>{s.members.map(m=>agents.find(a=>a.id===m.agentId)?.nickname??m.agentId).join(" · ")}</small></span>
       </button></li>)}</ul>
     </ObjectPage>
     {current&&!draft&&<DetailPanel drawer open title={current.squad.name} closeLabel={tr("关闭团队详情","Close squad detail")} onClose={()=>setSelected("")}>
       <div className="squad-form"><p>{current.squad.description}</p><p>v{current.squad.revision} · {new Date(current.squad.updatedAt).toLocaleString()}</p>
       {error&&<ErrorNotice message={error}/>}
       <h3>{tr("成员与职责","Members and responsibilities")}</h3>
-      {current.squad.members.map(m=>{const a=agents.find(a=>a.id===m.agentId),status=current.members.find(a=>a.agentId===m.agentId);return <article key={m.agentId} className="squad-member"><AgentAvatar src={a?.avatar} label={a?.nickname??m.agentId} size={32} lively={false}/><div><strong>{a?.nickname??m.agentId}{m.agentId===current.squad.leaderAgentId?" · Leader":""}</strong><p>{m.responsibility||tr("未填写职责","No responsibility specified")}</p><small>{a?.modelId}</small><p><StatusBadge tone={status?.availability==="unavailable"?"warning":"neutral"}>{status?.availability==="unavailable"?tr("不可用","Unavailable"):tr("连接未验证","Connection unverified")}</StatusBadge> {status?.reason}</p><p>{tr("当前运行","Active runs")}: {status?.activeRuns??0}</p></div></article>;})}
+      {current.squad.members.map(m=>{const a=agents.find(a=>a.id===m.agentId),status=current.members.find(a=>a.agentId===m.agentId);return <article key={m.agentId} className="squad-member"><AgentAvatar src={a?.avatar} label={a?.nickname??m.agentId} size={32} lively={false}/><div><strong>{a?.nickname??m.agentId}{m.agentId===current.squad.leaderAgentId?" · Leader":""}</strong><p>{m.responsibility||tr("未填写职责","No responsibility specified")}</p><small>{a?.modelId}</small><div>{status?.availabilityProjection&&status.workload?<AgentPresence availability={status.availabilityProjection} workload={status.workload} en={lang==="en"}/>:<p>{status?.reason}</p>}</div><button className="pixel-button px-2 py-1" aria-label={`${tr("查看 Agent","View agent")} ${a?.nickname??m.agentId}`} onClick={()=>setAgentDetail(m.agentId)}>{tr("Agent 详情与时间线","Agent detail and timeline")}</button></div></article>;})}
       <h3>{tr("Leader 协作指令","Leader instructions")}</h3><p className="work-task-objective">{current.squad.instructions||"—"}</p>
       <h3>{tr("活跃工作事项","Active work items")} ({current.activeWorkItems.length})</h3>{current.activeWorkItems.map(item=><p key={item.id}>{item.title}</p>)}
       <h3>{tr("当前绑定房间中的运行","Runs in currently bound rooms")}</h3>{current.recentRuns.map(run=><p key={run.id}>{run.agentId&& (agents.find(a=>a.id===run.agentId)?.nickname??run.agentId)} · {run.status} <small>{run.id}</small></p>)}
@@ -82,6 +86,7 @@ export default function SquadsPanel({workspaceId,handshake,onOpenRoom,onAssign}:
       {error&&<ErrorNotice message={error}/>}<button className="pixel-button pixel-button--primary px-3 py-2" disabled={busy||!draft.name.trim()||!draft.leaderAgentId} onClick={()=>void act(async()=>{const saved=await request<SquadTemplate>(editing?`/${editing.id}`:"",{...draft,...(editing?{expectedRevision:editing.revision}:{})},editing?"PUT":"POST");setDraft(null);setEditing(null);setSelected(saved.id);})}>{tr("保存团队","Save squad")}</button>
     </div></DetailPanel>}
     {newAgent&&<AgentEditor onClose={()=>setNewAgent(false)} onSaved={agent=>{if(draft)setDraft({...draft,leaderAgentId:draft.leaderAgentId||agent.id,members:[...draft.members,{agentId:agent.id,responsibility:agent.role}]});}}/>}
+    {agentDetail&&<AgentDetailPanel agentId={agentDetail} handshake={handshake} onClose={()=>setAgentDetail(null)} onOpenRoom={()=>{setSelected("");onOpenRoom();}}/>}
     <ConfirmationDialog open={archiveOpen} onOpenChange={setArchiveOpen} title={tr("归档团队","Archive squad")} description={tr("保留现有房间与任务的冻结配置；后续可在房间显式改用其他团队，历史不删除。","Keep frozen room and task references. Rebind rooms explicitly later; history is retained.")} confirmLabel={tr("保留引用并归档","Keep references and archive")} cancelLabel={tr("取消","Cancel")} pending={busy} error={error} onConfirm={()=>act(async()=>{await request(`/${selected}/archive`,{expectedRevision:current!.squad.revision,referencePolicy:"keep_frozen"});setArchiveOpen(false);})}>
       <p>{tr("受影响房间","Affected rooms")}: {current?.rooms.length??0} · {tr("活跃任务","Active tasks")}: {current?.activeWorkItems.length??0}</p>
     </ConfirmationDialog>

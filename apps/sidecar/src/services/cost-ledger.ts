@@ -13,7 +13,7 @@ interface InvocationRow {
 }
 interface BudgetRow { root_task_id: string; room_id: string; mode: BudgetMode; limit_atomic: string; parent_id: string | null; revision: number; blocked_reason: string | null; blocked_json: string | null }
 interface ReservationRow { invocation_id: string; root_task_id: string; amount_atomic: string; state: string }
-type Filter = { roomId?: string; rootTaskId?: string };
+type Filter = { roomId?: string; rootTaskId?: string; agentId?: string; since?: string; until?: string };
 type Finish = { usage?: TokenUsage; requestId?: string; finishReason?: string; outcome?: string };
 function minimalUsage(raw: TokenUsage): TokenUsage {
   const result: TokenUsage = {};
@@ -99,11 +99,11 @@ export class CostLedger {
   }
   get(id: string): InvocationRecord | null { const row = this.row(id); return row ? this.project(row) : null; }
   list(filter: Filter = {}): InvocationRecord[] {
-    const rows = filter.roomId
-      ? this.db.query<InvocationRow, [string]>("SELECT * FROM cost_invocations WHERE room_id=? ORDER BY rowid").all(filter.roomId)
-      : this.db.query<InvocationRow, []>("SELECT * FROM cost_invocations ORDER BY rowid").all();
+    const where:string[]=[],args:string[]=[];
+    for(const [column,value,operator] of [['room_id',filter.roomId,'='],['agent_id',filter.agentId,'='],['created_at',filter.since,'>='],['created_at',filter.until,'<=']] as const)if(value){where.push(`${column}${operator}?`);args.push(value);}
+    const rows=this.db.query<InvocationRow,string[]>(`SELECT * FROM cost_invocations${where.length?' WHERE '+where.join(' AND '):''} ORDER BY rowid`).all(...args);
     const tasks = filter.rootTaskId ? new Set(descendants(this.db, filter.rootTaskId)) : null;
-    return rows.map(row => this.project(row)).filter(record => !tasks || tasks.has(record.rootTaskId));
+    return rows.map(row=>this.project(row)).filter(record=>!tasks||tasks.has(record.rootTaskId));
   }
   markSent(id: string, requestId?: string): void {
     this.db.transaction(() => {
@@ -208,7 +208,7 @@ export class CostLedger {
     });
     const historical = this.db.query<{ session_id: string | null; room_id: string | null; task_id: string | null }, []>("SELECT session_id,room_id,task_id FROM cost_legacy_usage").all();
     const tasks = filter.rootTaskId ? new Set(descendants(this.db, filter.rootTaskId)) : null;
-    const historicalUnknownCount = historical.filter(row => (!filter.roomId || row.session_id === filter.roomId || row.room_id === filter.roomId) && (!tasks || !!row.task_id && tasks.has(row.task_id))).length;
+    const historicalUnknownCount = filter.agentId || filter.since || filter.until ? 0 : historical.filter(row => (!filter.roomId || row.session_id === filter.roomId || row.room_id === filter.roomId) && (!tasks || !!row.task_id && tasks.has(row.task_id))).length;
     return { invocations: records.length, unknownCount: records.filter(unknown).length, totals: knownTotals(records, adjustments), estimatedTotals: estimatedTotals(records), ...categories(records), byAgent, usage, historicalUnknownCount };
   }
 }

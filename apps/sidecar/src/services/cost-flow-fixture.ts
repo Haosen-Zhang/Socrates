@@ -1,3 +1,5 @@
+import { AgentLifecycleService } from "./agent-lifecycle";
+import { agentLifecycleRoutes } from "../routes/agent-lifecycle";
 import { WorkItemService } from "./work-items";
 import { workItemRoutes } from "../routes/work-items";
 import { WorkItemLaunchService } from "../services/work-item-launch";
@@ -295,7 +297,8 @@ export async function setupCostFlowFixture(options: { strictBoundFixture?: boole
   const config = new ConfigStore(join(directory, "config.toml"), secrets);
   config.update({ language: "en", theme: "dark", soundEnabled: false });
 const workItems=new WorkItemService(db,commands);
- const squads=new SquadService(db,sessions,workspaceId=>workItems.list(workspaceId));
+ const agentLifecycle=new AgentLifecycleService(db,{secrets,runtimeReady:()=>runtimes.isRegistered("native_ai_sdk")});
+ const squads=new SquadService(db,sessions,workspaceId=>workItems.list(workspaceId),agentLifecycle);
  const workItemLaunch=new WorkItemLaunchService(db,workItems,sessions,squads,new TaskQuoteService(db,sessions),commands,async id=>{
   const command=commands.get(id);if(!command)throw new Error('Command not found');
   if(command.taskId&&!command.adaptive){coordinator.cancel(command.taskId);await coordinator.wait(command.taskId);await team.cancel(command.taskId);}
@@ -313,7 +316,7 @@ const workItems=new WorkItemService(db,commands);
       invocation: { roomId: work.id, rootTaskId: "pricing-examples", runId: "pricing-examples", agentId: "fixture-a", providerConnectionId: "pricing-openai", runProfileVersion: "fixture-v1", logicalStepId: "pricing-new-sample", purpose: "respond" } })) { /* Controlled stream only. */ }
     return c.json({ controlledFixture: true });
   });
-  app.route("/config", configRoutes(config)); app.route("/providers", providerRoutes(db, secrets, controlledFetch)); app.route("/agents", agentRoutes(db));
+  app.route("/config", configRoutes(config)); app.route("/providers", providerRoutes(db, secrets, controlledFetch)); app.route("/agents", agentRoutes(db)); app.route("/agent-lifecycle",agentLifecycleRoutes(agentLifecycle));
   app.route("/work-items",workItemRoutes(workItems,workItemLaunch));
   app.route("/squads", squadRoutes(squads));
   app.route("/sessions", sessionRoutes(sessions, events, usage, workspaces)); app.route("/workspaces", workspaceRoutes(workspaces));
@@ -325,14 +328,14 @@ const workItems=new WorkItemService(db,commands);
   app.route("/arena-strategy",arenaStrategyRoutes(new ArenaStrategyService(db,sessions,id=>arena.results(id))));
   const flightRecorder = new FlightRecorderService(db);
   const projectMemory = new ProjectMemoryService(db);
-  app.route("/flight-recorder",flightRecorderRoutes(flightRecorder));
+  app.route("/flight-recorder",flightRecorderRoutes(flightRecorder,executionEvents));
   app.route("/project-memory",projectMemoryRoutes(projectMemory));
   app.route("/verification",verificationRoutes(verification));
   app.route("/routing",routingRoutes(routes,adaptive));
   app.route("/agent", agentRunRoutes(supervisor, runner, approvals, executionEvents,(child,key)=>adaptive.notifyChildProgress(child,key).then(()=>{}))); app.route("/cost", costRoutes(db, sessions, broker, quotes, costTasks, commands));
   app.route("/content", contentRoutes(db, workspaces, attachments));
   app.get("/rooms", c => c.json([])); app.get("/mcp/servers", c => c.json([]));
-  return { workItems, workItemLaunch, squads, directory, db, arena, flightRecorder, projectMemory, routes, adaptive, sessions, workspaces, workspace, roomIds: { work: work.id, chat: chat.id }, broker, commands, quotes, costTasks, tasks, coordinator, verification, packages,
+  return { agentLifecycle, workItems, workItemLaunch, squads, directory, db, arena, flightRecorder, projectMemory, routes, adaptive, sessions, workspaces, workspace, roomIds: { work: work.id, chat: chat.id }, broker, commands, quotes, costTasks, tasks, coordinator, verification, packages,
     execution, team, runtimes, approvals, runner, supervisor, app, token, headers, gatewayCalls, nativeCalls,
     async close() { await arena.shutdown(); await adaptive.shutdown(); await verification.shutdown(); await commands.shutdown(); await team.shutdown(); await execution.shutdown(); await supervisor.shutdown(); await flightRecorder.shutdown(); db.close(); rmSync(directory, { recursive: true, force: true }); } };
 }

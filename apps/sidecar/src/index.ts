@@ -1,3 +1,5 @@
+import { AgentLifecycleService } from "./services/agent-lifecycle";
+import { agentLifecycleRoutes } from "./routes/agent-lifecycle";
 import { WorkItemLaunchService } from "./services/work-item-launch";
 import { workItemRoutes } from "./routes/work-items";
 import { WorkItemService } from "./services/work-items";
@@ -287,8 +289,9 @@ const commands = new RoomCommandService(db, sessions, {
 commands.recoverInterrupted();
 const costTasks = new CostTaskService(db, commands, runSupervisor, agentRuns, multiTasks, multiCoordinator, teamRunner, executionRunner,{routing,adaptive});
 
+const agentLifecycle=new AgentLifecycleService(db,{secrets,runtimeReady:()=>runtimes.isRegistered("native_ai_sdk")});
 const workItems=new WorkItemService(db,commands);
- const squads=new SquadService(db,sessions,workspaceId=>workItems.list(workspaceId));
+ const squads=new SquadService(db,sessions,workspaceId=>workItems.list(workspaceId),agentLifecycle);
  const workItemLaunch=new WorkItemLaunchService(db,workItems,sessions,squads,new TaskQuoteService(db,sessions),commands,async id=>{
   const command=commands.get(id);if(!command)throw new Error('Command not found');
   if(command.taskId&&!command.adaptive){multiCoordinator.cancel(command.taskId);await multiCoordinator.wait(command.taskId);await teamRunner.cancel(command.taskId);}
@@ -298,6 +301,7 @@ const workItems=new WorkItemService(db,commands);
 app.route("/config", configRoutes(config));
 app.route("/providers", providerRoutes(db, secrets, proxiedFetch));
 app.route("/agents", agentRoutes(db, modelCatalog));
+app.route("/agent-lifecycle", agentLifecycleRoutes(agentLifecycle));
   app.route("/squads", squadRoutes(squads));
 app.route("/rooms", roomRoutes(db, secrets, gateway, usage, sessions));
 app.route("/workspaces", workspaceRoutes(workspaces));
@@ -323,7 +327,7 @@ app.route("/arena-artifacts",arenaArtifactRoutes(new ArenaArtifactService(db,wor
 app.route("/arena-strategy",arenaStrategyRoutes(new ArenaStrategyService(db,sessions,id=>arena.results(id))));
 const flightRecorder = new FlightRecorderService(db);
 const projectMemory = new ProjectMemoryService(db);
-app.route("/flight-recorder",flightRecorderRoutes(flightRecorder));
+app.route("/flight-recorder",flightRecorderRoutes(flightRecorder,executionEvents));
 app.route("/project-memory",projectMemoryRoutes(projectMemory));
 app.route("/verification",verificationRoutes(verification));
 app.route("/routing",routingRoutes(routing,adaptive));

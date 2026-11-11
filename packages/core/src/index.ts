@@ -43,3 +43,5 @@ export * from "./arena";
 export * from "./squad";
 
 export * from "./work-item";
+
+export * from "./agent-lifecycle";

@@ -1,3 +1,4 @@
+import AgentDetailPanel from "./agent-lifecycle/AgentDetailPanel";
 import { useState } from "react";
 import { agentLabel, type Agent } from "@socrates/core";
 import AgentAvatar from "./AgentAvatar";
@@ -6,13 +7,14 @@ import { useT } from "./store";
 import { useStorePick } from "./selectors";
 import { sfx } from "./fx";
 
-export default function AgentsSection() {
-  const { agents, providers, removeAgent } = useStorePick(
+export default function AgentsSection({onOpenRoom}:{onOpenRoom?:()=>void}) {
+  const { agents, providers, removeAgent, handshake, lang } = useStorePick(
     "agents",
     "providers",
-    "removeAgent",
+    "removeAgent", "handshake", "lang",
   );
   const t = useT();
+  const [detail,setDetail]=useState<string|null>(null);
   const [editing, setEditing] = useState<Agent | "new" | null>(null);
   return (
     <section className="space-y-4">
@@ -60,6 +62,7 @@ export default function AgentsSection() {
                 )}
               </div>
               <div className="flex shrink-0 flex-col gap-2">
+                <button className="pixel-button px-2 py-1 text-xs" aria-label={`${lang==='en'?'View agent':'查看 Agent'} ${agent.nickname}`} onClick={()=>setDetail(agent.id)}>{lang==='en'?'Activity':'运行详情'}</button>
                 <button
                   className="pixel-button px-2 py-1 text-xs"
                   onClick={() => setEditing(agent)}
@@ -80,6 +83,7 @@ export default function AgentsSection() {
           ))}
         </div>
       )}
+      {detail&&handshake&&<AgentDetailPanel agentId={detail} handshake={handshake} onClose={()=>setDetail(null)} onOpenRoom={onOpenRoom}/>}
       {editing && (
         <AgentEditor
           agent={editing === "new" ? undefined : editing}
