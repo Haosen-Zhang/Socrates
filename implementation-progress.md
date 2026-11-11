@@ -386,10 +386,19 @@ M03 可选 Board 不引入；M04 生命周期、M05 提及/收件箱/Leader 再�
 - 本轮选择项目作用域 Squad、默认列表、独立冻结执行房间；不会改变源房间。未使用的预览保留本地隐藏记录，暂不自动清理；可选 Board 与 M04–M07 待后续。不含付费模型、真实 Tauri 窗口/OS 输入法/屏幕阅读器或安装包验收。原 Vite 大 chunk 警告保留。
 - 保留所有用户修改及既有 output 目录，没有合并、发布或调用付费 API；按授权提交并创建 PR：[PR #153](https://github.com/Haosen-Zhang/Socrates/pull/153)，实现提交 `12719df`。未合并、未发布。
 
-## 2026-11-11 — Multica UX M04–M05 (in progress)
+## 2026-11-11 — Multica UX M04–M05（issue #154）
 
-- Baseline verified: PR #153 (M02–M03) merged, new branch `codex/multica-ux-m04-m05` from `origin/main@d87b365`, issue #154. Existing user data, original checkout and older untracked browser artifacts preserved.
-- M04 implementation committed locally as `995cf81`: independent availability/workload projections, provider evidence migration 037, real Agent detail and dual-axis Squad roster, run/attempt/package timeline, safe tool summaries and existing recorded write diffs, cost/statistics and verification links. No Native runtime rewrite.
-- Reuse audit reread actual Multica license and lifecycle/timeline/mention sources; no Multica code/assets copied, no dependency added. Reference-path mismatch and actual source SHA recorded in `doc/reuse-decisions.md`.
-- M04 targeted regression: 81 pass, 0 fail. Root typecheck and desktop build passed after correcting desktop target-lib/import/test-fixture compatibility. Chrome: 8/8 checks passed, no renderer errors or external browser requests; real temporary services, controlled model, narrow 650×600 drawer inspected. Stage review pending; M05 not yet marked complete.
-- Plan, authority mapping and validation record: `doc/multica-m04-m05-plan.md`, `doc/multica-m04-m05-acceptance.md`. Full suite/final browser/PR will be recorded after M05.
+- 核实起点 `origin/main@d87b365`（M02–M03 / PR #153 已合并），在 `codex/multica-ux-m04-m05` 实现。原 checkout、房间、历史与既有 output 目录均保留；全程使用临时 SQLite/工作区和受控模型。
+- M04：迁移 037 只追加 Provider 连接证据；Agent 可用性与工作负载独立，真实 Native/package/planning/discussion 执行统一到详情和时间线。提供职责/Squad/当前工作/历史尝试/费用及明确分母的统计、安全工具摘要、已记录 Diff 与当前验证入口。重连复用原事件库与稳定 cursor；删除/回退不生成幽灵记录。
+- M04 阶段审查修复了 adaptive 旧子任务根关联和投影插入顺序冒充执行顺序的问题（`8395c6e`）；复审通过。
+- M05：迁移 038 保存指示队列、Leader 评价/报告去重及 Inbox 通知状态。WorkItem 与 Work 房间接入结构化 @Agent/@Squad、Will trigger、零调用备注、人工审核、排队/停止重启；持续 Owner 不变。费用、审批、权限、工作区租约仍走原 Runtime/RoomCommandService/TeamRunner。
+- 真实 Leader 再评价最多 4 轮、委派最多 2 轮，沿用任务预算；严格结构化 no_action / 人工审核 / 继续已批准工作。单个 pending 评价合并成员报告，不因自己总结再唤醒。没有可靠 Native 回执的运行内插入明确禁用。
+- 未知工具副作用和费用未结算都阻止后续派发；已阻止的旧指示不自动重放。Leader queue 等原执行结算；now 只在 Coordinator/TeamRunner 静止时执行；Leader 不支持停止后重启，取消后需重新批准启动。
+- 本机 Inbox 从真实审批/验证/预算/未知结果/阻碍/人工审核事实派生，带关联 ID 与房间/工作事项/时间线入口；状态变化才通知，解决后自动消失。备注/审核和关闭被阻止的提醒均不调用模型。
+- 实际复用：现有 Base UI ActorPicker/Dialog、Notifications、事件库、RoomCommandService、Coordinator/TeamRunner、账本与验证服务；无新依赖。重读 Multica 许可证和指定源码，仅行为参考，不复制源码/素材；实际 SHA 和缺失引用路径已记入 `doc/reuse-decisions.md`。
+- M05 阶段审查修复了 Leader 交付模式、取消/换 owner 后的旧评价权限、被阻止指示的 Inbox 解决入口；真实浏览器另发现 Squad quote/routing schema 漏接并修复（`a2a6494`、`40afb6e`），复审通过。
+- 修复后完整回归：**1305 pass / 0 fail / 24024 assertions / 225 files**；类型检查、desktop build、lint 581 文件和 diff-check 通过。Vite 原有大 chunk / 混合 import 警告保留。
+- 当前证据与命令：`doc/multica-m04-m05-acceptance.md`、`scripts/multica-m04-m05-browser{,-fixture}.mjs/ts`。最终浏览器结果、全分支审查和 PR 在本节末追加。
+- 后续 M06 执行交互深化与 M07 综合压力验收尚未执行。未调用付费模型、上传私密数据、合并或发布；未验收 Tauri 原生窗口、系统输入法、屏幕阅读器或安装包。
+
+- 最终 Chrome **24/24 检查通过**，无外部请求/renderer error，覆盖 WorkItem 与房间两条入口、真实报价、队列/重启、Inbox 解决/刷新不复活、窄屏滚动、只读时间线不误发草稿。合成截图与机器记录已保存到 `doc/assets/multica-m04-m05/`，含 SHA-256 清单；最终全分支审查待记录。

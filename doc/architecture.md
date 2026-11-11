@@ -1,5 +1,7 @@
 # Socrates 软件架构总览
 
+> 2026-11-11：M04–M05 新增独立的 Agent 可用性/工作负载投影、真实 Run/Attempt 时间线、持久指示队列、受限 Leader 再评价与本机 Inbox。复用原 Runtime、RoomCommandService、TeamRunner、账本、审批和事件库；备注不调用模型，提及不改 Owner，未知副作用或费用未结算禁止自动重启。接口与证据见 [M04–M05 验收](multica-m04-m05-acceptance.md)。
+
 > 2026-11-11：M02–M03 新增项目 Squad 与独立 WorkItem。模板、冻结房间绑定、持续负责人、单次执行及人工审核分别持久化；只分配不启动，显式启动复用原 RoomCommandService/Coordinator/Native，详见 [实现与验收](multica-m02-m03-acceptance.md)。
 
 > 2026-11-11：P08 增加数据库写入前兼容检查、版本化工作流恢复边界及新任务准入开关；使用与备份说明见 [使用指南](cost-aware-user-guide.md)，本轮可复验场景见 [P08 证据](cost-aware-p08-scenarios.md)。

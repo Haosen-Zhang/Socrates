@@ -21,6 +21,17 @@ await f.workItemLaunch.start(restartItem.id,{previewId:restartPreview.id,expecte
 await untilCostFlow(()=>f.workItems.get(restartItem.id)?.currentRun?.commandStatus==='awaiting_plan_approval','restart approval');
 return c.json({teamItemId:teamItem.id,restartItemId:restartItem.id,teamRoomId:teamPreview.executionRoomId,restartRoomId:restartPreview.executionRoomId});
 });
+f.app.post('/__multica/blocked-instruction',async c=>{
+ const target=f.workItems.create({workspaceId:f.workspace.id,title:'Blocked instruction lab',objective:'Wait for controlled approval',acceptanceCriteria:['Local review'],ownerKind:'squad',ownerId:squad.id,priority:'normal'});
+ const launch=f.workItemLaunch.preview(target.id,{expectedRevision:target.revision,ownerKind:'squad',ownerId:squad.id});
+ await f.workItemLaunch.start(target.id,{previewId:launch.id,expectedRevision:target.revision,clientRequestId:'blocked-fixture'});
+ await untilCostFlow(()=>f.workItems.get(target.id)?.currentRun?.commandStatus==='awaiting_plan_approval','blocked fixture plan');
+ const queued=await f.interactions.submit({workItemId:target.id},{clientRequestId:'blocked-instruction',action:'message',content:'Resolve this blocked instruction without replay.',mentions:[{type:'agent',agentId:'fixture-b'}],delivery:'queue'});
+ await f.app.request('/providers/fixture-provider',{method:'PUT',headers:f.headers,body:JSON.stringify({enabled:false})});
+ try{await f.commands.cancel(f.workItems.get(target.id)!.currentRun!.commandId!);await untilCostFlow(()=>f.interactions.get(queued.id)?.status==='blocked','disabled-provider queued instruction');}
+ finally{await f.app.request('/providers/fixture-provider',{method:'PUT',headers:f.headers,body:JSON.stringify({enabled:true})});}
+ return c.json({interactionId:queued.id,itemId:target.id});
+});
 f.app.get('/__multica/counts', c => c.json({ native: f.nativeCalls.length, gateway: f.gatewayCalls.length, runs: f.db.query('SELECT count(*) AS n FROM agent_runs').get(), commands: f.db.query('SELECT count(*) AS n FROM room_commands').get() }));
 const metadataPath = process.env.SOCRATES_MULTICA_METADATA ?? '/private/tmp/socrates-multica-m04-m05.json';
 const server = Bun.serve({ hostname: '127.0.0.1', port: 0, idleTimeout: 0, fetch: f.app.fetch });

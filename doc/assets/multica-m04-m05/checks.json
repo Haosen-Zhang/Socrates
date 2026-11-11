@@ -1,0 +1,102 @@
+{
+  "checks": [
+    {
+      "name": "Squad roster opens real Agent lifecycle detail",
+      "ok": true
+    },
+    {
+      "name": "Completed run appears in recent runs without a working badge",
+      "ok": true
+    },
+    {
+      "name": "Run timeline reads durable execution facts and parent identity",
+      "ok": true
+    },
+    {
+      "name": "Timeline reports absent Git evidence honestly",
+      "ok": true
+    },
+    {
+      "name": "Disabled Provider shows unavailable while workload stays idle",
+      "ok": true
+    },
+    {
+      "name": "Re-enabling configuration does not fabricate online evidence",
+      "ok": true
+    },
+    {
+      "name": "Agent drawer fits narrow viewport and retains scrolling",
+      "ok": true
+    },
+    {
+      "name": "Note persists without invoking a model or parsing plain @ text",
+      "ok": true
+    },
+    {
+      "name": "Inbox human review resolves durably and does not resurrect after reload",
+      "ok": true
+    },
+    {
+      "name": "Trigger preview blocks a target outside the frozen execution roster",
+      "ok": true
+    },
+    {
+      "name": "Structured @agent invokes only its target and preserves owner",
+      "ok": true
+    },
+    {
+      "name": "Active plan accepts a durable next-round instruction",
+      "ok": true
+    },
+    {
+      "name": "Work composer stays editable while approval is pending",
+      "ok": true
+    },
+    {
+      "name": "Pending approval survives reload with exact task and room links",
+      "ok": true
+    },
+    {
+      "name": "Queue dispatches once after settlement without its original page",
+      "ok": true
+    },
+    {
+      "name": "Explicit Leader reassessment ends in no_action with one bounded evaluation",
+      "ok": true
+    },
+    {
+      "name": "Stop and restart preserves cancelled original command and unchanged Squad owner",
+      "ok": true
+    },
+    {
+      "name": "Structured @squad invokes one frozen Leader, without owner change",
+      "ok": true
+    },
+    {
+      "name": "Task instructions retain a scrollable narrow drawer",
+      "ok": true
+    },
+    {
+      "name": "Room composer uses durable no-call note path",
+      "ok": true
+    },
+    {
+      "name": "Room structured Squad mention is quoted and executed through the existing command path",
+      "ok": true
+    },
+    {
+      "name": "Read-only timeline buttons do not submit an unsent room draft",
+      "ok": true
+    },
+    {
+      "name": "Blocked ordinary instruction resolves in Inbox, stays removed after reload, and never replays",
+      "ok": true
+    },
+    {
+      "name": "No external browser requests or renderer errors",
+      "ok": true
+    }
+  ],
+  "errors": [],
+  "external": []
+}

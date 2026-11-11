@@ -20,7 +20,7 @@ async function openWork() {
   await sidebar.getByText('Lifecycle acceptance lab', { exact: true }).click();
 }
 async function until(fn,label){for(let i=0;i<120;i++){const value=await fn();if(value)return value;await page.waitForTimeout(100);}throw new Error('Timeout: '+label);}
-async function openItem(title){await page.getByRole('tab',{name:'Tasks',exact:true}).click();await page.locator('[data-work-items] .work-task-row').filter({hasText:title}).click();await page.getByRole('heading',{name:title,exact:true}).waitFor();}
+async function openItem(title){await page.getByRole('tab',{name:'Tasks',exact:true}).click();await page.locator('[data-work-items]').waitFor();await page.getByRole('button',{name:'Close task detail',exact:true}).waitFor({timeout:700}).catch(()=>{});if(await page.getByRole('button',{name:'Close task detail',exact:true}).isVisible())await page.getByRole('button',{name:'Close task detail',exact:true}).click();await page.locator('[data-work-items] .work-task-row').filter({hasText:title}).click();await page.getByRole('heading',{name:title,exact:true}).waitFor();}
 async function pick(label,text){await page.getByRole('combobox',{name:label,exact:true}).fill(text);await page.getByRole('option').filter({hasText:text}).first().click();}
 async function submitDiscussion(content){await page.getByRole('textbox',{name:'Instruction content',exact:true}).fill(content);await until(()=>page.getByRole('button',{name:'Submit this action',exact:true}).isEnabled(),'trigger preview');await page.getByRole('button',{name:'Submit this action',exact:true}).click();await until(()=>page.getByRole('textbox',{name:'Instruction content',exact:true}).inputValue().then(v=>v===''),'submission');}
 try {
@@ -105,8 +105,8 @@ try {
   queued=await until(async()=>{const r=await api(`/work-items/${metadata.teamItemId}/interactions`);return r.find(x=>x.id===queued.id&&x.status==='dispatched');},'queued dispatch');
   await until(async()=>(await api(`/room-commands/${queued.commandId}`)).status==='completed','queued completion');
   check('Queue dispatches once after settlement without its original page',true);
-  await page.getByRole('tab',{name:'Tasks',exact:true}).click();await openItem('Stop and restart lab');
-  await page.getByRole('combobox',{name:'Action',exact:true}).selectOption('reevaluate');
+  await openItem('Stop and restart lab');
+  await page.getByRole('combobox',{name:'Action',exact:true}).selectOption('reevaluate');await page.getByRole('combobox',{name:'Delivery',exact:true}).selectOption('now');
   const beforeLeader=await api('/__multica/counts');await submitDiscussion('Reassess the existing approved workflow once.');
   await until(async()=>(await api(`/work-items/${metadata.restartItemId}/interactions`)).some(r=>r.status==='no_action'),'Leader no_action');
   check('Explicit Leader reassessment ends in no_action with one bounded evaluation',(await api('/__multica/counts')).gateway===beforeLeader.gateway+1);
@@ -121,10 +121,36 @@ try {
   await until(async()=>(await api(`/room-commands/${squadMessage.commandId}`)).status==='completed','squad complete');
   check('Structured @squad invokes one frozen Leader, without owner change',(await api('/__multica/counts')).native===beforeSquad.native+1&&(await api('/__multica/counts')).gateway===beforeSquad.gateway);
   await page.locator('[data-work-item-discussion] [data-interaction-history] summary').click();
-  await page.screenshot({path:`${out}/interactions.png`});await page.setViewportSize({width:650,height:600});
+  await page.screenshot({path:`${out}/interactions.png`});await page.setViewportSize({width:650,height:600});await page.waitForTimeout(300);
   check('Task instructions retain a scrollable narrow drawer',await page.locator('.foundation-drawer').last().evaluate(el=>el.getBoundingClientRect().bottom<=innerHeight+1));await page.screenshot({path:`${out}/interactions-narrow.png`});
   await page.setViewportSize({width:1440,height:1000});
 
+  await page.getByRole('button',{name:'Close task detail',exact:true}).click();await page.getByRole('tab',{name:'Rooms',exact:true}).click();await openWork();
+  const composer=page.locator('form.composer-dock');const beforeRoomNote=await api('/__multica/counts');
+  await composer.getByRole('combobox',{name:'Message action',exact:true}).selectOption('note');await composer.locator('textarea').fill('A room note with plain @Fixture Reviewer.');
+  await until(()=>composer.getByRole('button',{name:'Send',exact:true}).isEnabled(),'room note preview');await composer.getByRole('button',{name:'Send',exact:true}).click();
+  await until(async()=>(await api(`/room-commands/rooms/${metadata.roomIds.work}/interactions`)).some(r=>r.input.action==='note'),'room note stored');
+  check('Room composer uses durable no-call note path',JSON.stringify(beforeRoomNote)===JSON.stringify(await api('/__multica/counts')));
+  await composer.getByRole('combobox',{name:'Message action',exact:true}).selectOption('message');await composer.locator('textarea').fill('@Lifecycle');await page.getByRole('option').filter({hasText:'@Lifecycle squad'}).click();
+  await composer.locator('textarea').fill('@Lifecycle squad Respond only as Leader.');
+  await until(()=>composer.locator('[data-will-trigger]').innerText().then(t=>t.includes('Fixture Builder')),'room squad preview');
+  await until(()=>composer.getByText('Estimated cost:',{exact:false}).count().then(n=>n>0),'room squad quote');
+  await composer.getByRole('button',{name:'Send',exact:true}).click();
+  const roomDirected=await until(async()=>(await api(`/room-commands/rooms/${metadata.roomIds.work}/interactions`)).find(r=>r.input.content.includes('Respond only as Leader.')&&r.status==='dispatched'),'room squad dispatch');
+  await until(async()=>(await api(`/room-commands/${roomDirected.commandId}`)).status==='completed','room squad complete');
+  check('Room structured Squad mention is quoted and executed through the existing command path',true);
+  await composer.locator('textarea').fill('This draft must not send while inspecting a run.');
+  await composer.locator('[data-interaction-history] summary').click();await composer.getByRole('button',{name:'View this run',exact:true}).first().click();
+  const beforeInspect=await api('/__multica/counts');await composer.getByRole('button',{name:'View current test evidence',exact:true}).click();
+  check('Read-only timeline buttons do not submit an unsent room draft',await composer.locator('textarea').inputValue()==='This draft must not send while inspecting a run.'&&JSON.stringify(beforeInspect)===JSON.stringify(await api('/__multica/counts')));
+  await page.screenshot({path:`${out}/room-instructions.png`});
+  await composer.locator('textarea').fill('');
+  const blocked=await api('/__multica/blocked-instruction',{});const beforeResolve=await api('/__multica/counts');
+  await page.getByRole('tab',{name:'Inbox',exact:true}).click();await page.locator(`[data-inbox-id="interaction:${blocked.interactionId}"]`).click();
+  await page.getByRole('textbox',{name:'Resolution',exact:true}).fill('Discard this obsolete instruction; do not retry.');await page.getByRole('button',{name:'Record resolution and resolve',exact:true}).click();
+  await until(async()=>!(await api(`/inbox?workspaceId=${metadata.workspaceId}`)).items.some(i=>i.link.interactionId===blocked.interactionId),'blocked resolved');
+  await page.reload();await openWork();await page.getByRole('tab',{name:'Inbox',exact:true}).click();
+  check('Blocked ordinary instruction resolves in Inbox, stays removed after reload, and never replays',!(await api(`/inbox?workspaceId=${metadata.workspaceId}`)).items.some(i=>i.link.interactionId===blocked.interactionId)&&JSON.stringify(beforeResolve)===JSON.stringify(await api('/__multica/counts')));
   check('No external browser requests or renderer errors', external.length === 0 && errors.length === 0);
 } catch (error) { writeFileSync(`${out}/error.txt`, String(error)); throw error; }
 finally { writeFileSync(`${out}/checks.json`, JSON.stringify({ checks, errors, external }, null, 2)); writeFileSync(`${out}/dom.html`, await page.content()); await page.screenshot({ path: `${out}/final.png` }); await browser.close(); }
