@@ -112,6 +112,8 @@ export interface VerificationRun {
   failureSignature?: string;
 }
 export interface VerificationView {
+  /** Effective root and current package evidence acknowledged by a human review. */
+  evidenceRevision?: string;
   target: VerificationTarget;
   plan: VerificationPlan | null;
   run: VerificationRun | null;

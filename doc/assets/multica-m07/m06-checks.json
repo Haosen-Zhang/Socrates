@@ -1,0 +1,78 @@
+{
+  "checks": [
+    {
+      "name": "Same-room requote preserves the selected approved plan",
+      "ok": true
+    },
+    {
+      "name": "Budget replacement preview clears the old room plan and enables start",
+      "ok": true
+    },
+    {
+      "name": "Replacement preview can approve and bind its own plan",
+      "ok": true
+    },
+    {
+      "name": "Budget-mode replacement clears plan identity",
+      "ok": true
+    },
+    {
+      "name": "Direct repeated preview also clears plan identity",
+      "ok": true
+    },
+    {
+      "name": "Preview approval and requotes make zero model calls",
+      "ok": true
+    },
+    {
+      "name": "Only explicit start executes the replacement room once",
+      "ok": true
+    },
+    {
+      "name": "WorkItem exposes unknown consumed cost and usage without a fictitious zero",
+      "ok": true
+    },
+    {
+      "name": "Task detail shows independent evidence beside separate Run and human acceptance",
+      "ok": true
+    },
+    {
+      "name": "Changed artifact invalidates evidence and reopens human review",
+      "ok": true
+    },
+    {
+      "name": "UI re-verification and explicit acceptance complete the same WorkItem",
+      "ok": true
+    },
+    {
+      "name": "Backend zero-budget stop stays visible and is not completed",
+      "ok": true
+    },
+    {
+      "name": "Package-level ledger and verification are reachable in task detail",
+      "ok": true
+    },
+    {
+      "name": "Flight Recorder exposes frozen Squad and WorkItem identities on actual activity",
+      "ok": true
+    },
+    {
+      "name": "Narrow task evidence fits the drawer and scrolls locally",
+      "ok": true
+    },
+    {
+      "name": "Squad policy selection persists supported Economy routing",
+      "ok": true
+    },
+    {
+      "name": "Arena picker prepares frozen Squad candidate in isolated workspace",
+      "ok": true
+    },
+    {
+      "name": "No renderer errors or external requests",
+      "ok": true
+    }
+  ],
+  "errors": [],
+  "external": []
+}

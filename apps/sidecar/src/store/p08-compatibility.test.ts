@@ -1,11 +1,12 @@
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb } from '../db';
 import { assertMigrationCompatibility, runMigrations } from './migrations';
 import { migrations } from './migrations/index';
+import { EventStore } from './event-store';
 import { SessionStore } from './session-store';
 
 test('Alpha data upgrade preserves approvals, packages, pending tool outcomes and unknown historical costs, including backup and reopen', () => {
@@ -23,7 +24,8 @@ test('Alpha data upgrade preserves approvals, packages, pending tool outcomes an
   INSERT INTO tool_attempts(id,tool_operation_id,attempt_no,status,started_at) VALUES('attempt','tool',1,'outcome_unknown','before');
   INSERT INTO usage_records(id,stable_key,session_id,task_id,agent_id,input_tokens,output_tokens,total_tokens,source,estimated,created_at) VALUES('usage','usage-key','${room.id}','task','a',12,3,15,'provider',0,'before');
   INSERT INTO session_messages(id,session_id,role,content,status,created_at) VALUES('history','${room.id}','assistant','Historical completion','completed','before');`);
-  const tables=['sessions','session_agents','session_messages','multi_tasks','plan_versions','plan_decisions','work_packages','tool_calls','tool_attempts','usage_records','approval_requests'];
+  new EventStore(db).append({eventId:'historic-event',sessionId:room.id,taskId:'task',type:'legacy.completed',payload:{preserved:true},occurredAt:'before'});
+  const tables=['task_events','sessions','session_agents','session_messages','multi_tasks','plan_versions','plan_decisions','work_packages','tool_calls','tool_attempts','usage_records','approval_requests'];
   const columns=Object.fromEntries(tables.map(name=>[name,db.query<{name:string},[]>(`PRAGMA table_info(${name})`).all().map(c=>c.name).join(",")]));
   const snapshot=()=>Object.fromEntries(tables.map(name=>[name,db.query(`SELECT ${columns[name]} FROM ${name} ORDER BY rowid`).all()]));
   const before=snapshot();db.close(); db=openDb(path);
@@ -34,6 +36,8 @@ test('Alpha data upgrade preserves approvals, packages, pending tool outcomes an
   const backups=readdirSync(dir).filter(name=>name.startsWith('alpha.db.backup-'));expect(backups).toHaveLength(1);
   const backup=new Database(join(dir,backups[0]!),{readonly:true});
   try {expect(backup.query('SELECT MAX(version) v FROM schema_migrations').get()).toEqual({v:22});expect(backup.query('SELECT content_hash FROM plan_versions').get()).toEqual({content_hash:'approved-hash'});expect(backup.query('PRAGMA integrity_check').get()).toEqual({integrity_check:'ok'});}finally{backup.close();}
+  const restoredPath=join(dir,'restored-alpha.db');copyFileSync(join(dir,backups[0]!),restoredPath);
+  const restored=new Database(restoredPath);try{expect(runMigrations(restored,migrations.filter(m=>m.version<=22))).toEqual([]);for(const table of tables)expect(restored.query(`SELECT ${columns[table]} FROM ${table} ORDER BY rowid`).all()).toEqual(before[table]);expect(restored.query('PRAGMA integrity_check').get()).toEqual({integrity_check:'ok'});}finally{restored.close();}
   db.close();db=openDb(path);expect(snapshot()).toEqual(before);expect(readdirSync(dir).filter(name=>name.startsWith('alpha.db.backup-'))).toHaveLength(1);
   expect(()=>assertMigrationCompatibility(db,migrations.filter(m=>m.version<=22))).toThrow('unknown_applied_migration:23');
   expect(snapshot()).toEqual(before);

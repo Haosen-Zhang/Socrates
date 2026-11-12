@@ -9,6 +9,8 @@ export interface ArenaTask {
 	protectedPaths: string[];
 }
 export interface ArenaVariant {
+	squadId?: string;
+	squadRevision?: number;
 	id: string;
 	label: string;
 	primaryAgentId: string;

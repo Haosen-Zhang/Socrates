@@ -1,3 +1,4 @@
+import { SquadService } from "./squads";
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import {
@@ -60,6 +61,8 @@ const definition = z.object({
 				label: z.string().min(1),
 				primaryAgentId: z.string().min(1),
 				collaboration: z.unknown(),
+                squadId:z.string().min(1).optional(),
+                squadRevision:z.number().int().min(1).optional(),
 			}),
 		)
 		.min(1)
@@ -106,6 +109,7 @@ export class ArenaService {
 			})),
 			collaboration: room.collaboration,
 			controlledAvailable: Boolean(this.deps.controlled),
+            squads:room.workspaceId?new SquadService(this.db,this.deps.sessions).list(room.workspaceId).filter(s=>!s.archived).map(s=>({...s,arenaEligible:s.members.every(m=>room.agents.some(a=>a.agentId===m.agentId&&a.executionEligible))})):[],
 		};
 	}
 	list(roomId: string) {
@@ -172,7 +176,19 @@ export class ArenaService {
 			source.archived
 		)
 			throw new Error("arena_work_room_required");
-		for (const variant of input.variants) {
+        const squads=new SquadService(this.db,this.deps.sessions);
+        const preparedSquads=new Map<string,ReturnType<SquadService['prepareForStart']>>();
+        for (const variant of input.variants) {
+            if(variant.squadId){
+                const squad=squads.get(variant.squadId);
+                if(!squad||squad.workspaceId!==source.workspaceId)throw new Error('arena_squad_out_of_scope');
+                const prepared=squads.prepareForStart(squad.id,variant.squadRevision??0);
+                if(prepared.agents.some(a=>!source.agents.some(m=>m.agentId===a.agentId&&m.executionEligible&&m.snapshot.providerId===a.snapshot.providerId)))throw new Error('arena_squad_source_authorization_required');
+                preparedSquads.set(variant.id,prepared);
+                variant.primaryAgentId=squad.leaderAgentId;
+                variant.collaboration=prepared.collaborationDefaults;
+            } else if(variant.squadRevision)throw new Error('arena_squad_required');
+            const agents=preparedSquads.get(variant.id)?.agents??source.agents;
 			variant.collaboration = normalizeCollaborationSettings(
 				variant.collaboration,
 			);
@@ -180,14 +196,14 @@ export class ArenaService {
 				{
 					kind: "cowork",
 					workspaceId: source.workspaceId,
-					agentIds: source.agents.map((a) => a.agentId),
+					agentIds: agents.map((a) => a.agentId),
 					primaryAgentId: variant.primaryAgentId,
 				},
 				variant.collaboration,
 			);
 			if (errors.length) throw new Error(errors[0]);
 			if (
-				!source.agents.some(
+				!agents.some(
 					(a) => a.agentId === variant.primaryAgentId && a.executionEligible,
 				)
 			)
@@ -292,8 +308,9 @@ export class ArenaService {
 			for (let repeat = 0; repeat < input.repeats; repeat++)
 				for (const task of input.tasks)
 					for (const variant of input.variants) {
+                        const prepared=preparedSquads.get(variant.id),agents=prepared?.agents??source.agents;
 						if (
-							!source.agents.some(
+							!agents.some(
 								(a) =>
 									a.agentId === variant.primaryAgentId && a.executionEligible,
 							)
@@ -313,13 +330,14 @@ export class ArenaService {
 						createdWorkspaces.push({ id: workspace.id, path });
 						const room = this.deps.sessions.create({
 							title: `Arena · ${variant.label}`,
-							mode: source.agents.length > 1 ? "multi_agent" : "single_agent",
+							mode: agents.length > 1 ? "multi_agent" : "single_agent",
 							kind: "cowork",
 							workspaceId: workspace.id,
 							primaryAgentId: variant.primaryAgentId,
 							collaborationDefaults: variant.collaboration,
-							agents: source.agents,
+							agents,
 						});
+                        if(prepared)squads.saveBinding(room.id,prepared.squad);
 						createdRooms.push(room.id);
 						this.deps.sessions.updateApprovalPolicy(
 							room.id,

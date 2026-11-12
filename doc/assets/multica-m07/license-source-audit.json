@@ -1,0 +1,8 @@
+{
+  "reference": "Local sparse Multica snapshot; no .git, current upstream HEAD not verified",
+  "localReferenceFiles": 6,
+  "trackedSocratesFiles": 672,
+  "identicalWholeFilesOver100Bytes": [],
+  "licenseSHA256": "ec78c4feacec52c7dad8ed5ffdd79033fc8c58e320a3c5ebe9a00286cab37f63",
+  "boundary": "Whole-file hash comparison plus changed-file/import audit; not proof against partial copying. No source/assets imported in M07."
+}

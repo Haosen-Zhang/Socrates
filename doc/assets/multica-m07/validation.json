@@ -1,0 +1,62 @@
+{
+  "baselineHead": "53eb9cfa3a9e27703c135eb82c26f30aa6940513",
+  "schema": 40,
+  "fullSuite": {
+    "pass": 1329,
+    "fail": 0,
+    "assertions": 24300,
+    "files": 228,
+    "seconds": 48.41
+  },
+  "typecheck": "pass",
+  "lint": "pass:588 files",
+  "build": "pass:3.12s; existing warnings",
+  "sourceSHA256": {
+    "apps/desktop/src/work-items/RoomWorkItemBanner.tsx": "229fb304eaf7fb64b96e766ee270582d1bf5c500405de8f14c40d0d4dccaed44",
+    "apps/desktop/src/work-items/WorkItemsPanel.tsx": "0e795e5aa496dc9e9c9f70c1e120d3c29e84cfee36e132f0a0fe65fa27638808",
+    "apps/sidecar/src/services/cost-flow-fixture.ts": "a62648cf1dcb4f8e9e9c3d06aff312289cfa8ace6f9ea4f543bbdfb260582cea",
+    "apps/sidecar/src/services/inbox.ts": "0e87c1bd0a2fb71e1f6c3601bc2f86b4433906f0080e0f1e546e163057a8e769",
+    "apps/sidecar/src/services/squads.ts": "c1f33f4a2d25aeb20f64016e9b2ec79d2487ec5c51d0df26750f9dd74ff76632",
+    "apps/sidecar/src/services/work-items.test.ts": "5826cd52f391bf4eebfe01bb131580479516d5c520103f78fcee2012e0f2d26a",
+    "apps/sidecar/src/services/work-items.ts": "d2bcd9d31eb2db97205b4b0288df43b4bb961bf9732e357d7ea5add7657602dc",
+    "apps/sidecar/src/store/p08-compatibility.test.ts": "1f3308e7026748a14326b33391ce5b1512cfe0b5556c582f45d5e49f6e0bb912",
+    "packages/core/src/work-item.ts": "51473494fc5ea9303bba3c21711458cf3aecf62cc383e7a1af42960d2b8cf44e",
+    "scripts/multica-license-audit.mjs": "961cc2e5ebb51e26ac3bbb630bb18e3487db66f780c680f757986e70b3d875ed",
+    "scripts/multica-m02-m03-browser.mjs": "dd897166787eb7eb145f2a6aadbfc8d88bd2bfa8d847ef03ba5bf87843088eb4",
+    "scripts/multica-m04-m05-browser.mjs": "ab5fdb3cb128f934af35eb06eeb3b4b7120eedb240efdc5b31b0534b7ed3ec25",
+    "scripts/multica-m06-browser.mjs": "3e65c243429575f995f9b300929d1274da00dda620b42e6755afaecfd5ecd45e",
+    "scripts/multica-m07-browser-fixture.ts": "21154728b54b2f5944d5068652fd695609f30a5eb8422377e623fcfa2ccd6b94",
+    "scripts/multica-m07-browser.mjs": "e6f5114b696e9630509670be48af417dcc5ea198d0a9a885442d15735ca68a68",
+    "scripts/multica-m07-compatibility-browser.mjs": "50f1b3c980b81774ba1bf3cb06606d2c3a16f29705ea9accd8c3a5c414321a72",
+    "scripts/multica-m07-compatibility-fixture.ts": "ad5b328ce4d4c7e47ca58f0d599901d14c34fb29a5b20beaea87fe9f8d820a08",
+    "scripts/p08-stress-browser-fixture.ts": "108a7b3e0899d1fa3834bf90fa64e72d6b3ec0bfa799c656f9798b81731b4e53",
+    "scripts/p08-stress-browser.mjs": "7eeeacb9ef5c88b5823bd3622fc54014eb49993613681926e6e841875574d546",
+    "apps/sidecar/src/services/verification-service.ts": "6136de8f9c3debdf15b01eb1dc25b5d0f068ef326fbe075e27f01a4048d83490"
+  },
+  "preFinalReviewHead": "ef4e8f0568740613df7a1cfdcbf2499b1df68b22",
+  "focusedSuite": {
+    "pass": 25,
+    "fail": 0,
+    "assertions": 268,
+    "files": 4
+  },
+  "baselineBrowserCounts": {
+    "m02-m03": 23,
+    "m04-m05": 32,
+    "m06": 11,
+    "p08-stress": 10,
+    "scale": 15,
+    "compatibility": 9
+  },
+  "browserCounts": {
+    "m06": 18,
+    "scale": 15
+  },
+  "retainedBaselineBrowserCounts": {
+    "m02-m03": 23,
+    "m04-m05": 32,
+    "p08-stress": 10,
+    "compatibility": 9
+  },
+  "browserBoundary": "33 final-source checks refreshed; 74 unaffected checks retained from pre-fix baseline, not rerun. Baseline screenshots kept unchanged; final-* and keyboard-focus.png are fresh."
+}

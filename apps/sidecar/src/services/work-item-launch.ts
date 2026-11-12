@@ -48,10 +48,26 @@ export class WorkItemLaunchService {
    const command:RoomCommandInput={roomId:room.id,clientRequestId:'',intent:'execute',content:[item.title,item.objective,...item.acceptanceCriteria.map(c=>'Acceptance: '+c)].filter(Boolean).join('\n\n'),mentions:[],...(input.budget?{budget:input.budget}:{})};
    const quote=this.quotes.quote(command);command.quoteId=quote.id;
    const workspace=this.db.query<{id:string;canonical_path:string;identity_hash:string},[string]>('SELECT id,canonical_path,identity_hash FROM workspaces WHERE id=?').get(item.workspaceId)!;
-   preview={id:crypto.randomUUID(),workItemId:id,expectedRevision:item.revision,ownerKind:input.ownerKind,ownerId:input.ownerId!,executionRoomId:room.id,executorAgentId:primaryAgentId,workspaceId:workspace.id,workspaceIdentityHash:workspace.identity_hash,workspacePath:workspace.canonical_path,approvalPolicy:room.approvalPolicy,quote,canStart:true};
+   preview={id:crypto.randomUUID(),workItemId:id,expectedRevision:item.revision,ownerKind:input.ownerKind,ownerId:input.ownerId!,executionRoomId:room.id,executorAgentId:primaryAgentId,workspaceId:workspace.id,workspaceIdentityHash:workspace.identity_hash,workspacePath:workspace.canonical_path,approvalPolicy:room.approvalPolicy,quote,canStart:!quote.route||!!quote.route.selected,reason:quote.route&&!quote.route.selected?'routing_no_feasible_candidate':undefined,routing:quote.route?{preset:quote.route.preset,workflow:quote.route.selected?.workflow??null,agentIds:quote.route.selected?.resolved.agentIds??[],reasonCodes:quote.route.reasonCodes}:undefined};
    this.db.query('INSERT INTO work_item_previews VALUES(?,?,?,?,?)').run(preview.id,id,JSON.stringify(preview),JSON.stringify(command),JSON.stringify({ownerKind:input.ownerKind,ownerId:input.ownerId,snapshot:owner,sourceRoomId:item.roomId,members:room.agents}));
    });
    return preview;
+ }
+ requote(id:string,previewId:string,verificationPlanId?:string):WorkItemPreview {
+  const row=this.db.query<PreviewRow,[string,string]>('SELECT * FROM work_item_previews WHERE id=? AND work_item_id=?').get(previewId,id);if(!row)throw new Error('Preview not found');
+  const previous:WorkItemPreview=JSON.parse(row.preview_json),item=this.items.get(id);
+  if(!item||item.revision!==previous.expectedRevision||item.workflow==='in_progress')throw new WorkItemConflict('Work item changed');
+  this.assertPreviewAuthority(previous);
+  if(verificationPlanId!==undefined){
+   if(typeof verificationPlanId!=='string')throw new Error('Invalid verification plan');
+   const plan=this.db.query<{room_id:string;approval_status:string},[string]>("SELECT room_id,json_extract(plan_json,'$.approvalStatus') AS approval_status FROM verification_plans WHERE id=?").get(verificationPlanId);
+   if(!plan||plan.room_id!==previous.executionRoomId||plan.approval_status!=='approved')throw new Error('verification_plan_approval_required');
+  }
+  const command:RoomCommandInput={...JSON.parse(row.input_json),verificationPlanId};delete command.quoteId;
+  const quote=this.quotes.quote(command);command.quoteId=quote.id;
+  const preview={...previous,id:crypto.randomUUID(),quote,verificationPlanId,canStart:!quote.route||!!quote.route.selected,reason:quote.route&&!quote.route.selected?'routing_no_feasible_candidate':undefined,routing:quote.route?{preset:quote.route.preset,workflow:quote.route.selected?.workflow??null,agentIds:quote.route.selected?.resolved.agentIds??[],reasonCodes:quote.route.reasonCodes}:undefined};
+  this.db.query('INSERT INTO work_item_previews VALUES(?,?,?,?,?)').run(preview.id,id,JSON.stringify(preview),JSON.stringify(command),row.owner_json);
+  return preview;
  }
  start(id:string,input:StartInput):Promise<WorkItem|null>{
   if(typeof input.clientRequestId!=='string'||!input.clientRequestId.trim()||input.clientRequestId.length>150)throw new Error('Invalid request ID');

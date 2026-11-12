@@ -93,7 +93,7 @@ const PLAN: StructuredPlan = {
 };
 
 /** Real production services; only the Provider stream and disposable test files are controlled. */
-export async function setupCostFlowFixture(options: { leaderDecision?:unknown; strictBoundFixture?: boolean; missingFirstNativeUsage?: boolean; reasoningPlanner?: boolean; writeApprovalFlow?: boolean; scopeExpansion?: boolean; invalidWriteHash?: boolean; automaticPricingView?: boolean; routingFixture?:boolean; nativeToolCalls?:(body:unknown)=>Array<{id:string;type:string;function:{name:string;arguments:string}}>|undefined; onNativeRequest?:(body:unknown)=>void; onGatewayRequest?:(request:unknown)=>void } = {}) {
+export async function setupCostFlowFixture(options: { nativeStream?:{chunks:number;delayMs:number}; leaderDecision?:unknown; strictBoundFixture?: boolean; missingFirstNativeUsage?: boolean; reasoningPlanner?: boolean; writeApprovalFlow?: boolean; scopeExpansion?: boolean; invalidWriteHash?: boolean; automaticPricingView?: boolean; routingFixture?:boolean; nativeToolCalls?:(body:unknown)=>Array<{id:string;type:string;function:{name:string;arguments:string}}>|undefined; onNativeRequest?:(body:unknown)=>void; onGatewayRequest?:(request:unknown)=>void } = {}) {
   // Synthetic trusted-bound metadata only: Native fetch still targets fixture.invalid
   // through controlledFetch; planning/review use the local generator below.
   const admissionBaseUrl = options.strictBoundFixture ? "https://api.openai.com/v1" : "https://fixture.invalid/v1";
@@ -232,6 +232,18 @@ export async function setupCostFlowFixture(options: { leaderDecision?:unknown; s
       prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 }, completion_tokens_details: { reasoning_tokens: 0 } };
     const parts = [chunk(calls.length ? { role: "assistant", tool_calls: calls.map((call, index) => ({ index, ...call })) } : { role: "assistant", content: "Controlled Native member completed the assigned work." }, null),
       chunk({}, calls.length ? "tool_calls" : "stop", options.missingFirstNativeUsage && nativeCalls.length === 1 ? undefined : providerUsage)];
+    if(options.nativeStream?.chunks && !calls.length) {
+      const {chunks,delayMs}=options.nativeStream;
+      return new Response(new ReadableStream({async start(controller){
+        const encoder=new TextEncoder();
+        for(let i=0;i<chunks;i++) {
+          if(init?.signal?.aborted)break;
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk({content:`Synthetic streaming line ${i}. `},null))}\n\n`));
+          await Bun.sleep(delayMs);
+        }
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(parts[1])}\n\ndata: [DONE]\n\n`));controller.close();
+      }}),{headers:{"Content-Type":"text/event-stream"}});
+    }
     return new Response(parts.map(part => `data: ${JSON.stringify(part)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream", "x-request-id": `fixture-native-${nativeCalls.length}` } });
   };
   runtimes.register("native_ai_sdk", input => {
@@ -300,10 +312,10 @@ export async function setupCostFlowFixture(options: { leaderDecision?:unknown; s
   const quotes = new TaskQuoteService(db, sessions,routes), usage = new UsageCollector(db);
   const config = new ConfigStore(join(directory, "config.toml"), secrets);
   config.update({ language: "en", theme: "dark", soundEnabled: false });
-const workItems=new WorkItemService(db,commands);
+const workItems=new WorkItemService(db,commands,verification);
  const agentLifecycle=new AgentLifecycleService(db,{secrets,runtimeReady:()=>runtimes.isRegistered("native_ai_sdk")});
  const squads=new SquadService(db,sessions,workspaceId=>workItems.list(workspaceId),agentLifecycle);
- const workItemLaunch=new WorkItemLaunchService(db,workItems,sessions,squads,new TaskQuoteService(db,sessions),commands);
+ const workItemLaunch=new WorkItemLaunchService(db,workItems,sessions,squads,quotes,commands);
  const inbox=new InboxService(db,workItems,commands,verification);
  const interactions=new WorkInteractionService(db,workItems,sessions,commands,coordinator,tasks,team,packages,()=>{inbox.list();});
  interactions.start(10);

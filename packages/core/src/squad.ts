@@ -10,6 +10,7 @@ export interface SquadTemplate {
   instructions: string;
   members: SquadMember[];
   activeWorkItemCount?: number;
+  routingPreset?: "manual" | import("./routing").RoutingPreset;
   revision: number;
   archived: boolean;
   createdAt: string;

@@ -1,5 +1,8 @@
 import { useStore } from "../store";
 export const arenaLabels: Record<string, [string, string]> = {
+ "请先在来源房间授权所有成员": ["Authorize all members in the source room first","請先在來源房間授權所有成員"],
+ "Squad 模板候选（可选）": ["Squad template candidates (optional)","Squad 模板候選（可選）"],
+ "选择模板时使用冻结 Leader、成员、指令和策略；每个 trial 复制到独立工作区，不并行修改当前项目。": ["Templates freeze the Leader, roster, instructions and policy. Each trial uses an isolated workspace and cannot modify the current project concurrently.","模板凍結 Leader、成員、指令與策略；每個 trial 使用獨立工作區。"],
  arena_admission_disabled: ["New Arena experiments are disabled. Existing experiments can still resume.", "新 Arena 實驗已停用；已有實驗仍可恢復。"],
 	计划样本: ["Planned samples", "計畫樣本"],
 	已开始: ["Started", "已開始"],

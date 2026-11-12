@@ -91,7 +91,9 @@ export default function ArenaPanel({
 		members: { id: string; label: string }[];
 		collaboration: RoomCollaborationSettings;
 		controlledAvailable: boolean;
+        squads:Array<import("@socrates/core").SquadTemplate & {arenaEligible:boolean}>;
 	} | null>(null);
+	const [selectedSquads,setSelectedSquads]=useState<string[]>([]);
 	const [primary, setPrimary] = useState(""),
 		[worker, setWorker] = useState(""),
 		[reviewer, setReviewer] = useState("");
@@ -126,6 +128,7 @@ export default function ArenaPanel({
 		let stale = false;
 		setExperiments([]);
 		setCategory("");
+        setSelectedSquads([]);
 		setError("");
 		request<typeof template>(`/rooms/${roomId}/templates`)
 			.then((t) => {
@@ -182,8 +185,8 @@ export default function ArenaPanel({
 		anchor.click();
 		setTimeout(() => URL.revokeObjectURL(url), 1000);
 	};
-	const variants = (): ArenaVariant[] =>
-		["A", "B", "C", "D"].map((id, index) => {
+	const variants = (): ArenaVariant[] => selectedSquads.length ? template!.squads.filter(s=>selectedSquads.includes(s.id)).map(s=>({id:s.id,label:s.name,primaryAgentId:s.leaderAgentId,collaboration:template!.collaboration,squadId:s.id,squadRevision:s.revision})) :
+        ["A", "B", "C", "D"].map((id, index) => {
 			const collaboration = structuredClone(template!.collaboration);
 			collaboration.discussion.enabled = false;
 			collaboration.assignment.routing.mode = "manual";
@@ -230,6 +233,7 @@ export default function ArenaPanel({
 			</p>
 			<details>
 				<summary>{tr("新建实验")}</summary>
+                <fieldset className="space-y-2"><legend>{tr("Squad 模板候选（可选）")}</legend>{template?.squads.map(s=><label key={s.id} className="flex gap-2"><input type="checkbox" checked={selectedSquads.includes(s.id)} disabled={busy||!s.arenaEligible||!selectedSquads.includes(s.id)&&selectedSquads.length>=5} onChange={e=>{setSelectedSquads(e.target.checked?[...selectedSquads,s.id]:selectedSquads.filter(id=>id!==s.id));setPreview(null);}}/>{s.name} · v{s.revision}{!s.arenaEligible?` · ${tr("请先在来源房间授权所有成员")}`:""}</label>)}<p>{tr("选择模板时使用冻结 Leader、成员、指令和策略；每个 trial 复制到独立工作区，不并行修改当前项目。")}</p></fieldset>
 				<div className="space-y-2">
 					<p>
 						{tr(
@@ -334,10 +338,7 @@ export default function ArenaPanel({
 							busy ||
 							!ack ||
 							!prompt ||
-							!primary ||
-							!worker ||
-							!reviewer ||
-							reviewer === worker ||
+							(!selectedSquads.length && (!primary || !worker || !reviewer || reviewer === worker)) ||
 							(!template?.controlledAvailable && !live)
 						}
 						onClick={() =>

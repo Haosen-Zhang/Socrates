@@ -1,0 +1,137 @@
+{
+  "checks": [
+    {
+      "name": "120 WorkItems filter to the intended row",
+      "ok": true
+    },
+    {
+      "name": "Selected detail survives recurring summary polling",
+      "ok": true
+    },
+    {
+      "name": "More than ten reusable Squads are visible",
+      "ok": true
+    },
+    {
+      "name": "Light theme applied through production settings",
+      "ok": true
+    },
+    {
+      "name": "Squad avatars load from existing Socrates assets",
+      "ok": true
+    },
+    {
+      "name": "Task drawer stays within narrow viewport",
+      "ok": true
+    },
+    {
+      "name": "Stream changes room components through actual Zustand subscriptions",
+      "ok": true
+    },
+    {
+      "name": "Stream does not rerender the guarded RoomSidebar",
+      "ok": true
+    },
+    {
+      "name": "Browser composition Enter does not submit",
+      "ok": true
+    },
+    {
+      "name": "Work stream does not leak into Chat",
+      "ok": true
+    },
+    {
+      "name": "Keyboard Tab focuses the visible enabled Send control",
+      "ok": true
+    },
+    {
+      "name": "1200 delayed model chunks complete in one durable room command",
+      "ok": true
+    },
+    {
+      "name": "Renderer settles the completed stream without reload",
+      "ok": true
+    },
+    {
+      "name": "Chat draft survives long background Work stream",
+      "ok": true
+    },
+    {
+      "name": "No renderer errors or external requests",
+      "ok": true
+    }
+  ],
+  "errors": [],
+  "external": [],
+  "metrics": {
+    "service": {
+      "samplesMs": [
+        20.858916999999565,
+        19.87670799999978,
+        19.72679100000005,
+        18.68433400000049,
+        19.640707999999904
+      ],
+      "medianMs": 19.72679100000005,
+      "responseBytes": 444021,
+      "agents": 36,
+      "squads": 12,
+      "workItems": 120,
+      "messagesPerRun": 40
+    },
+    "firstUsableMs": 1532.506625,
+    "taskDomRows": 120,
+    "filterMs": 14.253999999999905,
+    "idlePollRequests": 2,
+    "idleTaskRenders": 2,
+    "streamRenderDelta": {
+      "PixelIcon": 255,
+      "Plus": 51,
+      "Settings": 51,
+      "WindowRoomToolbar": 51,
+      "PanelLeft": 102,
+      "RoomWorkItemBanner": 2,
+      "SingleAgentSession": 51,
+      "WorkspaceDockButtons": 51,
+      "RoomTimeline": 51,
+      "PublicReasoningPanel": 51,
+      "ToolActivityTimeline": 51,
+      "RoomVerificationPanel": 51,
+      "ApprovalShelf": 51,
+      "RoomCostPanel": 55,
+      "RoomComposer": 51,
+      "AttachmentTray": 51,
+      "ComposerCostControls": 51,
+      "RoutingPresetControls": 51,
+      "DetailPanel": 153,
+      "DialogRoot": 206,
+      "DialogPortal": 206,
+      "VerificationControls": 51,
+      "Controls": 51,
+      "WillTrigger": 51,
+      "InteractionHistory": 54,
+      "ResizableComposer": 51,
+      "ArrowUp": 51,
+      "ApprovalPolicySegmented": 51,
+      "InboxPanel": 2,
+      "AgentAvatar": 51,
+      "CostLedgerView": 55,
+      "MsgActions": 51,
+      "CreateWorkItemButton": 51,
+      "RoutingPanel": 51,
+      "Panel": 104,
+      "VerificationPanel": 51,
+      "ConfirmationDialog": 53,
+      "AgentHeader": 51,
+      "VerificationStatusLine": 106,
+      "StatusBadge": 106,
+      "VerificationResultView": 53,
+      "VerificationActions": 53,
+      "InvocationReconciliation": 52
+    },
+    "streamObservedMs": 109938
+  },
+  "limitations": [
+    "Synthetic provider responses; actual production services and Zustand. Browser composition events are not a native OS IME test. Fiber render counts require a fresh development React actualStartTime and performed-work flag; not a production profiler."
+  ]
+}

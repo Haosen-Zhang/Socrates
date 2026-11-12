@@ -10,6 +10,7 @@ export function workItemRoutes(service:WorkItemService, launch?:WorkItemLaunchSe
   app.put('/:id/assign',async c=>{const b=await c.req.json(); if(!Number.isSafeInteger(b.expectedRevision)||b.expectedRevision<1) throw new Error('Invalid revision'); return c.json(launch ? await launch.assign(c.req.param('id'),b.expectedRevision,b) : service.assign(c.req.param('id'),b.expectedRevision,b));});
   app.post('/:id/review',async c=>{const b=await c.req.json(); if(!Number.isSafeInteger(b.expectedRevision)||b.expectedRevision<1) throw new Error('Invalid revision'); return c.json(service.review(c.req.param('id'),b.expectedRevision,b.decision));});
   app.post('/:id/preview',async c=>{if(!launch)throw new Error('Launch unavailable');return c.json(launch.preview(c.req.param('id'),await c.req.json()));});
+  app.post('/:id/requote',async c=>{if(!launch)throw new Error('Launch unavailable');const b=await c.req.json();return c.json(launch.requote(c.req.param('id'),b.previewId,b.verificationPlanId));});
   app.post('/:id/start',async c=>{if(!launch)throw new Error('Launch unavailable');return c.json(await launch.start(c.req.param('id'),await c.req.json()));});
   return app;
 }

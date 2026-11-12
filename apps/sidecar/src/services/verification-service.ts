@@ -22,6 +22,7 @@ const RUNNER_VERSION = "socrates-verification/1";
 const ENVIRONMENT = { network: "denied", credentials: "not_inherited", cwd: "workspace_relative", shell: "false" };
 type StoredPlan = { plan_json: string };
 type StoredRun = { run_json: string };
+type StoredAcceptance = { id: string; snapshot_hash: string };
 export interface VerificationServiceOptions {
   /** Replaces only OS process isolation in controlled tests. Business services remain real. */
   commandRunner?: WorkspaceCommandRunner;
@@ -100,8 +101,16 @@ export class VerificationService {
   }
   view(target:VerificationTarget):VerificationView {
     const plan=this.latestPlan(target);
-    if(!plan)return {target,plan:null,run:null,verificationStatus:"not_requested",outcome:"completed_unverified",acceptedUnverified:false,gatePassed:true};
-    const {policy,workspace}=this.scope(target,true,true);
+    if(!plan)return this.withPackageEvidence({target,plan:null,run:null,verificationStatus:"not_requested",outcome:"completed_unverified",acceptedUnverified:false,gatePassed:true});
+    let scope: ReturnType<VerificationService['scope']>;
+    try { scope=this.scope(target,true,true); }
+    catch(error) {
+      if(!(error instanceof Error)||!['verification_room_unavailable','verification_workspace_unavailable'].includes(error.message))throw error;
+      const run=this.latestRun(plan.id);
+      // Retain evidence history without allowing unavailable evidence to pass a gate.
+      return this.withPackageEvidence({target,plan,run:run?{...run,status:"invalidated",outcome:"completed_unverified",reason:error.message}:null,verificationStatus:"invalidated",outcome:"completed_unverified",acceptedUnverified:false,gatePassed:false});
+    }
+    const {policy,workspace}=scope;
     let run=this.latestRun(plan.id);
     if(run?.status==="passed" && run.mode==="final"){
       let reason:string|undefined;
@@ -112,13 +121,18 @@ export class VerificationService {
       if(reason){run={...run,status:"invalidated",outcome:"completed_unverified",reason};this.persistRun(run,"verification.invalidated");}
     }
     let acceptedUnverified=false;
-    const acceptance=this.db.query<{snapshot_hash:string},[string]>("SELECT snapshot_hash FROM verification_acceptance WHERE plan_id=? ORDER BY rowid DESC LIMIT 1").get(plan.id);
+    const acceptance=this.db.query<StoredAcceptance,[string]>("SELECT id,snapshot_hash FROM verification_acceptance WHERE plan_id=? ORDER BY rowid DESC LIMIT 1").get(plan.id);
     if(acceptance)try{acceptedUnverified=workspace.identityHash===plan.workspaceIdentity&&captureVerificationSnapshot(policy,plan.artifactPaths).hash===acceptance.snapshot_hash;}catch{/* unavailable is never accepted */}
     const final=run?.mode==="final"?run:null;
     const view:VerificationView={target,plan,run,verificationStatus:final?.status ?? "pending",outcome:final?.outcome ?? "completed_unverified",acceptedUnverified,
       gatePassed:final?.status==="passed" || acceptedUnverified};
+    return this.withPackageEvidence(view,acceptance);
+  }
+  private withPackageEvidence(view:VerificationView,acceptance:StoredAcceptance|null=null):VerificationView {
+    const {target}=view;
+    const children:Array<[string,string|null]>=[];
     if(!target.workPackageId){
-      const rows=this.db.query<{package_id:string},[string,string]>("SELECT DISTINCT package_id FROM verification_plans WHERE room_id=? AND root_task_id=? AND package_id!=''").all(target.roomId,target.rootTaskId);
+      const rows=this.db.query<{package_id:string},[string,string]>("SELECT DISTINCT package_id FROM verification_plans WHERE room_id=? AND root_task_id=? AND package_id!='' ORDER BY package_id").all(target.roomId,target.rootTaskId);
       const active=this.db.query<{task_id:string|null},[string]>("SELECT task_id FROM room_commands WHERE id=? AND EXISTS (SELECT 1 FROM adaptive_workflows WHERE root_task_id=room_commands.id)").get(target.rootTaskId);
       const unverified:string[]=[];
       for(const row of rows){
@@ -126,16 +140,20 @@ export class VerificationService {
         // Earlier adaptive attempts remain auditable facts. Only the current
         // child owns the completion gate; its predecessors cannot block it.
         if(active&&owner&&owner.task_id!==active.task_id)continue;
-        try{const child=this.view({...target,workPackageId:row.package_id});if(child.outcome!=="verified_success")unverified.push(row.package_id);if(!child.gatePassed)view.gatePassed=false;}
-        catch{unverified.push(row.package_id);view.gatePassed=false;}
+        try{const child=this.view({...target,workPackageId:row.package_id});children.push([row.package_id,child.evidenceRevision??null]);if(child.outcome!=="verified_success")unverified.push(row.package_id);if(!child.gatePassed)view.gatePassed=false;}
+        catch{children.push([row.package_id,null]);unverified.push(row.package_id);view.gatePassed=false;}
       }
       if(unverified.length){view.unverifiedPackageIds=unverified;if(view.outcome==="verified_success")view.outcome="completed_unverified";}
     }
+    // A new explicit acceptance acknowledges a specific snapshot, even when
+    // its preceding verification run and acceptedUnverified flag are unchanged.
+    view.evidenceRevision=hashToolInput({planId:view.plan?.id??null,runId:view.run?.id??null,status:view.verificationStatus,snapshot:view.run?.snapshot.hash??null,acceptance,acceptedUnverified:view.acceptedUnverified,gatePassed:view.gatePassed,children});
     return view;
   }
   async verify(target:VerificationTarget,options:VerifyOptions={}):Promise<VerificationView>{
     assertTaskWorkflowCompatible(this.db,target.rootTaskId);
     const current=this.view(target);if(!current.plan)return current;
+    this.scope(target,true,true);
     const plan=current.plan;
     if(!options.baseline && plan.approvalStatus!=="approved")throw new Error("verification_plan_approval_required");
     const requestId=options.requestId ?? `${options.baseline?"baseline":"execution"}:${options.runId ?? "initial"}`;
@@ -165,7 +183,7 @@ export class VerificationService {
     if(!run||approval.sessionId!==run.target.roomId)throw new Error("verification_approval_not_found");
     assertTaskWorkflowCompatible(this.db,run.target.rootTaskId);
     const fingerprint=hashToolInput({kind:"decide",approvalId,decision:input.decision});
-    if(this.request(run.target.roomId,input.requestId,fingerprint))return this.active.get(run.id)?.promise ?? this.view(run.target);
+    if(this.request(run.target.roomId,input.requestId,fingerprint)){this.scope(run.target,true,true);return this.active.get(run.id)?.promise ?? this.view(run.target);}
     this.scope(run.target,true);
     if(!["pending","running"].includes(run.status))throw new Error("verification_run_not_pending");
     if(!run.pendingApprovals.some(item=>item.id===approvalId))throw new Error("verification_approval_not_found");
@@ -191,6 +209,7 @@ export class VerificationService {
   acceptUnverified(target:VerificationTarget,requestId:string):VerificationView{
     assertTaskWorkflowCompatible(this.db,target.rootTaskId);
     const current=this.view(target);if(!current.plan)throw new Error("verification_plan_not_found");
+    this.scope(target,true,true);
     if(this.activeFor(target)||current.run?.status==="running")throw new Error("verification_already_running");
     const fingerprint=hashToolInput({kind:"accept",target,planId:current.plan.id});
     if(this.request(target.roomId,requestId,fingerprint))return this.view(target);
@@ -359,7 +378,13 @@ export class VerificationService {
         if(item.task_id!==(command?.task_id ?? target.rootTaskId)&&!allowHistorical)throw new Error("verification_target_retired");
       }
     }
-    return {room,workspace,policy:new WorkspacePathPolicy(workspace.canonicalPath)};
+    let policy:WorkspacePathPolicy;
+    try { policy=new WorkspacePathPolicy(workspace.canonicalPath); }
+    catch(error) {
+      if(['ENOENT','ENOTDIR','EACCES','EPERM','ELOOP'].includes((error as NodeJS.ErrnoException).code ?? ''))throw new Error("verification_workspace_unavailable");
+      throw error;
+    }
+    return {room,workspace,policy};
   }
   private latestPlan(target:VerificationTarget){const row=this.db.query<StoredPlan,[string,string,string]>("SELECT plan_json FROM verification_plans WHERE room_id=? AND root_task_id=? AND package_id=? ORDER BY version DESC LIMIT 1").get(target.roomId,target.rootTaskId,target.workPackageId ?? "");return row?JSON.parse(row.plan_json) as VerificationPlan:null;}
   private latestRun(planId:string){const row=this.db.query<StoredRun,[string]>("SELECT run_json FROM verification_runs WHERE plan_id=? ORDER BY CASE mode WHEN 'final' THEN 0 ELSE 1 END,rowid DESC LIMIT 1").get(planId);return row?JSON.parse(row.run_json) as VerificationRun:null;}
