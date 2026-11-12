@@ -1,0 +1,98 @@
+{
+  "checks": [
+    {
+      "name": "Creator persists Leader, members, instructions and responsibilities",
+      "ok": true
+    },
+    {
+      "name": "Creation and selection invoke no models",
+      "ok": true
+    },
+    {
+      "name": "Current Leader has no remove action",
+      "ok": true
+    },
+    {
+      "name": "Edit persists optimistic revision",
+      "ok": true
+    },
+    {
+      "name": "Create room stores explicit template revision",
+      "ok": true
+    },
+    {
+      "name": "Selection and persisted template survive renderer reload",
+      "ok": true
+    },
+    {
+      "name": "Squad details fit narrow viewport and can scroll",
+      "ok": true
+    },
+    {
+      "name": "Archive preserves room bindings and members",
+      "ok": true
+    },
+    {
+      "name": "Project creation stores a real Backlog without a Run",
+      "ok": true
+    },
+    {
+      "name": "Assign only stores the real owner with zero calls/commands/runs",
+      "ok": true
+    },
+    {
+      "name": "Quote preview performs no model or run invocation",
+      "ok": true
+    },
+    {
+      "name": "Successful root execution enters In Review with frozen owner",
+      "ok": true
+    },
+    {
+      "name": "Only explicit human acceptance marks Done",
+      "ok": true
+    },
+    {
+      "name": "Execution room shows the same task status",
+      "ok": true
+    },
+    {
+      "name": "Room task link returns to the persisted detail",
+      "ok": true
+    },
+    {
+      "name": "Message creation persists exact source room and message",
+      "ok": true
+    },
+    {
+      "name": "Task detail remains scrollable at narrow height",
+      "ok": true
+    },
+    {
+      "name": "Squad starts only one Leader plan before package approval",
+      "ok": true
+    },
+    {
+      "name": "Squad active task count uses the same WorkItem",
+      "ok": true
+    },
+    {
+      "name": "Stop and handoff changes owner while retaining original Squad identity",
+      "ok": true
+    },
+    {
+      "name": "Zero budget pauses actual execution before model invocation",
+      "ok": true
+    },
+    {
+      "name": "Budget-paused execution can be stopped and handed to user",
+      "ok": true
+    },
+    {
+      "name": "No external calls or renderer errors",
+      "ok": true
+    }
+  ],
+  "errors": [],
+  "external": []
+}

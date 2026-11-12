@@ -3,16 +3,16 @@ import { DEFAULT_COLLABORATION_SETTINGS } from '@socrates/core';
 import { SessionStore } from '../store/session-store';
 import { toAgent, type AgentRow } from '../agents';
 import type { Database } from 'bun:sqlite';
-import type { SquadTemplate, SquadMember, WorkItem } from '@socrates/core';
+import type { SquadTemplate, SquadMember, WorkItemSummary } from '@socrates/core';
 export type SquadInput = Pick<SquadTemplate, 'workspaceId'|'name'|'leaderAgentId'|'description'|'instructions'|'avatar'|'members'|'routingPreset'>;
 export class SquadConflict extends Error {}
 export class SquadService {
-  constructor(readonly db: Database, readonly sessions = new SessionStore(db), private workItems:(workspaceId:string)=>WorkItem[] = ()=>[], private lifecycle = new AgentLifecycleService(db)) {}
+  constructor(readonly db: Database, readonly sessions = new SessionStore(db), private workItems:(workspaceId:string)=>WorkItemSummary[] = ()=>[], private lifecycle = new AgentLifecycleService(db)) {}
   list(workspaceId: string): SquadTemplate[] {
     const items=this.workItems(workspaceId);
     return this.db.query<{id:string},[string]>('SELECT id FROM squad_templates WHERE workspace_id = ? ORDER BY name').all(workspaceId).map(r => this.get(r.id,items)!);
   }
-  get(id: string, items?: WorkItem[]): SquadTemplate | null {
+  get(id: string, items?: WorkItemSummary[]): SquadTemplate | null {
     const r = this.db.query<Record<string, unknown>,[string]>('SELECT * FROM squad_templates WHERE id = ?').get(id);
     if (!r) return null;
     const members = this.db.query<{agent_id:string;responsibility:string},[string]>('SELECT agent_id, responsibility FROM squad_members WHERE squad_id = ? ORDER BY rowid').all(id).map(m=>({agentId:m.agent_id,responsibility:m.responsibility}));

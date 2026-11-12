@@ -6,7 +6,7 @@ const { chromium } = await import(process.env.SOCRATES_PLAYWRIGHT_MODULE ?? 'pla
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
 page.setDefaultTimeout(15000);
-const out = 'output/playwright/multica-m04-m05'; mkdirSync(out, { recursive: true });
+const out = process.env.SOCRATES_BROWSER_OUTPUT??'output/playwright/multica-m04-m05'; mkdirSync(out, { recursive: true });
 const checks = [], errors = [], external = [];
 const check = (name, ok) => { checks.push({ name, ok }); console.log(name, ok); assert.ok(ok, name); };
 const api = async (path, body, method = 'POST') => { const response = await fetch(`http://127.0.0.1:${metadata.port}${path}`, { headers: { Authorization: `Bearer ${metadata.token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { method, body: JSON.stringify(body) } : {}) }); const value = await response.json(); assert.ok(response.ok, JSON.stringify(value)); return value; };

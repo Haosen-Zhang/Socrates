@@ -53,6 +53,20 @@
 
 <sub>截图来自隔离的演示工作区，所展示的任务计划为示例。</sub>
 
+## 可复用的 Squad，与可验收的工作事项
+
+创建含 Leader 和成员职责的 Squad，再把工作事项分配给本机用户、单个 Agent 或 Squad。**只分配**仅保存负责人，不调用模型；**预览并开始**在执行前显示实际路径、报价和预算。仅备注不调用模型；结构化提及是临时请求，不改变负责人。运行中的指示进入持久队列，或通过明确的停止后重启处理。
+
+![当前 Socrates 任务详情；内容为合成验收数据。](doc/assets/multica-m07/tasks-dark.png)
+
+在任务详情和 Inbox 查看 Run/Attempt 历史、阻碍、费用和产物证据。执行完成、独立检查和人工验收分别记录，证据变更后重新审核。Squad 策略复用已接通的路由能力，项目记忆、执行记录和隔离 Arena 实验沿用同一执行链路。
+
+![当前 Socrates 浅色主题 Squad 列表；团队为合成测试数据。](doc/assets/multica-m07/squads-light.png)
+
+<sub>新增截图来自当前真实界面，任务与模型回复为受控合成数据；截图不代表真实项目成功或模型质量。</sub>
+
+当前仍是**从源码运行的 Alpha**：需要 Bun，桌面外壳需要 Rust；执行依赖自己配置的 Provider 与本地工作区。尚未验证独立安装包、原生中文输入法候选窗口、屏幕阅读器和全新机器安装。详见[本轮验收与性能证据](doc/multica-m07-acceptance.md)、[备份与回退](doc/multica-m07-acceptance.md#upgrade-backup-and-rollback)、[发行说明草稿](doc/multica-alpha-release-draft.md)及[依赖声明与分发许可缺口](third-party/README.md)。
+
 ## 03 / 你的模型。你的角色。
 
 **模型提供能力，而你决定它以怎样的身份加入讨论。**

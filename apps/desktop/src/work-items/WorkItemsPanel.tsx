@@ -2,7 +2,7 @@ import VerificationControls from "../verification/VerificationControls";
 import CostScopePanel from "../cost/CostScopePanel";
 import VerificationPanel from "../verification/VerificationPanel";
 import { useEffect, useRef, useState } from "react";
-import { atomicToDecimal, decimalToAtomic, type WorkItem, type WorkItemOwnerKind, type SquadTemplate, type WorkItemPreview } from "@socrates/core";
+import { atomicToDecimal, decimalToAtomic, type WorkItem, type WorkItemSummary, type WorkItemOwnerKind, type SquadTemplate, type WorkItemPreview } from "@socrates/core";
 import { ActorPicker, DetailPanel, EmptyState, ErrorNotice, ObjectPage, StatusBadge } from "../foundation";
 import { useStorePick } from "../selectors";
 import { requireOk, sidecarFetch, type Handshake } from "../transport";
@@ -25,7 +25,7 @@ function runIdentity(value:unknown):string {
 export default function WorkItemsPanel({workspaceId,handshake,onOpenRoom,onHistory,initialSquad,onConsumeSquad}:{workspaceId:string;handshake:Handshake;onOpenRoom:()=>void;onHistory:()=>void;initialSquad:string|null;onConsumeSquad:()=>void}) {
   const {agents,providers,sessions,workspaces,loadSessions,selectAgentSession,lang}=useStorePick("agents","providers","sessions","workspaces","loadSessions","selectAgentSession","lang");
   const tr=(zh:string,en:string)=>lang==="en"?en:zh;
-  const [rows,setRows]=useState<WorkItem[]>([]),[squads,setSquads]=useState<SquadTemplate[]>([]),[detail,setDetail]=useState<ItemDetail|null>(null);
+  const [rows,setRows]=useState<WorkItemSummary[]>([]),[squads,setSquads]=useState<SquadTemplate[]>([]),[detail,setDetail]=useState<ItemDetail|null>(null);
   const [selected,updateSelected]=useState(()=>sessionStorage.getItem(`socrates.workitem.${workspaceId}`)??""),[refresh,setRefresh]=useState(0),[query,setQuery]=useState(""),[filter,setFilter]=useState("all"),[error,setError]=useState("");
   const setSelected=(id:string)=>{sessionStorage.setItem(`socrates.workitem.${workspaceId}`,id);updateSelected(id);};
   const [creating,setCreating]=useState(false),[title,setTitle]=useState(""),[objective,setObjective]=useState(""),[criteria,setCriteria]=useState(""),[priority,setPriority]=useState<WorkItem["priority"]>("normal"),[roomId,setRoomId]=useState("");
@@ -37,7 +37,7 @@ export default function WorkItemsPanel({workspaceId,handshake,onOpenRoom,onHisto
   useEffect(()=>{
     const c=new AbortController();let timer:ReturnType<typeof setTimeout>;
     const load=async()=>{try{const [items,teams,current]=await Promise.all([
-      sidecarFetch(handshake,`/work-items?workspaceId=${encodeURIComponent(workspaceId)}`,{signal:c.signal}).then(requireOk<WorkItem[]>),
+      sidecarFetch(handshake,`/work-items?workspaceId=${encodeURIComponent(workspaceId)}`,{signal:c.signal}).then(requireOk<WorkItemSummary[]>),
       sidecarFetch(handshake,`/squads?workspaceId=${encodeURIComponent(workspaceId)}`,{signal:c.signal}).then(requireOk<SquadTemplate[]>),
       selected?sidecarFetch(handshake,`/work-items/${selected}`,{signal:c.signal}).then(requireOk<ItemDetail>):Promise.resolve(null),
     ]);if(!c.signal.aborted){setRows(items);setSquads(teams);setDetail(current);}}catch(e){if(!c.signal.aborted)setError(String(e));}finally{if(!c.signal.aborted)timer=setTimeout(()=>void load(),2000);}};

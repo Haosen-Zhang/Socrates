@@ -14,3 +14,24 @@ test('assignment is durable and creates no execution; review requires completed 
  expect(()=>service.review(item.id,2,'accept')).toThrow('not awaiting review');
  expect(service.list('w')[0]?.ownerId).toBe('a'); db.close();
 });
+
+test('list retains authoritative review and run state without loading detail history',async()=>{
+ const {setupCostFlowFixture,untilCostFlow}=await import('./cost-flow-fixture');
+ const f=await setupCostFlowFixture({nativeToolCalls:()=>[]});
+ try {
+  const item=f.workItems.create({workspaceId:f.workspace.id,title:'History',objective:'Read lazily',acceptanceCriteria:[],ownerKind:'agent',ownerId:'fixture-a',priority:'normal'});
+  const preview=f.workItemLaunch.preview(item.id,{expectedRevision:item.revision,ownerKind:'agent',ownerId:'fixture-a'});
+  await f.workItemLaunch.start(item.id,{previewId:preview.id,expectedRevision:item.revision,clientRequestId:'summary-test'});
+  await untilCostFlow(()=>f.workItems.get(item.id)?.workflow==='in_review','summary completion');
+  const summary=f.workItems.list(f.workspace.id)[0]!;
+  expect(summary.workflow).toBe('in_review');expect(summary.currentRun?.commandStatus).toBe('completed');
+  expect('messages' in summary).toBe(false);expect('reviews' in summary).toBe(false);expect('workPackages' in summary).toBe(false);expect('artifacts' in summary).toBe(false);
+  const detail=f.workItems.get(item.id)!;
+  expect(detail.messages.length).toBeGreaterThan(0);
+  const {messages,workPackages,reviews,artifacts,...expected}=detail;
+  expect(summary).toEqual(expected);
+  f.workItems.review(item.id,detail.revision,'accept');
+  expect(f.workItems.list(f.workspace.id)[0]!.workflow).toBe('done');
+  expect(f.workItems.get(item.id)?.reviews).toHaveLength(1);
+ }finally{await f.close();}
+});

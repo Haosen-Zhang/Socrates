@@ -1,0 +1,45 @@
+{
+  "checks": [
+    {
+      "name": "Fresh production database starts with no fabricated providers or sessions",
+      "ok": true
+    },
+    {
+      "name": "Fresh startup exposes Settings to configure a provider",
+      "ok": true
+    },
+    {
+      "name": "Production upgrade displays preserved Alpha.1 messages",
+      "ok": true
+    },
+    {
+      "name": "Upgrade retains original room ID and frozen member snapshot",
+      "ok": true
+    },
+    {
+      "name": "Upgraded historical room remains archivable",
+      "ok": true
+    },
+    {
+      "name": "Unarchive and reload preserve the same message",
+      "ok": true
+    },
+    {
+      "name": "Project 1 room preserves its history without the other project's message",
+      "ok": true
+    },
+    {
+      "name": "Project 2 room preserves its history without the other project's message",
+      "ok": true
+    },
+    {
+      "name": "Fresh and upgraded production UI have no renderer errors or external requests",
+      "ok": true
+    }
+  ],
+  "errors": [],
+  "external": [],
+  "limitations": [
+    "Production Bun entry point with disposable databases; browser Tauri handshake shim, not an installed native release. No providers configured and no Keychain writes."
+  ]
+}

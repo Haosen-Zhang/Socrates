@@ -10,6 +10,7 @@ export interface WorkItem {
   messages: SessionMessage[]; workPackages: Array<WorkPackageDefinition & {verificationTarget?:import("./verification").VerificationTarget;taskId:string;state:WorkPackageState;result:string|null}>; reviews: Array<{id:string;decision:'accept'|'request_changes';createdAt:string;runId:string|null}>; artifacts: Array<{id:string;roomId:string;path:string;mediaType:string}>;
   runs: WorkItemRun[]; currentRun: WorkItemRun | null; waitReason: string | null;
 }
+export type WorkItemSummary = Omit<WorkItem, 'messages' | 'workPackages' | 'reviews' | 'artifacts'>;
 export interface WorkItemRun { id: string; clientRequestId: string; commandId: string | null; executionRoomId: string | null; frozenOwner: unknown; state: 'preparing' | 'dispatched'; commandStatus: string | null; commandError?: string | null; createdAt: string }
 
 export interface WorkItemPreview {

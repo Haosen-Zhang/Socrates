@@ -53,6 +53,20 @@ Members share a workspace, with execution queued to avoid conflicting writes. Co
 
 <sub>Actual application UI in an isolated demonstration workspace. The plan shown is illustrative.</sub>
 
+## Reusable squads and accountable work
+
+Create a Squad with a Leader and member responsibilities, then assign a WorkItem to yourself, one Agent or the Squad. **Assign only** saves ownership without a model call. **Preview and start** shows the authorized route, quote and budget before execution. Notes stay free; structured mentions are temporary requests and do not change the owner. Busy agents queue instructions or use an explicit stop/restart.
+
+![Actual Socrates task detail with synthetic acceptance data.](doc/assets/multica-m07/tasks-dark.png)
+
+Follow Run/Attempt history, blockers and cost in the task detail or Inbox. Run completion, independent artifact checks and human acceptance are separate; changed evidence reopens review. Squad policies use the existing supported routing engine, and Project Memory, Flight Recorder and isolated Arena trials share the same execution records.
+
+![Actual Socrates Squad list in the light theme, using synthetic teams.](doc/assets/multica-m07/squads-light.png)
+
+<sub>New screenshots are captured from the actual current UI with synthetic tasks and controlled model replies. They demonstrate interface behavior, not real task success or model quality.</sub>
+
+This remains a **source-based Alpha** requiring Bun, Rust for the desktop shell, your configured provider and a local workspace for Work tools. It is not a verified standalone installer. Native OS IME/screen-reader and clean-machine installation checks remain outstanding. Read the [current acceptance and scale evidence](doc/multica-m07-acceptance.md), [backup/rollback instructions](doc/multica-m07-acceptance.md#upgrade-backup-and-rollback), [release draft](doc/multica-alpha-release-draft.md) and [dependency notices and distribution gaps](third-party/README.md).
+
 ## 03 / Your models. Your characters.
 
 **A model is the engine. You decide who joins the conversation.**

@@ -1,0 +1,46 @@
+{
+  "checks": [
+    {
+      "name": "A reset event connection reconnects and reaches durable task completion",
+      "ok": true
+    },
+    {
+      "name": "Reconnect creates one command only",
+      "ok": true
+    },
+    {
+      "name": "Recovered Work events never appear in Chat",
+      "ok": true
+    },
+    {
+      "name": "Navigation and reload do not repeat model calls",
+      "ok": true
+    },
+    {
+      "name": "Two currencies remain separate in durable ledger and visible UI",
+      "ok": true
+    },
+    {
+      "name": "Tiny amount stays nonzero and unknown price remains explicit",
+      "ok": true
+    },
+    {
+      "name": "Long verification logs load from real command output in a bounded page",
+      "ok": true
+    },
+    {
+      "name": "Next log page retrieves different persisted output",
+      "ok": true
+    },
+    {
+      "name": "Long log retains scrolling and reachable close control in narrow drawer",
+      "ok": true
+    },
+    {
+      "name": "Stress UI makes no external requests or renderer errors",
+      "ok": true
+    }
+  ],
+  "errors": [],
+  "external": []
+}
