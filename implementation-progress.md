@@ -422,3 +422,7 @@ M03 可选 Board 不引入；M04 生命周期、M05 提及/收件箱/Leader 再�
 On `ca524f8`, audited actual P00–P08 code and reused the existing ledger, budget entrance, routing/adaptive host, independent verification, project memory, Flight Recorder and Arena. Added versioned Squad presets and frozen command attribution; WorkItem/Package/Run/Squad/Project cost panels; approved preflight verification; stale-evidence re-review; authorized Squad Arena candidates in isolated workspaces. No second billing system/runtime or dependency.
 
 Full service suite: 1320 pass / 0 fail / 24169 assertions / 228 files (43.80s); typecheck, lint and desktop build pass. Chrome11/11 checks pass with no renderer errors or external requests. Details, exact evidence boundaries, reuse/license table and browser reproduction: [M06 acceptance](doc/multica-m06-acceptance.md). M07 remains separate.
+
+M06 scoped review found and corrected two evidence-authority gaps: child package evidence now participates in the human-acknowledged effective verification revision (migration040), and `request_changes` survives stale evidence and reruns. Targeted41 tests/223 assertions and the reviewer reproduction pass; the original1320/11-browser result alone did not cover these state transitions. See the M06 acceptance correction and task report for final validation.
+
+M06 review correction final gate: **1322 pass / 0 fail / 24185 assertions / 228 files** (43.31s), typecheck, lint588, desktop build and diff-check pass. Both Important findings are addressed; ready for scoped re-review before M07.

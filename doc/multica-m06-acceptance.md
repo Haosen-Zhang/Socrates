@@ -61,3 +61,15 @@ SOCRATES_PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs node scripts/m
 The fixture writes synthetic metadata to `/private/tmp/socrates-multica-m06.json`; stop its recorded PID and only the Vite process started for this check. The fixture cleans its own database/workspace on SIGTERM/SIGINT. Chrome closes in the test's finally handler.
 
 Not checked: paid providers, installed Tauri release, OS screen reader/IME or M07 scale/stress. Nothing merged or released by this stage. Existing performance concerns in list projection/polling belong to the next measured acceptance stage.
+
+## M06 scoped-review correction
+
+The first scoped review reproduced two missing transitions despite the earlier1320-test/11-browser result: a separate package's stale evidence did not invalidate the root human acceptance, and evidence invalidation masked an explicit request for changes. Those earlier checks did not cover these transitions.
+
+`VerificationService` now produces one effective evidence revision from the root and all current package evidence, preserving the existing adaptive-attempt exclusion and explicit unverified-acceptance gate. Migration040 stores that revision with each WorkItem review; old checksums and review history remain unchanged. An accepted item reopens on a failed gate or any acknowledged evidence revision change, even when a child was reverified before the item was polled. Successful re-verification cannot restore an old acceptance. An explicit `request_changes` remains the human decision through stale evidence and later reruns.
+
+Previously recorded root verification reviews lacking the full revision conservatively require one fresh human acceptance after upgrade. Plain unverified reviews without recorded root evidence retain their existing behavior. The existing explicit acceptance of an unverified root/package still permits a new WorkItem human acceptance, without claiming the result was verified.
+
+The reviewer reproduction now reports `in_review/pending` for stale package evidence, remains `in_review` after the package rerun, and returns `todo/changes_requested` after explicit rejection. Focused regressions use separate `context.txt` root and `child.txt` package artifacts and also check an unobserved child rerun and explicit unverified acceptance. Exact final checks are appended to the stage report; no frontend code changed, so the11 Chrome checks remain the earlier UI evidence rather than a claim to cover these backend transitions.
+
+Final correction validation: **1322 pass / 0 fail / 24185 assertions / 228 files / 43.31s** (`/private/tmp/m06-review-final-suite.log`); covering41/223, root typecheck, lint588, desktop build2.83s and diff-check pass. One initial broad run hit an unchanged macOS process-runner deadline; isolated14/14 rerun and final full rerun passed without changes to that subsystem. Paid providers and installed/native app were not retested.

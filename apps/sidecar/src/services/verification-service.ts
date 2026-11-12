@@ -100,7 +100,7 @@ export class VerificationService {
   }
   view(target:VerificationTarget):VerificationView {
     const plan=this.latestPlan(target);
-    if(!plan)return {target,plan:null,run:null,verificationStatus:"not_requested",outcome:"completed_unverified",acceptedUnverified:false,gatePassed:true};
+    if(!plan)return this.withPackageEvidence({target,plan:null,run:null,verificationStatus:"not_requested",outcome:"completed_unverified",acceptedUnverified:false,gatePassed:true});
     const {policy,workspace}=this.scope(target,true,true);
     let run=this.latestRun(plan.id);
     if(run?.status==="passed" && run.mode==="final"){
@@ -117,8 +117,13 @@ export class VerificationService {
     const final=run?.mode==="final"?run:null;
     const view:VerificationView={target,plan,run,verificationStatus:final?.status ?? "pending",outcome:final?.outcome ?? "completed_unverified",acceptedUnverified,
       gatePassed:final?.status==="passed" || acceptedUnverified};
+    return this.withPackageEvidence(view);
+  }
+  private withPackageEvidence(view:VerificationView):VerificationView {
+    const {target}=view;
+    const children:Array<[string,string|null]>=[];
     if(!target.workPackageId){
-      const rows=this.db.query<{package_id:string},[string,string]>("SELECT DISTINCT package_id FROM verification_plans WHERE room_id=? AND root_task_id=? AND package_id!=''").all(target.roomId,target.rootTaskId);
+      const rows=this.db.query<{package_id:string},[string,string]>("SELECT DISTINCT package_id FROM verification_plans WHERE room_id=? AND root_task_id=? AND package_id!='' ORDER BY package_id").all(target.roomId,target.rootTaskId);
       const active=this.db.query<{task_id:string|null},[string]>("SELECT task_id FROM room_commands WHERE id=? AND EXISTS (SELECT 1 FROM adaptive_workflows WHERE root_task_id=room_commands.id)").get(target.rootTaskId);
       const unverified:string[]=[];
       for(const row of rows){
@@ -126,11 +131,12 @@ export class VerificationService {
         // Earlier adaptive attempts remain auditable facts. Only the current
         // child owns the completion gate; its predecessors cannot block it.
         if(active&&owner&&owner.task_id!==active.task_id)continue;
-        try{const child=this.view({...target,workPackageId:row.package_id});if(child.outcome!=="verified_success")unverified.push(row.package_id);if(!child.gatePassed)view.gatePassed=false;}
-        catch{unverified.push(row.package_id);view.gatePassed=false;}
+        try{const child=this.view({...target,workPackageId:row.package_id});children.push([row.package_id,child.evidenceRevision??null]);if(child.outcome!=="verified_success")unverified.push(row.package_id);if(!child.gatePassed)view.gatePassed=false;}
+        catch{children.push([row.package_id,null]);unverified.push(row.package_id);view.gatePassed=false;}
       }
       if(unverified.length){view.unverifiedPackageIds=unverified;if(view.outcome==="verified_success")view.outcome="completed_unverified";}
     }
+    view.evidenceRevision=hashToolInput({planId:view.plan?.id??null,runId:view.run?.id??null,status:view.verificationStatus,snapshot:view.run?.snapshot.hash??null,acceptedUnverified:view.acceptedUnverified,gatePassed:view.gatePassed,children});
     return view;
   }
   async verify(target:VerificationTarget,options:VerifyOptions={}):Promise<VerificationView>{

@@ -117,3 +117,52 @@ test('M06 scope reports retain unknown usage and bind Squad history before a roo
   expect(f.broker.ledger.summary({squadId:a.id}).unknownCount).toBe(0);expect(f.broker.ledger.summary({workPackageId:'package-cost'}).totals[0]!.atomic).toBe('100');
  }finally{await f.close();}
 });
+async function completedTeamWithIndependentEvidence(f:Awaited<ReturnType<typeof setupCostFlowFixture>>) {
+ const squad=f.squads.create(squadInput(f.workspace.id)),item=f.workItems.create(itemInput(f.workspace.id)),preview=f.workItemLaunch.preview(item.id,{expectedRevision:item.revision,ownerKind:'squad',ownerId:squad.id});
+ await f.workItemLaunch.start(item.id,{previewId:preview.id,expectedRevision:item.revision,clientRequestId:'review-evidence'});
+ await untilCostFlow(()=>f.workItems.get(item.id)?.currentRun?.commandStatus==='awaiting_plan_approval','team plan');
+ const command=f.commands.get(f.workItems.get(item.id)!.currentRun!.commandId!)!,plan=f.tasks.getPlan(command.taskId!)!;
+ const approval=await f.app.request(`/multi/tasks/${command.taskId}/plan-decisions`,{method:'POST',headers:f.headers,body:JSON.stringify({version:plan.version,hash:plan.contentHash,clientDecisionKey:'evidence-plan',decision:'approve_exact_plan'})});expect(approval.status).toBe(200);
+ await untilCostFlow(()=>f.workItems.get(item.id)?.workflow==='in_review','completed team');
+ const target={roomId:preview.executionRoomId,rootTaskId:command.commandId},child={...target,workPackageId:f.workItems.get(item.id)!.workPackages[0]!.id};
+ writeFileSync(join(f.workspace.canonicalPath,'child.txt'),'original child');
+ for(const [scope,file,key] of [[target,'context.txt','root'],[child,'child.txt','child']] as const){
+  const check=f.verification.prepare({...scope,requestId:key,checks:[{id:'file',label:file,kind:'file',path:file,required:true,origin:'user'}],artifactPaths:[file],protectedPaths:[]});
+  f.verification.approve(check.id,key+'-approve');await f.verification.verify(scope,{requestId:key+'-verify'});
+ }
+ const accepted=f.workItems.review(item.id,f.workItems.get(item.id)!.revision,'accept');expect(accepted.workflow).toBe('done');
+ return {itemId:item.id,target,child};
+}
+test('M06 human acceptance covers separate package evidence and cannot revive after unobserved reruns',async()=>{
+ const f=await setupCostFlowFixture({nativeToolCalls:()=>[]});try{
+  const {itemId,target,child}=await completedTeamWithIndependentEvidence(f);
+  writeFileSync(join(f.workspace.canonicalPath,'child.txt'),'first change');
+  expect(f.verification.view(target)).toMatchObject({verificationStatus:'passed',gatePassed:false});
+  expect(f.workItems.get(itemId)).toMatchObject({workflow:'in_review',reviewState:'pending',waitReason:'verification_invalidated'});
+  await f.verification.verify(child,{requestId:'child-again'});
+  expect(f.workItems.get(itemId)).toMatchObject({workflow:'in_review',reviewState:'pending'});
+  f.workItems.review(itemId,f.workItems.get(itemId)!.revision,'accept');
+  writeFileSync(join(f.workspace.canonicalPath,'child.txt'),'second change');
+  await f.verification.verify(child,{requestId:'child-unobserved-rerun'});
+  expect(f.verification.view(target).gatePassed).toBe(true);
+  expect(f.workItems.get(itemId)).toMatchObject({workflow:'in_review',reviewState:'pending'});
+  expect(f.workItems.review(itemId,f.workItems.get(itemId)!.revision,'accept').workflow).toBe('done');
+  writeFileSync(join(f.workspace.canonicalPath,'child.txt'),'explicitly accepted without passing rerun');
+  f.verification.acceptUnverified(child,'accept-child-unverified');
+  expect(f.verification.view(target)).toMatchObject({gatePassed:true,outcome:'completed_unverified'});
+  expect(f.workItems.get(itemId)!.workflow).toBe('in_review');
+  expect(f.workItems.review(itemId,f.workItems.get(itemId)!.revision,'accept').workflow).toBe('done');
+ }finally{await f.close();}
+});
+test('M06 request changes survives stale root and subsequent root/package verification reruns',async()=>{
+ const f=await setupCostFlowFixture({nativeToolCalls:()=>[]});try{
+  const {itemId,target,child}=await completedTeamWithIndependentEvidence(f);
+  writeFileSync(join(f.workspace.canonicalPath,'context.txt'),'changed root');
+  const rejected=f.workItems.review(itemId,f.workItems.get(itemId)!.revision,'request_changes');
+  expect(rejected).toMatchObject({reviewState:'changes_requested',workflow:'todo'});
+  await f.verification.verify(target,{requestId:'root-after-rejection'});
+  await f.verification.verify(child,{requestId:'child-after-rejection'});
+  expect(f.workItems.get(itemId)).toMatchObject({reviewState:'changes_requested',workflow:'todo'});
+  expect(f.workItems.get(itemId)!.reviews.at(-1)!.decision).toBe('request_changes');
+ }finally{await f.close();}
+});
