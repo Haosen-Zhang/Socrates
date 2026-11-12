@@ -154,6 +154,24 @@ test('M06 human acceptance covers separate package evidence and cannot revive af
   expect(f.workItems.review(itemId,f.workItems.get(itemId)!.revision,'accept').workflow).toBe('done');
  }finally{await f.close();}
 });
+for(const scope of ['root','child'] as const)test(`M06 successive ${scope} unverified acceptances require fresh WorkItem review`,async()=>{
+ const f=await setupCostFlowFixture({nativeToolCalls:()=>[]});try{
+  const {itemId,target,child}=await completedTeamWithIndependentEvidence(f);
+  const acceptedTarget=scope==='root'?target:child,file=scope==='root'?'context.txt':'child.txt';
+  writeFileSync(join(f.workspace.canonicalPath,file),'accepted version one');
+  f.verification.acceptUnverified(acceptedTarget,'unverified-version-one');
+  expect(f.workItems.review(itemId,f.workItems.get(itemId)!.revision,'accept').workflow).toBe('done');
+  const revision=f.verification.view(target).evidenceRevision,reviewCount=f.workItems.get(itemId)!.reviews.length;
+  writeFileSync(join(f.workspace.canonicalPath,file),'accepted version two');
+  expect(f.workItems.get(itemId)!.workflow).toBe('in_review');
+  expect(f.verification.acceptUnverified(acceptedTarget,'unverified-version-two').acceptedUnverified).toBe(true);
+  expect(f.verification.view(target).gatePassed).toBe(true);
+  expect(f.workItems.get(itemId)).toMatchObject({workflow:'in_review',reviewState:'pending'});
+  expect(f.verification.view(target).evidenceRevision).not.toBe(revision);
+  expect(f.workItems.get(itemId)!.reviews.length).toBe(reviewCount);
+  expect(f.workItems.review(itemId,f.workItems.get(itemId)!.revision,'accept').workflow).toBe('done');
+ }finally{await f.close();}
+});
 test('M06 request changes survives stale root and subsequent root/package verification reruns',async()=>{
  const f=await setupCostFlowFixture({nativeToolCalls:()=>[]});try{
   const {itemId,target,child}=await completedTeamWithIndependentEvidence(f);

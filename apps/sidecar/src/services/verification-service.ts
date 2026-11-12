@@ -22,6 +22,7 @@ const RUNNER_VERSION = "socrates-verification/1";
 const ENVIRONMENT = { network: "denied", credentials: "not_inherited", cwd: "workspace_relative", shell: "false" };
 type StoredPlan = { plan_json: string };
 type StoredRun = { run_json: string };
+type StoredAcceptance = { id: string; snapshot_hash: string };
 export interface VerificationServiceOptions {
   /** Replaces only OS process isolation in controlled tests. Business services remain real. */
   commandRunner?: WorkspaceCommandRunner;
@@ -112,14 +113,14 @@ export class VerificationService {
       if(reason){run={...run,status:"invalidated",outcome:"completed_unverified",reason};this.persistRun(run,"verification.invalidated");}
     }
     let acceptedUnverified=false;
-    const acceptance=this.db.query<{snapshot_hash:string},[string]>("SELECT snapshot_hash FROM verification_acceptance WHERE plan_id=? ORDER BY rowid DESC LIMIT 1").get(plan.id);
+    const acceptance=this.db.query<StoredAcceptance,[string]>("SELECT id,snapshot_hash FROM verification_acceptance WHERE plan_id=? ORDER BY rowid DESC LIMIT 1").get(plan.id);
     if(acceptance)try{acceptedUnverified=workspace.identityHash===plan.workspaceIdentity&&captureVerificationSnapshot(policy,plan.artifactPaths).hash===acceptance.snapshot_hash;}catch{/* unavailable is never accepted */}
     const final=run?.mode==="final"?run:null;
     const view:VerificationView={target,plan,run,verificationStatus:final?.status ?? "pending",outcome:final?.outcome ?? "completed_unverified",acceptedUnverified,
       gatePassed:final?.status==="passed" || acceptedUnverified};
-    return this.withPackageEvidence(view);
+    return this.withPackageEvidence(view,acceptance);
   }
-  private withPackageEvidence(view:VerificationView):VerificationView {
+  private withPackageEvidence(view:VerificationView,acceptance:StoredAcceptance|null=null):VerificationView {
     const {target}=view;
     const children:Array<[string,string|null]>=[];
     if(!target.workPackageId){
@@ -136,7 +137,9 @@ export class VerificationService {
       }
       if(unverified.length){view.unverifiedPackageIds=unverified;if(view.outcome==="verified_success")view.outcome="completed_unverified";}
     }
-    view.evidenceRevision=hashToolInput({planId:view.plan?.id??null,runId:view.run?.id??null,status:view.verificationStatus,snapshot:view.run?.snapshot.hash??null,acceptedUnverified:view.acceptedUnverified,gatePassed:view.gatePassed,children});
+    // A new explicit acceptance acknowledges a specific snapshot, even when
+    // its preceding verification run and acceptedUnverified flag are unchanged.
+    view.evidenceRevision=hashToolInput({planId:view.plan?.id??null,runId:view.run?.id??null,status:view.verificationStatus,snapshot:view.run?.snapshot.hash??null,acceptance,acceptedUnverified:view.acceptedUnverified,gatePassed:view.gatePassed,children});
     return view;
   }
   async verify(target:VerificationTarget,options:VerifyOptions={}):Promise<VerificationView>{
