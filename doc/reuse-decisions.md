@@ -143,3 +143,17 @@ macOS/Tauri/Vite/Bun 的判断分层：peer/exports 与包内依赖审计支持�
 最终实际 Chrome 检查 **65/65**：项目/任务流 29 项；成员/组件流 36 项。覆盖中文搜索、ArrowDown/Enter、IME、Tab/Shift+Tab、Escape、删除触发器后的焦点返回、嵌套 AgentEditor、窄屏抽屉、通知、三语言和亮/暗主题。两个流程 renderer/external requests 均为 0；相比夹具初始化后的调用计数，未增加 Native/Gateway 执行。完整证据与复现见 [验收报告](work-foundation-acceptance.md) 和 [实现进度](../implementation-progress.md)。
 
 最终门禁：1016 项测试、类型检查、desktop build 与 lint 全部通过。生产构建 JS/CSS gzip 总量从同机冻结基线 575,438 bytes 到 649,945 bytes，整轮增量 74,507 bytes（72.76 KiB）；这不是单个库或安装包的体积。详见 [比较 JSON](assets/work-foundation/bundle-comparison.json)。
+
+## M04–M05 refresh (2026-11-11)
+
+Baseline `d87b365` includes PR #153 (Squads/WorkItems) and P00–P08. The prompt's Alpha.1 limitations are stale: real budget, routing, verification, local flight recorder and project memory already exist. Extend their service boundaries instead of building another scheduler or event transport.
+
+| Capability | Source and license | Decision / integration evidence |
+| --- | --- | --- |
+| Availability versus workload | Multica `packages/core/agents/derive-presence.ts`, `use-agent-presence.ts`; custom Multica License Part I + II | `reimplement_product_specific`: behavior reference only. Socrates has Provider connections and Native execution rather than Multica daemon liveness. Projection must use Socrates provider probe facts, frozen run identities and execution stores. |
+| Run timeline and routing semantics | Multica `packages/views/issues/components/issue-run-timeline.ts`, `issue-runs-dialog.tsx`, `apps/docs/content/docs/mentioning-agents.zh.mdx`; same custom license | `reimplement_product_specific`: no source, class names, styles, icons or assets copied. Stable mentions and bounded handoffs are Socrates-specific contracts. Multica's prose-agent mention behavior is deliberately not adopted. |
+| Run/attempt/history/cost/evidence | Socrates ExecutionEventStore, EventStore, FlightRecorder, WorkPackageStore, RunSupervisor, CostLedger and VerificationService | `reuse_existing`: retain persisted identifiers/cursors and authoritative records; extend read projections and UI links. Tests must exercise real services, reconnect and deletion. |
+| Panels, pickers and notifications | Installed `@base-ui/react` 1.9.0 (MIT), Socrates foundation `DetailPanel`, `ActorPicker`, `StatusBadge`, `ActivityTimeline`, notifications | `reuse_existing`: already shipped in M01/M02. No dependency additions, zero incremental package/dependency footprint. Actual panel and keyboard/browser verification required below. |
+| Local Inbox and explicit queued instructions | Existing RoomCommandService, approvals, cost tasks, WorkItems, TeamRunner | `reimplement_product_specific` only for persistent user action/deduplication and aggregation; model execution and permission/budget admission remain in existing services. |
+
+The supplied Multica reference SHA `a9434451e1c7c5a72798e0b65fdfb769a9249dab` does not contain `packages/core/agents/derive-presence.ts` (verified with `git show`). This refresh therefore reads the existing isolated audit checkout at **`4239ec11eaa67541c28bb20e836768263e363286`**, records the mismatch, and makes no claim that those later files existed in the supplied snapshot. Its LICENSE Part I was reread before reviewing behavior. No new upstream code or package is incorporated.

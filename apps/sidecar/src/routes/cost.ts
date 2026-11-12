@@ -57,7 +57,7 @@ export function costRoutes(db: Database, sessions: SessionStore, broker: ModelIn
   });
   app.post("/quotes", async c => {
     const parsed = z.object({ roomId: z.string(), content: z.string(), intent: z.enum(["respond", "discuss", "execute"]), mentions: z.array(z.discriminatedUnion("type", [
-      z.object({ type: z.literal("agent"), agentId: z.string() }), z.object({ type: z.literal("all") }), z.object({ type: z.literal("file"), refId: z.string() })])),
+      z.object({ type: z.literal("agent"), agentId: z.string() }), z.object({ type: z.literal("squad"), squadId: z.string().min(1) }), z.object({ type: z.literal("all") }), z.object({ type: z.literal("file"), refId: z.string() })])),
       verificationPlanId: z.string().min(1).optional(), routingCandidateId: z.string().min(1).optional(),
       maxOutputTokens: z.number().int().min(1).max(32_768).optional(), attachmentIds: z.array(z.string()).optional(), workspaceRefIds: z.array(z.string()).optional(),
       budget: z.object({ mode: z.enum(["soft_limit", "strict_admission", "tracking_only"]), limitAtomic: z.string().regex(/^(0|[1-9]\d*)$/) }).optional(),

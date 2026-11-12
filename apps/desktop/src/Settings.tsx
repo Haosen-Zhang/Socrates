@@ -382,7 +382,7 @@ function Placeholder({ titleKey }: { titleKey: string }) {
   );
 }
 
-export default function Settings({initialSection="general"}:{initialSection?:SectionId}) {
+export default function Settings({initialSection="general",onOpenRoom}:{initialSection?:SectionId;onOpenRoom?:()=>void}) {
   const t = useT();
   const [section, setSection] = useState<SectionId>(initialSection);
   useEffect(()=>setSection(initialSection),[initialSection]);
@@ -408,7 +408,7 @@ export default function Settings({initialSection="general"}:{initialSection?:Sec
           {section === "general" && <GeneralSection />}
           {section === "collaboration" && <CollaborationDefaultsSection />}
           {section === "providers" && <ProvidersPage />}
-          {section === "bots" && <AgentsSection />}
+          {section === "bots" && <AgentsSection onOpenRoom={onOpenRoom} />}
           {section === "mcp" && <McpSettings />}
           {section === "skills" && <Placeholder titleKey="nav_skills" />}
           {section === "memory" && <Placeholder titleKey="nav_memory" />}

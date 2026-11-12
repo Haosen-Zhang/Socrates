@@ -7,8 +7,8 @@ test("a Custom team with one frozen Manager/executor remains a valid reviewed wo
   const f=await setupCostFlowFixture({routingFixture:true});
   try{
     const room=f.sessions.get(f.roomIds.work)!;
-    f.sessions.updateCollaboration(room.id,{...room.collaboration,strategy:"team",assignment:{...room.collaboration.assignment,coordinatorAgentId:"fixture-a",routing:{...room.collaboration.assignment.routing,mode:"manual"}}});
-    const input={roomId:room.id,content:"Deliver the controlled result with the explicitly locked team",intent:"execute" as const,mentions:[{type:"agent" as const,agentId:"fixture-a"}]};
+    f.sessions.updateCollaboration(room.id,{...room.collaboration,strategy:"team",assignment:{...room.collaboration.assignment,coordinatorAgentId:"fixture-a",callableAgentIds:["fixture-a"],routing:{...room.collaboration.assignment.routing,mode:"manual"}}});
+    const input={roomId:room.id,content:"Deliver the controlled result with the explicitly locked team",intent:"execute" as const,mentions:[]};
     const quote=f.quotes.quote(input);
     expect(quote.route?.selected).toMatchObject({workflow:"team",resolved:{kind:"team",agentIds:["fixture-a"]}});
     const root=await f.commands.submit({...input,quoteId:quote.id,clientRequestId:crypto.randomUUID()});

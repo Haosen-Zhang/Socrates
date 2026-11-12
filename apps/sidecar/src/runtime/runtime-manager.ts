@@ -84,6 +84,8 @@ export class RuntimeManager {
 
   constructor(private readonly db: Database, private readonly events: ExecutionEventStore) {}
 
+  isRegistered(kind: string): boolean { return this.factories.has(kind); }
+
   register(kind: string, factory: RuntimeFactory): void {
     if (this.factories.has(kind)) throw new Error(`duplicate_runtime:${kind}`);
     this.factories.set(kind, factory);

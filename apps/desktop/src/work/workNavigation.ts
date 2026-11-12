@@ -1,5 +1,5 @@
-export type WorkContext = "rooms" | "tasks" | "squads" | "memory" | "arena";
-export const WORK_CONTEXTS: readonly WorkContext[] = ["rooms", "tasks", "squads", "memory", "arena"];
+export type WorkContext = "rooms" | "tasks" | "inbox" | "squads" | "memory" | "arena";
+export const WORK_CONTEXTS: readonly WorkContext[] = ["rooms", "tasks", "inbox", "squads", "memory", "arena"];
 export function activityStatusKey(status: string): string {
   if (["queued", "running", "dispatching", "preparing", "discussing", "synthesizing", "revising_plan", "executing", "planning", "reviewing", "summarizing", "waiting_workspace"].includes(status)) return "task_status_running";
   if (["awaiting_approval", "awaiting_plan_approval", "awaiting_tool_approval"].includes(status)) return "task_status_awaiting_confirmation";

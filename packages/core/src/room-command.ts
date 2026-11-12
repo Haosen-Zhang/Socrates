@@ -4,6 +4,7 @@ import type { RoomCollaborationSettings, RoomKind } from "./room-kind";
 export type RoomMention =
   | { type: "agent"; agentId: string }
   | { type: "all" }
+  | { type: "squad"; squadId: string }
   | { type: "file"; refId: string };
 export type RoomCommandIntent = "respond" | "discuss" | "execute";
 export interface RoomCommandInput {
@@ -25,27 +26,34 @@ export interface ResolvedRoomCommand {
   agentIds: string[];
 }
 export function resolveRoomCommand(
-  room: { kind: RoomKind; primaryAgentId: string; agentIds: string[]; collaboration: RoomCollaborationSettings },
+  room: { kind: RoomKind; primaryAgentId: string; agentIds: string[]; collaboration: RoomCollaborationSettings; squadId?: string },
   command: Pick<RoomCommandInput, "intent" | "mentions">,
 ): ResolvedRoomCommand {
   if (!["respond", "discuss", "execute"].includes(command.intent)) throw new Error("invalid_command_intent");
   if (room.kind === "chat" && command.intent === "execute") throw new Error("chat_execution_forbidden");
   const selected: string[] = [];
   let all = false;
+  let squad = false;
   for (const mention of command.mentions) {
     if (mention.type === "agent") {
       if (!room.agentIds.includes(mention.agentId)) throw new Error("mention_must_be_room_member");
       if (!selected.includes(mention.agentId)) selected.push(mention.agentId);
+    } else if (mention.type === "squad") {
+      if (!room.squadId || mention.squadId !== room.squadId) throw new Error("squad_must_be_room_binding");
+      squad = true;
     } else if (mention.type === "all") all = true;
     else if (mention.type === "file") {
       if (room.kind === "chat") throw new Error("chat_file_mentions_forbidden");
       if (!mention.refId) throw new Error("file_reference_required");
     } else throw new Error("invalid_mention_type");
   }
+  if (squad && (selected.length || all || command.intent === "discuss")) throw new Error("ambiguous_squad_target");
+  if (squad) return {kind:"direct",agentIds:[room.collaboration.assignment.coordinatorAgentId ?? room.primaryAgentId]};
   const agentIds = all || (command.intent === "discuss" && !selected.length)
     ? [...room.agentIds] : selected.length ? selected : [room.primaryAgentId];
   if (!agentIds.length) throw new Error("room_requires_at_least_one_member");
   if (all || command.intent === "discuss") return { kind: "discussion", agentIds };
+  if (selected.length === 1) return { kind: "direct", agentIds };
   if (room.kind === "cowork" && command.intent === "execute" && room.collaboration.strategy === "team") {
     return { kind: "team", agentIds };
   }

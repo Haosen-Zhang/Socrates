@@ -1,0 +1,33 @@
+{
+  "implementationHead": "c7e42450500774f100a71f8a59bb4e2802ba5d97",
+  "suite": {
+    "passed": 1312,
+    "failed": 0,
+    "assertions": 24102,
+    "files": 226,
+    "seconds": 42.98
+  },
+  "checks": {
+    "typecheck": "passed",
+    "desktopBuild": "passed",
+    "lint": {
+      "files": 583,
+      "status": "passed"
+    },
+    "diffCheck": "passed"
+  },
+  "browser": {
+    "sourceHead": "f9b4f56",
+    "checks": 32,
+    "passed": 32,
+    "rendererErrors": 0,
+    "externalRequests": 0,
+    "boundary": "Subsequent source changes are backend lifecycle projection and real-service regression only; UI and harness unchanged."
+  },
+  "review": "All five final-review findings closed; approved.",
+  "limits": [
+    "Controlled providers and temporary database/workspaces only",
+    "No native installer, OS IME, screen reader, or paid provider validation",
+    "Inherited Vite chunk-size and mixed-import warnings remain"
+  ]
+}

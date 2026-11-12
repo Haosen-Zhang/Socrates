@@ -1,6 +1,6 @@
 import { ChatMemoryBinding } from "./project-memory/ChatMemoryBinding";
 import { useEffect, useRef, useState } from "react";
-import type { ConversationSession } from "@socrates/core";
+import type { ConversationSession, SquadTemplate, WorkInteraction, WorkInteractionInput } from "@socrates/core";
 import { useStorePick } from "./selectors";
 import { useStore, useT } from "./store";
 import {
@@ -9,6 +9,11 @@ import {
   type SelectedMention,
 } from "./roomNavigation";
 import { shouldSubmitComposerEnter } from "./composerIme";
+import {reserveInteraction,type PendingInteraction} from "./work-interactions/requestIdentity";
+import WillTrigger, { useTriggerPreview } from "./work-interactions/WillTrigger";
+import InteractionHistory from "./work-interactions/InteractionHistory";
+import { requireOk, sidecarFetch } from "./transport";
+import { commandCostBody } from "./cost/client";
 import PixelIcon from "./PixelIcon";
 import ResizableComposer from "./composer/ResizableComposer";
 import AttachmentTray from "./attachments/AttachmentTray";
@@ -40,7 +45,7 @@ export default function RoomComposer({
     updateCollaboration,
     draftAttachments,
     draftWorkspaceRefs,
-    adaptiveStatus,
+    adaptiveStatus, handshake, lang,
   } = useStorePick(
     "composerDrafts",
     "setComposerDraft",
@@ -54,7 +59,7 @@ export default function RoomComposer({
     "updateCollaboration",
     "draftAttachments",
     "draftWorkspaceRefs",
-    "adaptiveStatus",
+    "adaptiveStatus", "handshake", "lang",
   );
   const t = useT();
   const composing = useRef(false);
@@ -67,6 +72,18 @@ export default function RoomComposer({
   const [verificationPlanId,setVerificationPlanId]=useState<string | undefined>();
   const [routingCandidateId, setRoutingCandidateId] = useState<string | undefined>();
   const work = session.kind === "cowork";
+  const en=lang==="en",tr=(zh:string,english:string)=>en?english:zh;
+  const [action,setAction]=useState<WorkInteractionInput['action']>('message');
+  const [delivery,setDelivery]=useState<NonNullable<WorkInteractionInput['delivery']>>('queue');
+  const [submitting,setSubmitting]=useState(false),[squads,setSquads]=useState<SquadTemplate[]>([]),[interactionRevision,setInteractionRevision]=useState(0);
+  const interactionRequest=useRef<PendingInteraction|null>(null);
+  const interactionPath=`/room-commands/rooms/${encodeURIComponent(session.id)}/interactions`;
+  useEffect(()=>{
+    if(!work||!handshake||!session.workspaceId)return;
+    const c=new AbortController();
+    void sidecarFetch(handshake,`/squads?${new URLSearchParams({workspaceId:session.workspaceId})}`,{signal:c.signal}).then(requireOk<SquadTemplate[]>).then(rows=>{if(!c.signal.aborted)setSquads(rows.filter(s=>!s.archived));}).catch(e=>{if(!c.signal.aborted)setError(String(e));});
+    return()=>c.abort();
+  },[work,handshake,session.workspaceId]);
   const waitingStatus = work && adaptiveStatus && ["awaiting_approval", "awaiting_plan", "awaiting_verification", "paused_budget", "interrupted"].includes(adaptiveStatus) ? adaptiveStatus : null;
   const behavior =
     session.collaboration.strategy === "team"
@@ -76,6 +93,10 @@ export default function RoomComposer({
         : work
           ? "execute"
           : "respond";
+  const interactionInput:WorkInteractionInput={clientRequestId:'preview',action,content:draft.trim(),mentions:retainSelectedMentions(draft.trim(),selected).map(item=>item.mention),intent:behavior==='team'?'execute':behavior,delivery,
+    attachmentIds:action==='message'?draftAttachments.map(item=>item.id):[],workspaceRefIds:action==='message'?draftWorkspaceRefs.map(item=>item.id):[],
+    ...(behavior!=='discuss'&&verificationPlanId?{verificationPlanId}:{}),...(routingCandidateId?{routingCandidateId}:{})};
+  const {preview:triggerPreview,error:triggerError}=useTriggerPreview(handshake,interactionPath,work&&draft.trim()?interactionInput:null);
   const routeInputIdentity = JSON.stringify([session.id, session.collaboration, draft, selected, verificationPlanId, draftAttachments.map(item => item.id), draftWorkspaceRefs.map(item => item.id)]);
   useEffect(() => { setRoutingCandidateId(undefined); }, [routeInputIdentity]);
   useEffect(() => {
@@ -106,14 +127,14 @@ export default function RoomComposer({
     ]);
   };
   const submit = async () => {
-    if (running || !draft.trim()) return;
+    if (submitting || (!work && running) || !draft.trim() || (work && !triggerPreview?.canSubmit)) return;
     const prompt = draft.trim();
     const mentions = retainSelectedMentions(prompt, selected).map(
       (item) => item.mention,
     );
     let costOptions;
     try {
-      costOptions = cost ? submittedCostOptions(cost, quoteBinding({ roomId: session.id, content: prompt, mentions,
+      costOptions = cost && (!work || action==='message') ? submittedCostOptions(cost, quoteBinding({ roomId: session.id, content: prompt, mentions,
         intent: behavior === "team" ? "execute" : behavior,
         attachmentIds: draftAttachments.map(item => item.id), workspaceRefIds: draftWorkspaceRefs.map(item => item.id),
         ...(work && behavior !== "discuss" && verificationPlanId ? { verificationPlanId } : {}), ...(routingCandidateId ? { routingCandidateId } : {}),
@@ -123,16 +144,21 @@ export default function RoomComposer({
     setComposerDraft(session.id, "");
     setComposerMentions(session.id, []);
     setError(null);
-    const ok = await sendRoomCommand(
-      prompt,
-      mentions,
-      behavior === "team" ? "execute" : behavior,
-      undefined,
-      session.id,
-      costOptions,
-      behavior !== "discuss" ? verificationPlanId : undefined,
-      behavior !== "discuss" ? routingCandidateId : undefined,
-    );
+    let ok=false;
+    if(work&&handshake){
+      setSubmitting(true);
+      const body={...interactionInput,...commandCostBody(costOptions)};
+      interactionRequest.current=reserveInteraction(interactionRequest.current,body);
+      try{
+        await sidecarFetch(handshake,interactionPath,{method:'POST',body:JSON.stringify(interactionRequest.current.input)}).then(requireOk<WorkInteraction>);
+        ok=true;interactionRequest.current=null;setInteractionRevision(n=>n+1);
+        useStore.getState().clearSubmittedRoomFiles(session.id,body.attachmentIds??[],body.workspaceRefIds??[]);
+        if(useStore.getState().currentSessionId===session.id)await useStore.getState().selectAgentSession(session.id);
+      }catch(cause){setError(cause instanceof Error?cause.message:String(cause));}
+      finally{setSubmitting(false);}
+    }else{
+      ok=await sendRoomCommand(prompt,mentions,behavior==='team'?'execute':behavior,undefined,session.id,costOptions,behavior!=='discuss'?verificationPlanId:undefined,behavior!=='discuss'?routingCandidateId:undefined);
+    }
     if (!ok) {
       if (!(useStore.getState().composerDrafts[session.id] ?? "")) {
         setComposerDraft(session.id, prompt);
@@ -172,12 +198,13 @@ export default function RoomComposer({
   );
   return (
     <form
-      className="composer-dock"
+      className="composer-dock composer-dock--bounded"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
       }}
     >
+      <div className="composer-options">
       <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-neutral-600">
         <select
           aria-label={t("response_mode")}
@@ -271,6 +298,7 @@ export default function RoomComposer({
                 {member.unavailableReason ? t(member.unavailableReason) : String(member.snapshot.role ?? member.snapshot.modelId ?? "")}
               </button>
             ))}
+          {work&&squads.filter(s=>s.name.toLowerCase().includes(query.toLowerCase())).map(squad=><button type="button" role="option" aria-selected={false} key={squad.id} className="block w-full px-2 py-1 text-left text-xs hover:bg-neutral-100" onClick={()=>choose({label:`@${squad.name}`,mention:{type:'squad',squadId:squad.id}})}>@{squad.name} · Squad / Leader</button>)}
           {session.agents.length > 1 && (
             <button
               type="button"
@@ -320,12 +348,20 @@ export default function RoomComposer({
         </p>
       )}
       {!work && <ChatMemoryBinding key={session.id} roomId={session.id}/>}
-      {work && <AttachmentTray />}
-      <ComposerCostControls session={session} content={draft} mentions={retainSelectedMentions(draft.trim(), selected).map(item => item.mention)}
-        intent={behavior === "team" ? "execute" : behavior} attachmentIds={draftAttachments.map(item => item.id)} workspaceRefIds={draftWorkspaceRefs.map(item => item.id)} disabled={running} onChange={setCost}
+      {work && action==='message' && <AttachmentTray />}
+      {work && action!=='message' && (draftAttachments.length>0||draftWorkspaceRefs.length>0)&&<p className="text-xs">{tr('此操作仅保存文字；所选文件保留到下一次执行。','This action saves text only; selected files remain for the next execution.')}</p>}
+      {work&&<div className="my-2 flex flex-wrap gap-2 text-xs">
+        <label>{tr('消息操作','Message action')} <select className="pixel-input px-2 py-1" value={action} disabled={submitting} onChange={event=>setAction(event.target.value as typeof action)}><option value="message">{tr('发送指示','Send instruction')}</option><option value="note">{tr('仅备注，不触发','Note only, no trigger')}</option><option value="request_human_review">{tr('请求人工审核','Request human review')}</option></select></label>
+        {action==='message'&&<label>{tr('交付方式','Delivery')} <select className="pixel-input px-2 py-1" value={delivery} disabled={submitting} onChange={event=>setDelivery(event.target.value as typeof delivery)}><option value="queue">{tr('排队到下一轮','Queue for the next round')}</option><option value="stop_restart">{tr('停止并重新执行','Stop and restart')}</option><option disabled value="in_run">{tr('当前运行插入不可用','In-run insertion unavailable')}</option></select></label>}
+      </div>}
+      {(!work||action==='message')&&<ComposerCostControls session={session} content={draft} mentions={retainSelectedMentions(draft.trim(), selected).map(item => item.mention)}
+        intent={behavior === "team" ? "execute" : behavior} attachmentIds={draftAttachments.map(item => item.id)} workspaceRefIds={draftWorkspaceRefs.map(item => item.id)} disabled={submitting} onChange={setCost}
         verificationPlanId={work && behavior !== "discuss" ? verificationPlanId : undefined} routingCandidateId={routingCandidateId} onCandidateChange={setRoutingCandidateId}
         leading={work && behavior !== "discuss" ? <RoutingPresetControls key={session.id} session={session} disabled={running} /> : undefined}
-        trailing={work && behavior !== "discuss" ? <VerificationControls roomId={session.id} disabled={running} onPlanChange={setVerificationPlanId} /> : undefined} />
+        trailing={work && behavior !== "discuss" ? <VerificationControls roomId={session.id} disabled={running} onPlanChange={setVerificationPlanId} /> : undefined} />}
+      {work&&<WillTrigger preview={triggerPreview} error={triggerError} loading={!!draft.trim()} en={en}/>}
+      {work&&handshake&&<InteractionHistory path={interactionPath} handshake={handshake} en={en} roomId={session.id} revision={interactionRevision}/>}
+      </div>
       <ResizableComposer label={t("composer_resize")}>
         <span className="pixel-composer-chevron mt-1 shrink-0 self-start">
           ›
@@ -334,8 +370,8 @@ export default function RoomComposer({
           aria-label={t("task_prompt_label")}
           className="pixel-composer-input min-h-16 flex-1 resize-none bg-transparent p-2 text-sm outline-none"
           value={draft}
-          disabled={running}
-          placeholder={running ? t(waitingStatus ? `route_status_${waitingStatus}` : "replying") : t("mention_placeholder")}
+          disabled={submitting || (!work&&running)}
+          placeholder={work && running ? tr("可补充指示，选择排队或停止后重启", "Add instructions, then queue or stop and restart") : running ? t(waitingStatus ? `route_status_${waitingStatus}` : "replying") : t("mention_placeholder")}
           onChange={(event) => updateDraft(event.target.value)}
           onCompositionStart={() => {
             composing.current = true;
@@ -367,7 +403,7 @@ export default function RoomComposer({
         <button
           className="pixel-send shrink-0"
           type="submit"
-          disabled={running || !draft.trim()}
+          disabled={submitting || (!work&&running) || !draft.trim() || (work&&!triggerPreview?.canSubmit)}
           aria-label={t("send")}
         >
           <PixelIcon name="send" size={18} />

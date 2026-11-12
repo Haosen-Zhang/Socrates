@@ -2,7 +2,7 @@ export const WORK_TRANSLATIONS = {
   en: {
     work_notifications: "Notifications", work_member_added: "Member added to this room", work_member_removed: "Member removed from this room",
     work_no_matching_tasks: "No matching task activity", work_activity_failed: "Task activity could not be loaded. Refresh to try again.",
-    work_project: "Work project", work_context: "Project navigation", work_rooms: "Rooms", work_tasks: "Tasks", work_squads: "Squads", work_memory: "Memory", work_arena: "Arena", work_recorder: "Execution record",
+    work_project: "Work project", work_context: "Project navigation", work_rooms: "Rooms", work_tasks: "Tasks", work_inbox: "Inbox", work_squads: "Squads", work_memory: "Memory", work_arena: "Arena", work_recorder: "Execution record",
     work_recent_tasks: "Recent task activity", work_recent_hint: "Latest 50 executions per room, including archived rooms. Execution results and review are separate.",
     work_no_tasks: "No task activity yet", work_no_tasks_hint: "Start a task from a Work room. Viewing this list never starts a model call.",
     work_squads_unavailable: "Reusable squads are not available yet", work_squads_hint: "Keep working with your room members. Saved squads and task assignment will be added in a later stage.",
@@ -18,7 +18,7 @@ export const WORK_TRANSLATIONS = {
   "zh-CN": {
     work_notifications: "通知", work_member_added: "成员已加入此房间", work_member_removed: "成员已移除此房间",
     work_no_matching_tasks: "没有匹配的任务活动", work_activity_failed: "暂时无法读取任务活动，请刷新重试。",
-    work_project: "Work 项目", work_context: "项目导航", work_rooms: "房间", work_tasks: "任务", work_squads: "团队", work_memory: "项目记忆", work_arena: "Arena 实验", work_recorder: "执行记录",
+    work_project: "Work 项目", work_context: "项目导航", work_rooms: "房间", work_tasks: "任务", work_inbox: "待处理", work_squads: "团队", work_memory: "项目记忆", work_arena: "Arena 实验", work_recorder: "执行记录",
     work_recent_tasks: "近期任务活动", work_recent_hint: "每个房间最近 50 次执行，包含已归档房间。执行结果与审核验收分别记录。",
     work_no_tasks: "尚无任务活动", work_no_tasks_hint: "从 Work 房间开始任务。查看此列表不会触发模型调用。",
     work_squads_unavailable: "可复用团队尚未开放", work_squads_hint: "可以继续使用房间成员协作。保存团队与任务指派将在后续阶段接入。",
@@ -34,7 +34,7 @@ export const WORK_TRANSLATIONS = {
   "zh-TW": {
     work_notifications: "通知", work_member_added: "成員已加入此房間", work_member_removed: "成員已移除此房間",
     work_no_matching_tasks: "沒有符合的任務活動", work_activity_failed: "暫時無法讀取任務活動，請重新整理重試。",
-    work_project: "Work 專案", work_context: "專案導覽", work_rooms: "房間", work_tasks: "任務", work_squads: "團隊", work_memory: "專案記憶", work_arena: "Arena 實驗", work_recorder: "執行記錄",
+    work_project: "Work 專案", work_context: "專案導覽", work_rooms: "房間", work_tasks: "任務", work_inbox: "待處理", work_squads: "團隊", work_memory: "專案記憶", work_arena: "Arena 實驗", work_recorder: "執行記錄",
     work_recent_tasks: "近期任務活動", work_recent_hint: "每個房間最近 50 次執行，包含已封存房間。執行結果與審核驗收分別記錄。",
     work_no_tasks: "尚無任務活動", work_no_tasks_hint: "從 Work 房間開始任務。查看此清單不會觸發模型呼叫。",
     work_squads_unavailable: "可重用團隊尚未開放", work_squads_hint: "可以繼續使用房間成員協作。儲存團隊與任務指派將於後續階段接入。",

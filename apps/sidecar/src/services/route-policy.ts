@@ -1,3 +1,4 @@
+import { commandRoom } from "./command-room";
 import type { Database } from "bun:sqlite";
 import { posix } from "node:path";
 import { DEFAULT_ROUTE_LIMITS, MAX_AUTOMATIC_OUTPUT_TOKENS, ROUTING_POLICY_VERSION, isRoutingEnabled, resolveRoomCommand, selectRoute, validateCollaborationSettings,
@@ -73,7 +74,7 @@ export class RoutePolicyService {
     const room=this.sessions.get(input.roomId);
     if(!room||room.archived)throw new Error("room_not_found");
     if(!input.content?.trim()||!Array.isArray(input.mentions))throw new Error("quote_content_required");
-    const resolved=resolveRoomCommand({...room,agentIds:room.agents.map(member=>member.agentId)},input);
+    const resolved=resolveRoomCommand(commandRoom(this.db,room),input);
     if(!isRoutingEnabled(room,input)||resolved.kind==="discussion")throw new Error("routing_not_enabled_for_command");
     const errors=validateCollaborationSettings({kind:room.kind,workspaceId:room.workspaceId,agentIds:room.agents.map(member=>member.agentId)},room.collaboration);
     if(errors.length)throw new Error(errors[0]);
@@ -146,7 +147,7 @@ export class RoutePolicyService {
         egressAllowed:routing.allowedProviderIds===undefined||routing.allowedProviderIds.includes(profile.providerId),capabilities:profile.modelCapabilities,contextWindowTokens:profile.contextWindowTokens,protocol,price});
       if(provider)members[member.agentId]={snapshot:structuredClone(member.snapshot),profile,provider:{id:provider.id,type:provider.type,baseUrl:provider.base_url,protocol},price};
     }
-    const lockedAgentIds=[...new Set(input.mentions.flatMap(mention=>mention.type==="agent"?[mention.agentId]:[]))];
+    const lockedAgentIds=input.mentions.some(m=>m.type==="squad")?resolved.agentIds:[...new Set(input.mentions.flatMap(mention=>mention.type==="agent"?[mention.agentId]:[]))];
     const preset=routing.mode==="manual"?"custom":routing.automaticPolicy==="cost"?"economy":routing.automaticPolicy;
     const limits={...DEFAULT_ROUTE_LIMITS,...routing.limits};
     const customExecutorId=preset==="custom"?(features.risk==="sensitive"?routing.criticalAgentId:features.scope==="multi_module"?routing.complexAgentId:routing.lightweightAgentId):null;

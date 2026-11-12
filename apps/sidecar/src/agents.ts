@@ -205,7 +205,7 @@ export function agentRoutes(db: Database, modelCatalog?: ModelCatalog) {
         b.temperature === undefined ? row.temperature : b.temperature,
         reasoning.effort,
         JSON.stringify({
-          ...currentCapabilities,
+          ...(providerChanged || modelChanged ? UNKNOWN_MODEL_CAPABILITIES : currentCapabilities),
           reasoningEfforts: reasoning.efforts,
           contextWindowTokens: contextWindow.effectiveValue ?? "unknown",
           contextWindow,

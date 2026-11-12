@@ -1,3 +1,4 @@
+import { AgentLifecycleService } from "./agent-lifecycle";
 import { DEFAULT_COLLABORATION_SETTINGS } from '@socrates/core';
 import { SessionStore } from '../store/session-store';
 import { toAgent, type AgentRow } from '../agents';
@@ -6,7 +7,7 @@ import type { SquadTemplate, SquadMember, WorkItem } from '@socrates/core';
 export type SquadInput = Pick<SquadTemplate, 'workspaceId'|'name'|'leaderAgentId'|'description'|'instructions'|'avatar'|'members'>;
 export class SquadConflict extends Error {}
 export class SquadService {
-  constructor(readonly db: Database, readonly sessions = new SessionStore(db), private workItems:(workspaceId:string)=>WorkItem[] = ()=>[]) {}
+  constructor(readonly db: Database, readonly sessions = new SessionStore(db), private workItems:(workspaceId:string)=>WorkItem[] = ()=>[], private lifecycle = new AgentLifecycleService(db)) {}
   list(workspaceId: string): SquadTemplate[] {
     const items=this.workItems(workspaceId);
     return this.db.query<{id:string},[string]>('SELECT id FROM squad_templates WHERE workspace_id = ? ORDER BY name').all(workspaceId).map(r => this.get(r.id,items)!);
@@ -60,9 +61,8 @@ export class SquadService {
     const squad=this.get(id); if(!squad)return null;
     const rooms=this.references(id);
     const members=squad.members.map(m=>{
-      const provider=this.db.query<{enabled:number},[string]>('SELECT p.enabled FROM providers p JOIN agents a ON a.provider_id=p.id WHERE a.id=?').get(m.agentId);
-      const unavailable=!provider || !provider.enabled;
-      return {agentId:m.agentId,availability:unavailable?'unavailable':'unknown',reason:unavailable?'Provider missing or disabled':'Provider connection has not been verified',activeRuns:this.db.query<{count:number},[string]>("SELECT count(*) as count FROM agent_states s JOIN agent_runs r ON r.id=s.run_id WHERE s.agent_id=? AND r.status IN ('preparing','running','awaiting_approval')").get(m.agentId)?.count??0};
+      const presence=this.lifecycle.presence(m.agentId);
+      return {agentId:m.agentId,availability:presence?.availability.state??'unavailable',reason:presence?.availability.reason??'agent_missing',availabilityProjection:presence?.availability??null,workload:presence?.workload??null,activeRuns:presence?.workload.items.length??0};
     });
     const recentRuns=this.db.query("SELECT DISTINCT r.* FROM agent_runs r LEFT JOIN squad_room_bindings b ON b.room_id=r.session_id LEFT JOIN work_item_runs w ON w.execution_room_id=r.session_id WHERE b.squad_id=? OR (json_extract(w.frozen_owner_json, '$.ownerKind')='squad' AND json_extract(w.frozen_owner_json, '$.ownerId')=?) ORDER BY r.created_at DESC LIMIT 20").all(id,id);
     return {squad,members,rooms,recentRuns:recentRuns.map(raw=>{const r=raw as Record<string,unknown>;return {id:r.id,roomId:r.session_id,status:r.status,createdAt:r.created_at,completedAt:r.completed_at};}),activeWorkItems:this.activeItems(id,squad.workspaceId),recentRunsScope:"bound_rooms_and_frozen_work_item_runs"};
@@ -95,7 +95,8 @@ export class SquadService {
     const squad=this.get(id);
     if (!squad || squad.archived || squad.revision!==expectedRevision) throw new SquadConflict('Squad missing, archived or changed');
     this.validate(squad);
-    if(this.detail(id)!.members.some(m=>m.availability==='unavailable'))throw new Error('Squad provider unavailable');
+    // Presence is observational; an old failed probe must not block an explicit retry.
+    if(squad.members.some(m=>!this.db.query<{enabled:number},[string]>('SELECT p.enabled FROM providers p JOIN agents a ON a.provider_id=p.id WHERE a.id=?').get(m.agentId)?.enabled))throw new Error('Squad provider unavailable');
     const agents=squad.members.map(member=>{
       const row=this.db.query<AgentRow,[string]>('SELECT * FROM agents WHERE id=?').get(member.agentId)!;
       const agent=toAgent(row);

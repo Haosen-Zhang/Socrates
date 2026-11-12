@@ -9,6 +9,7 @@ import RoomTimeline from "../RoomTimeline";
 import FlightRecorderPanel from "../flight-recorder/FlightRecorderPanel";
 import { ProjectMemoryPanel } from "../project-memory/ProjectMemoryPanel";
 import ArenaPanel from "../arena/ArenaPanel";
+import InboxPanel from "../work-interactions/InboxPanel";
 import SquadsPanel from "../squads/SquadsPanel";
 import WorkItemsPanel from "../work-items/WorkItemsPanel";
 import "./work.css";
@@ -92,6 +93,7 @@ export default memo(function WorkProjectHub({workspaceId,context,onOpenRoom,onCh
   const visible=visibleActivities(rows,query,filter);
   if(!workspaceId)return context === "rooms" ? null : <EmptyState title={t("work_choose_project")} description={t("work_choose_project_hint")}/>;
   return <>
+    {handshake&&<InboxPanel key={workspaceId} workspaceId={workspaceId} handshake={handshake} visible={context==="inbox"} onOpenRoom={async id=>{await selectAgentSession(id);onOpenRoom();}} onOpenItem={id=>{sessionStorage.setItem(`socrates.workitem.${workspaceId}`,id);setShowHistory(false);onChangeContext("tasks");}}/>}
     {(context === "memory" || context === "arena") && <div className="work-project-hub"><ObjectPage title={t(`work_${context}`)}>
       <label>{t("work_room")} <select className="pixel-input p-2" value={featureRoom?.id ?? ""} onChange={event=>setProjectRoom(event.target.value)}>{availableRooms.map(room=><option key={room.id} value={room.id}>{room.title}</option>)}</select></label>
       {!featureRoom ? <EmptyState title={t("work_choose_project")} description={t("work_choose_project_hint")}/> : context === "memory" ? <ProjectMemoryPanel key={featureRoom.id} roomId={featureRoom.id}/> : handshake && <ArenaPanel key={featureRoom.id} roomId={featureRoom.id} handshake={handshake}/>}

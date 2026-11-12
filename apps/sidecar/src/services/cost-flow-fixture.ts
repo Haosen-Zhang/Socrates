@@ -1,3 +1,8 @@
+import { WorkInteractionService } from "./work-interactions";
+import { InboxService } from "./inbox";
+import { interactionRoutes, inboxRoutes } from "../routes/work-interactions";
+import { AgentLifecycleService } from "./agent-lifecycle";
+import { agentLifecycleRoutes } from "../routes/agent-lifecycle";
 import { WorkItemService } from "./work-items";
 import { workItemRoutes } from "../routes/work-items";
 import { WorkItemLaunchService } from "../services/work-item-launch";
@@ -88,7 +93,7 @@ const PLAN: StructuredPlan = {
 };
 
 /** Real production services; only the Provider stream and disposable test files are controlled. */
-export async function setupCostFlowFixture(options: { strictBoundFixture?: boolean; missingFirstNativeUsage?: boolean; reasoningPlanner?: boolean; writeApprovalFlow?: boolean; scopeExpansion?: boolean; invalidWriteHash?: boolean; automaticPricingView?: boolean; routingFixture?:boolean; nativeToolCalls?:(body:unknown)=>Array<{id:string;type:string;function:{name:string;arguments:string}}>|undefined; onNativeRequest?:(body:unknown)=>void; onGatewayRequest?:(request:unknown)=>void } = {}) {
+export async function setupCostFlowFixture(options: { leaderDecision?:unknown; strictBoundFixture?: boolean; missingFirstNativeUsage?: boolean; reasoningPlanner?: boolean; writeApprovalFlow?: boolean; scopeExpansion?: boolean; invalidWriteHash?: boolean; automaticPricingView?: boolean; routingFixture?:boolean; nativeToolCalls?:(body:unknown)=>Array<{id:string;type:string;function:{name:string;arguments:string}}>|undefined; onNativeRequest?:(body:unknown)=>void; onGatewayRequest?:(request:unknown)=>void } = {}) {
   // Synthetic trusted-bound metadata only: Native fetch still targets fixture.invalid
   // through controlledFetch; planning/review use the local generator below.
   const admissionBaseUrl = options.strictBoundFixture ? "https://api.openai.com/v1" : "https://fixture.invalid/v1";
@@ -192,7 +197,7 @@ export async function setupCostFlowFixture(options: { strictBoundFixture?: boole
       yield* sdk(request);
       return;
     }
-    yield { type: "delta", text: purpose === "plan" ? JSON.stringify(responsePlan) : purpose === "review" ? JSON.stringify({ verdict: "approve", notes: "Controlled review of fixture output." }) : purpose === "summarize" ? "Controlled discussion summary." : "Controlled member response." };
+    yield { type: "delta", text: request.system?.includes("LEADER_EVALUATION:") ? JSON.stringify(options.leaderDecision??{action:"no_action",reason:"Existing work covers the report."}) : purpose === "plan" ? JSON.stringify(responsePlan) : purpose === "review" ? JSON.stringify({ verdict: "approve", notes: "Controlled review of fixture output." }) : purpose === "summarize" ? "Controlled discussion summary." : "Controlled member response." };
     yield { type: "done", usage: { ...TOKEN_USAGE }, requestId: `fixture-gateway-${gatewayCalls.length}`, finishReason: "stop" };
   });
   const controlledFetch = async (url: string, init?: RequestInit): Promise<Response> => {
@@ -280,6 +285,7 @@ export async function setupCostFlowFixture(options: { strictBoundFixture?: boole
   }});
   const commands = new RoomCommandService(db, sessions, {
     startDirect: input => supervisor.start(input), getDirect: id => supervisor.get(id), cancelDirect: id => supervisor.cancel(id), isTeamActive: id => team.isActive(id),
+    cancelTeam:async id=>{coordinator.cancel(id);await coordinator.wait(id);await team.cancel(id);},
     resolveFileContext: (workspaceId, refs, ids) => resolveRoomFileContext(db, workspaces, attachments, workspaceId, refs, ids),
     createTeam: async ({ sessionId, prompt, clientRequestId, targetAgentIds, inputContext }) => {
       const room = sessions.get(sessionId)!;
@@ -295,12 +301,12 @@ export async function setupCostFlowFixture(options: { strictBoundFixture?: boole
   const config = new ConfigStore(join(directory, "config.toml"), secrets);
   config.update({ language: "en", theme: "dark", soundEnabled: false });
 const workItems=new WorkItemService(db,commands);
- const squads=new SquadService(db,sessions,workspaceId=>workItems.list(workspaceId));
- const workItemLaunch=new WorkItemLaunchService(db,workItems,sessions,squads,new TaskQuoteService(db,sessions),commands,async id=>{
-  const command=commands.get(id);if(!command)throw new Error('Command not found');
-  if(command.taskId&&!command.adaptive){coordinator.cancel(command.taskId);await coordinator.wait(command.taskId);await team.cancel(command.taskId);}
-  else await commands.cancel(id);
- });
+ const agentLifecycle=new AgentLifecycleService(db,{secrets,runtimeReady:()=>runtimes.isRegistered("native_ai_sdk")});
+ const squads=new SquadService(db,sessions,workspaceId=>workItems.list(workspaceId),agentLifecycle);
+ const workItemLaunch=new WorkItemLaunchService(db,workItems,sessions,squads,new TaskQuoteService(db,sessions),commands);
+ const inbox=new InboxService(db,workItems,commands,verification);
+ const interactions=new WorkInteractionService(db,workItems,sessions,commands,coordinator,tasks,team,packages,()=>{inbox.list();});
+ interactions.start(10);
    const app = new Hono();
   app.use("*", cors({ origin: "*", allowHeaders: ["Authorization", "Content-Type"], allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"] }));
   app.use("*", async (c, next) => { if (c.req.header("authorization") !== `Bearer ${token}`) return c.text("unauthorized", 401); await next(); });
@@ -313,7 +319,10 @@ const workItems=new WorkItemService(db,commands);
       invocation: { roomId: work.id, rootTaskId: "pricing-examples", runId: "pricing-examples", agentId: "fixture-a", providerConnectionId: "pricing-openai", runProfileVersion: "fixture-v1", logicalStepId: "pricing-new-sample", purpose: "respond" } })) { /* Controlled stream only. */ }
     return c.json({ controlledFixture: true });
   });
-  app.route("/config", configRoutes(config)); app.route("/providers", providerRoutes(db, secrets, controlledFetch)); app.route("/agents", agentRoutes(db));
+  app.route("/config", configRoutes(config)); app.route("/providers", providerRoutes(db, secrets, controlledFetch)); app.route("/agents", agentRoutes(db)); app.route("/agent-lifecycle",agentLifecycleRoutes(agentLifecycle));
+  app.route("/work-items",interactionRoutes(interactions,'item'));
+  app.route("/room-commands/rooms",interactionRoutes(interactions,'room'));
+  app.route("/inbox",inboxRoutes(inbox));
   app.route("/work-items",workItemRoutes(workItems,workItemLaunch));
   app.route("/squads", squadRoutes(squads));
   app.route("/sessions", sessionRoutes(sessions, events, usage, workspaces)); app.route("/workspaces", workspaceRoutes(workspaces));
@@ -325,14 +334,14 @@ const workItems=new WorkItemService(db,commands);
   app.route("/arena-strategy",arenaStrategyRoutes(new ArenaStrategyService(db,sessions,id=>arena.results(id))));
   const flightRecorder = new FlightRecorderService(db);
   const projectMemory = new ProjectMemoryService(db);
-  app.route("/flight-recorder",flightRecorderRoutes(flightRecorder));
+  app.route("/flight-recorder",flightRecorderRoutes(flightRecorder,executionEvents));
   app.route("/project-memory",projectMemoryRoutes(projectMemory));
   app.route("/verification",verificationRoutes(verification));
   app.route("/routing",routingRoutes(routes,adaptive));
   app.route("/agent", agentRunRoutes(supervisor, runner, approvals, executionEvents,(child,key)=>adaptive.notifyChildProgress(child,key).then(()=>{}))); app.route("/cost", costRoutes(db, sessions, broker, quotes, costTasks, commands));
   app.route("/content", contentRoutes(db, workspaces, attachments));
   app.get("/rooms", c => c.json([])); app.get("/mcp/servers", c => c.json([]));
-  return { workItems, workItemLaunch, squads, directory, db, arena, flightRecorder, projectMemory, routes, adaptive, sessions, workspaces, workspace, roomIds: { work: work.id, chat: chat.id }, broker, commands, quotes, costTasks, tasks, coordinator, verification, packages,
+  return { interactions, inbox, agentLifecycle, workItems, workItemLaunch, squads, directory, db, arena, flightRecorder, projectMemory, routes, adaptive, sessions, workspaces, workspace, roomIds: { work: work.id, chat: chat.id }, broker, commands, quotes, costTasks, tasks, coordinator, verification, packages,
     execution, team, runtimes, approvals, runner, supervisor, app, token, headers, gatewayCalls, nativeCalls,
-    async close() { await arena.shutdown(); await adaptive.shutdown(); await verification.shutdown(); await commands.shutdown(); await team.shutdown(); await execution.shutdown(); await supervisor.shutdown(); await flightRecorder.shutdown(); db.close(); rmSync(directory, { recursive: true, force: true }); } };
+    async close() { await interactions.shutdown(); await arena.shutdown(); await adaptive.shutdown(); await verification.shutdown(); await commands.shutdown(); await team.shutdown(); await execution.shutdown(); await supervisor.shutdown(); await flightRecorder.shutdown(); db.close(); rmSync(directory, { recursive: true, force: true }); } };
 }

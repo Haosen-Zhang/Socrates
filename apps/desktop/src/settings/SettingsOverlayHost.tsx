@@ -99,7 +99,7 @@ export default function SettingsOverlayHost({
         </header>
         {/* 独立滚动区：设置内容不影响底下房间的滚动位置 */}
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <Settings initialSection={section} />
+          <Settings initialSection={section} onOpenRoom={onClose} />
         </div>
       </div>
     </div>

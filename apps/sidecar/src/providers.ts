@@ -1,3 +1,4 @@
+import { providerFingerprint, recordConnectionEvidence } from "./services/provider-connection-evidence";
 import { Hono } from "hono";
 import type { Database } from "bun:sqlite";
 import {
@@ -94,8 +95,9 @@ export function providerRoutes(db: Database, secrets: SecretStore, fetchFn: Fetc
     if (body.apiKey?.trim()) secrets.set(row.api_key_ref, body.apiKey);
     db.run(
       "UPDATE providers SET name = ?, base_url = ?, default_model = ?, enabled = ?, catalog_provider_id = ?, updated_at = ? WHERE id = ?",
-      [name, baseUrl, defaultModel, enabled, catalogProviderId, new Date().toISOString(), row.id],
+      [name, baseUrl, defaultModel, enabled, catalogProviderId, new Date(Math.max(Date.now(),(Date.parse(row.updated_at)||0)+1)).toISOString(), row.id],
     );
+    db.query("DELETE FROM provider_connection_evidence WHERE provider_id=?").run(row.id);
     return c.json(toProvider(byId(row.id)!));
   });
 
@@ -132,14 +134,20 @@ export function providerRoutes(db: Database, secrets: SecretStore, fetchFn: Fetc
     const row = byId(c.req.param("id"));
     if (!row) return c.json({ error: "provider 不存在" }, 404);
     const key = secrets.get(row.api_key_ref);
-    if (!key) return c.json({ outcome: "error", detail: "Keychain 中找不到 API Key，请重新填写" });
+    const fingerprint = providerFingerprint(row);
+    if (!key) {
+      recordConnectionEvidence(db,row.id,fingerprint,"auth_failed");
+      return c.json({ outcome: "error", detail: "Keychain 中找不到 API Key，请重新填写" });
+    }
     const req = buildTestRequest(row.type, row.base_url, key);
     try {
       const res = await fetchFn(req.url, { headers: req.headers, signal: AbortSignal.timeout(10_000) });
       const outcome = classifyTestOutcome(res.status);
+      recordConnectionEvidence(db,row.id,fingerprint,outcome);
       const detail = outcome === "ok" ? undefined : (await res.text()).slice(0, 300);
       return c.json({ outcome, status: res.status, detail });
     } catch (err) {
+      recordConnectionEvidence(db,row.id,fingerprint,"network_error");
       return c.json({ outcome: "network_error", detail: String(err).slice(0, 300) });
     }
   });

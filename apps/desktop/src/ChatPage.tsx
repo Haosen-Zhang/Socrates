@@ -607,7 +607,7 @@ function MultiAgentSession({ chrome }: { chrome: RoomChromeControls }) {
 
     </RoomTimeline>
     {session && <RoomCostPanel key={`cost-${session.id}`} roomId={session.id} />}
-    {terminal && session && !session.archived && <RoomComposer key={session.id} session={session} running={multiRunning || agentRunning || !!adaptiveCommandId} onOpenSettings={()=>setShowCollab(true)}/> }
+    {session && !session.archived && <RoomComposer key={session.id} session={session} running={multiRunning || agentRunning || !!adaptiveCommandId} onOpenSettings={()=>setShowCollab(true)}/> }
     {showRoster && session && <SessionMembersDialog session={session} onClose={()=>setShowRoster(false)}/>}
     {showCollab && session && <CoworkRoomSettingsDialog session={session} onClose={() => setShowCollab(false)} />}
   </div>;

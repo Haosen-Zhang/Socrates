@@ -20,6 +20,8 @@ describe("Work navigation boundaries", () => {
   });
   it("provides roving keyboard navigation without consuming IME candidate selection", () => {
     expect(nextWorkContext("rooms", "ArrowRight", false)).toBe("tasks");
+    expect(nextWorkContext("tasks", "ArrowRight", false)).toBe("inbox");
+    expect(nextWorkContext("inbox", "ArrowRight", false)).toBe("squads");
     expect(nextWorkContext("rooms", "ArrowLeft", false)).toBe("arena");
     expect(nextWorkContext("squads", "Home", false)).toBe("rooms");
     expect(nextWorkContext("tasks", "End", false)).toBe("arena");

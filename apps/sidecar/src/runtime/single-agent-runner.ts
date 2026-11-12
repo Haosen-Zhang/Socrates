@@ -841,7 +841,10 @@ export class SingleAgentRunner {
       if (session.workspace_id) {
         lease = await this.leases.acquireQueued(session.workspace_id, prepared.runId, {
           signal: input.signal,
-          onWaiting: () => emit({ type: "extension", name: "workspace_queued", payload: { reason: "workspace_write_lease_busy", workspaceId: session.workspace_id } }),
+          onWaiting: () => {
+            this.events.append({eventId:`workspace-waiting:${prepared.runId}`,sessionId:session.id,runId:prepared.runId,agentId:agent.agent_id,type:"run.workspace_waiting",coordinates:{turnId:prepared.turnId},payload:{reason:"workspace_write_lease_busy"}});
+            return emit({ type: "extension", name: "workspace_queued", payload: { reason: "workspace_write_lease_busy", workspaceId: session.workspace_id } });
+          },
         });
         renewal = setInterval(() => {
           try { this.leases.renew(lease!.id, new Date(Date.now() + 30 * 60_000).toISOString()); }

@@ -1,6 +1,7 @@
+import { commandRoom } from "./command-room";
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { MAX_AUTOMATIC_OUTPUT_TOKENS, atomic, isRoutingEnabled, resolveRoomCommand, requestCostUpperBound, type RoomCommandInput } from "@socrates/core";
+import { LEADER_LIMITS, MAX_AUTOMATIC_OUTPUT_TOKENS, atomic, isRoutingEnabled, resolveRoomCommand, requestCostUpperBound, type RoomCommandInput } from "@socrates/core";
 import type { SessionStore } from "../store/session-store";
 import { PricingStore } from "./pricing-store";
 import type { RoutePolicyService, RoutePreview } from "./route-policy";
@@ -46,6 +47,7 @@ export class TaskQuoteService {
     } else if (resolved.kind === "team") {
       const manager = room.collaboration.assignment.coordinatorAgentId ?? room.primaryAgentId;
       const rounds = room.collaboration.discussion.enabled ? room.collaboration.discussion.maxRounds : 0;
+      stages.push(stage("leader_evaluation", [manager], 0, LEADER_LIMITS.maxEvaluations, [`At most ${LEADER_LIMITS.maxEvaluations} evaluations per WorkItem, ${LEADER_LIMITS.maxOutputTokens} output tokens per evaluation; ${LEADER_LIMITS.maxDelegations} approved-package delegation rounds; shares the execution budget`]));
       stages.push(stage("planning", [manager], 1, 2, ["Manager 规划 1 次；包含最多一次 JSON 修复"]));
       if (rounds) stages.push(stage("discussion", providers.map(p => p.agentId), rounds, rounds, [`${rounds} 轮讨论，重复上下文按每位成员计入`]));
       stages.push(stage("execution", providers.map(p => p.agentId), 1, 8, ["启发式：每位成员 1–8 次采样；工作包数量以审批后的计划为准"]));
@@ -92,7 +94,7 @@ export class TaskQuoteService {
       if (!["strict_admission", "soft_limit", "tracking_only"].includes(input.budget.mode)) throw new Error("invalid_budget_mode");
       atomic(input.budget.limitAtomic);
     }
-    let resolved = resolveRoomCommand({ ...room, agentIds: room.agents.map(a => a.agentId) }, input);
+    let resolved = resolveRoomCommand(commandRoom(this.db,room), input);
     let route: RoutePreview | undefined;
     if (isRoutingEnabled(room,input) && resolved.kind !== "discussion") {
       if (!this.routing) throw new Error("routing_runtime_unavailable");

@@ -107,12 +107,12 @@ describe("deterministic workflow routing",()=>{
     expect(result.selected?.modelCalls.low).toBe(8);
     expect(result.selected?.resolved.agentIds).toEqual(expect.arrayContaining(["cheap","medium","expensive"]));
   });
-  it("Custom team @ locks the executor while preserving configured Manager, Reviewer and speakers",()=>{
+  it("Custom team explicit single member uses only that member while preserving admission constraints",()=>{
     const locked=input({preset:"custom",strategy:"team",lockedAgentIds:["cheap"],reviewerId:"medium",fallbackAgentIds:["medium"],
       discussion:{enabled:true,mode:"round_robin",maxRounds:1,speakerOrder:["medium"],summaryAgentId:"expensive"}});
     const result=selectRoute(locked);
-    expect(result.selected?.assignments).toEqual({managerId:"expensive",executorIds:["cheap"],reviewerId:"medium"});
-    expect(result.selected?.stages.find(stage=>stage.stage==="discussion")?.agentIds).toEqual(["medium"]);
+    expect(result.selected?.assignments).toEqual({managerId:null,executorIds:["cheap"],reviewerId:null});
+    expect(result.selected?.stages.find(stage=>stage.stage==="discussion")).toBeUndefined();
     expect(result.fallbackAgentIds).toEqual([]);
     expect(result.candidates.every(candidate=>candidate.assignments.executorIds.join() === "cheap")).toBe(true);
     const denied=structuredClone(locked);denied.members.find(item=>item.agentId==="cheap")!.credentialAvailable=false;
