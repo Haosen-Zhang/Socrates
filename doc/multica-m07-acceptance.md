@@ -10,23 +10,32 @@ The WorkItem list used to call the full detail projection for every row. With120
 
 The public local list endpoint `/work-items?workspaceId=…` now returns summaries; use `/work-items/:id` for histories. All repository callers were checked. No execution, billing, approval, dispatch or persistence authority moved into the UI. No new dependency, virtualizer or cache was added. The2-second polling interval remains: final browser measurement records its actual requests and renders, rather than hiding them behind an invented event cache.
 
+## Final-review corrections
+
+Archiving a verified execution room, archiving its workspace, or losing the workspace directory previously threw during WorkItem and global Inbox reads. The shared verification read now recognizes only room/workspace unavailability and returns retained plan/run history with an invalidated status, `gatePassed=false` and no accepted-unverified exemption. Lists, details, Squad projections and unrelated Inbox entries remain readable. WorkItem acceptance is rejected, and verify/accept/approval replay guards still require an available scope. Original verification rows remain unchanged; unexpected service errors and revoked-target errors still propagate. Real-service tests exercise all three unavailable states through HTTP projections and Inbox, compare retained histories, reject acceptance/replay, and check zero extra model calls.
+
+A successful new assignment preview now clears the previous room's selected verification plan. Same-room requotes keep their plan. Fresh Chrome checks approve/bind a plan, replace the preview after budget and budget-mode changes, directly request another preview, bind a new plan and explicitly start exactly one controlled Native execution. Preview/configure/approve/requote steps make zero model calls.
+
+The keyboard check now asserts that Tab from the Chat composer focuses the specifically named Send button, enabled and visibly inside the viewport; [focus screenshot](assets/multica-m07/keyboard-focus.png). It does not establish native accessibility or screen-reader behavior. The missing-notice count is corrected from9 to11, including `@esbuild/darwin-arm64@0.28.1` and `@rollup/rollup-darwin-arm64@4.62.2`; generated inventory and notices were not changed.
+
 ## Current verification
 
-All results below were produced on this M07 working source, not copied from earlier acceptance reports.
+Final-review fixes were validated on the final source hashes in `validation.json`. The four unaffected browser suites below remain the pre-fix M07 baseline at `ef4e8f0`; they were not rerun after these fixes. Fresh browser coverage is M06 (18 checks) plus M07 scale/focus (15 checks), not a new run of all100 baseline checks.
 
 | Gate | Current result |
 |---|---|
-| `bun test` with host access for sockets/macOS tools | **1325 pass,0 fail,24229 assertions,228 files,48.03s** |
+| `bun test` with host access for sockets/macOS tools | **1329 pass,0 fail,24300 assertions,228 files,48.41s** |
 | `bun run typecheck` | Pass |
 | `bun run lint` | Pass,588 files |
-| `bun run --cwd apps/desktop build` | Pass,2.90s; existing mixed-import/large-chunk warnings retained |
-| Projection + migration focused tests |4 pass,0 fail,50 assertions; real service launch, current review projection, backup restoration and future-schema refusal |
-| Existing M02–M03 Chrome suite |23/23; current UI and real service fixture |
-| Existing M04–M05 Chrome suite |32/32; lifecycle, instructions, queue, Inbox, history, stop/restart |
-| Existing M06 Chrome suite |11/11; current unknown cost, stale evidence, reverify/accept, budget, Squad routing and Arena |
-| Existing P08 stress Chrome suite |10/10; injected event-connection reset, no duplicate command, two currencies, real approved command output and log pagination |
-| M07 scale/interaction Chrome suite | 15/15; [current checks](assets/multica-m07/scale-checks.json) |
-| Production-entry-point startup/upgrade Chrome suite | 9/9; [current checks](assets/multica-m07/compatibility-checks.json) |
+| `bun run --cwd apps/desktop build` | Pass,3.12s; existing mixed-import/large-chunk warnings retained |
+| Final focused regressions |25 pass,0 fail,268 assertions,4 files; archive/unavailable evidence, unrelated rows/Inbox, acceptance, stale evidence, revoked-target contract |
+| Projection + migration baseline |4 pass,0 fail,50 assertions before final fixes; migration suite also passed in the fresh full gate |
+| M02–M03 Chrome baseline (not rerun) |23/23; pre-fix UI and real service fixture |
+| M04–M05 Chrome baseline (not rerun) |32/32; lifecycle, instructions, queue, Inbox, history, stop/restart |
+| Fresh M06 Chrome suite |18/18; approve/bind → budget/mode/direct replacement → fresh plan/start, zero unexpected model calls, plus prior cost/evidence/Squad/Arena checks |
+| P08 stress Chrome baseline (not rerun) |10/10; injected event-connection reset, no duplicate command, two currencies, real approved command output and log pagination |
+| Fresh M07 scale/interaction Chrome suite | 15/15; [current checks](assets/multica-m07/scale-checks.json) |
+| Startup/upgrade Chrome baseline (not rerun) | 9/9; [current checks](assets/multica-m07/compatibility-checks.json) |
 
 Browser suites use installed Chrome, real React/Zustand, production HTTP routes, RoomCommandService, TeamRunner, Native runtime, event stores and temporary SQLite/workspaces. Only model responses are controlled. The fresh/upgrade suite starts the actual `apps/sidecar/src/index.ts` with disposable `SOCRATES_DATA_DIR` directories and no configured providers. Browser Tauri invocation is a handshake/window shim; this is not an installed Tauri test. Every browser suite records zero renderer errors and zero external browser requests. Fixture model transports reject non-fixture URLs. No paid model calls or private uploads were made.
 
@@ -37,10 +46,10 @@ Dataset:36 Agents,12 Squads,120 independently launched WorkItems,40 extra long h
 | Measurement | Before | After |
 |---|---:|---:|
 | List JSON bytes |12,096,381|444,021|
-| Median list read + serialization |108.55ms|27.17ms|
+| Median list read + serialization |108.55ms|19.73ms|
 | History payload reduction |—|96.3%|
 
-The final browser recorded first usable task list in 1682ms, filtering in 15.01ms, 2 idle list polls and 3 task-panel renders during4.3s. The long stream was observed for 107.83s and the renderer settled without reload. An early optimized isolated sample was19.67ms. The final browser fixture sample and browser timings are in [metrics](assets/multica-m07/scale-checks.json); timings vary with other test processes and are local observations, not hardware-independent thresholds. The task list renders120 rows; the final filter time is recorded above. A new virtualizer was not justified at this measured scale. Larger task histories still require pagination work; verification continues to check current evidence, and Run metadata still scales with retained attempts.
+The final browser recorded first usable task list in 1533ms, filtering in 14.25ms, 2 idle list polls and 2 task-panel renders during4.3s. The long stream was observed for 109.94s and the renderer settled without reload. An early optimized isolated sample was19.67ms. The final browser fixture sample and browser timings are in [metrics](assets/multica-m07/scale-checks.json); timings vary with other test processes and are local observations, not hardware-independent thresholds. The task list renders120 rows; the final filter time is recorded above. A new virtualizer was not justified at this measured scale. Larger task histories still require pagination work; verification continues to check current evidence, and Run metadata still scales with retained attempts.
 
 A controlled Native response emits1200 chunks with50ms minimum spacing. The observed run lasts over a minute (the final measured duration is recorded), passes through the actual SSE/store path, survives switching to Chat and back, and leaves only one durable command. The renderer must settle its running controls without reload. A5-second sample observes room timeline renders while the guarded `RoomSidebar` has no renders. Counts use fresh React development Fiber start times and performed-work flags; stale retained flags and similarly named icons are excluded. This is a narrow subscription-boundary observation, not a claim that every component avoids renders. Settings are not profiled while closed.
 
@@ -48,7 +57,7 @@ The default development build, local IPC transport, mutable-height message conte
 
 ## S01–S20 evidence map
 
-Each row points to current tests or current browser runs. “Pass” means the stated controlled boundary, not real-provider model quality.
+Each row points to final-source service tests, fresh M06/M07 browser runs, or the explicitly retained pre-fix browser baseline above. References to M02/M04/P08/startup browser checks below mean that baseline, not post-fix reruns. “Pass” means the stated controlled boundary, not real-provider model quality.
 
 | Scenario | Observed result and current evidence |
 |---|---|
@@ -93,7 +102,7 @@ The current migration test actually copies the automatic schema022 backup, runs 
 
 `scripts/multica-license-audit.mjs` resolves the installed production dependency graph, including installed peers and platform optionals, checks package identity, measures size, hashes packaged LICENSE/NOTICE/README license sections, and emits [RUNTIME-NOTICES.txt](../third-party/RUNTIME-NOTICES.txt). The inventory contains396 installed package versions and32 direct dependency references. Uninstalled platform-specific optional packages are listed separately.
 
-**Distribution gaps found:**9 installed packages lack an available license/notice section in their installed package; `buffers@0.1.1` also has no declared license metadata. The exact names/versions are in `missingNotices`. Declared metadata is preserved without manufacturing a copyright notice or copying a guessed upstream file. Socrates still has no root distribution LICENSE. Rust crates, signed installers and binary redistribution notices are outside this source-preview audit. Resolve these gaps before a distributable release; this stage neither publishes one nor grants rights it cannot establish.
+**Distribution gaps found:**11 installed package versions lack an available license/notice section in their installed package; `buffers@0.1.1` also has no declared license metadata. The exact names/versions are in `missingNotices`. Declared metadata is preserved without manufacturing a copyright notice or copying a guessed upstream file. Socrates still has no root distribution LICENSE. Rust crates, signed installers and binary redistribution notices are outside this source-preview audit. Resolve these gaps before a distributable release; this stage neither publishes one nor grants rights it cannot establish.
 
 ## Reproduction and evidence handling
 
@@ -108,8 +117,8 @@ SOCRATES_PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs node scripts/m
 node scripts/multica-license-audit.mjs
 ```
 
-Existing current suites use paired `multica-m02-m03`, `multica-m04-m05`, `multica-m06` and `p08-stress` fixture/browser scripts; set `SOCRATES_MULTICA_UI_URL=http://127.0.0.1:45379/` and distinct output paths. The P08 fixture now delays controlled Native output so event-connection reset cannot be bypassed by a response that finishes before observation begins.
+The baseline suites use paired `multica-m02-m03`, `multica-m04-m05`, `multica-m06` and `p08-stress` fixture/browser scripts; set `SOCRATES_MULTICA_UI_URL=http://127.0.0.1:45379/` and distinct output paths. The P08 fixture now delays controlled Native output so event-connection reset cannot be bypassed by a response that finishes before observation begins.
 
-Screenshots are actual UI with explicitly synthetic data and controlled model replies. They are not real user projects, claimed model-quality results or evidence of production task success. Read [checks and screenshot hashes](assets/multica-m07/sha256.json) alongside this report. Earlier untracked `output/playwright` directories are preserved; only this stage's reviewed artifacts are copied into `doc/assets/multica-m07`.
+Screenshots are actual UI with explicitly synthetic data and controlled model replies. They are not real user projects, claimed model-quality results or evidence of production task success. Read [checks and screenshot hashes](assets/multica-m07/sha256.json) alongside this report. Earlier untracked `output/playwright` directories and baseline screenshot assets are preserved. Fresh final-review screenshots use the `final-` prefix plus `keyboard-focus.png`; existing README screenshots remain byte-identical. Current check records and performance metrics were refreshed only for M06 and M07 scale/focus.
 
 Not exercised: paid providers, OS input-method candidate windows, VoiceOver/screen-reader announcements, native window/menu integration, signed/notarized installation, clean-machine packaging, Windows/Linux or multi-hour loads. Browser composition events, accessible names, narrow layouts and focus movement are verified only at their stated boundary.
