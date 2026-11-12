@@ -156,6 +156,11 @@ export class RoomCommandService {
     this.db.transaction(() => {
       this.db.query("INSERT INTO room_commands (id,room_id,client_request_id,fingerprint,input_json,kind,status,created_at,updated_at) VALUES (?,?,?,?,?,?,'dispatching',?,?)")
         .run(id, room.id, input.clientRequestId, fingerprint, JSON.stringify({...input,...(quote?{quoteId:quote.id}:{})}), resolved.kind, now, now);
+      const workItem=this.db.query<{work_item_id:string;id:string;frozen_owner_json:string},[string]>('SELECT work_item_id,id,frozen_owner_json FROM work_item_runs WHERE execution_room_id=? ORDER BY rowid DESC LIMIT 1').get(room.id);
+      const owner=workItem ? JSON.parse(workItem.frozen_owner_json) : null;
+      const binding=this.db.query<{snapshot_json:string},[string]>('SELECT snapshot_json FROM squad_room_bindings WHERE room_id=?').get(room.id);
+      const squad=owner?.ownerKind==='squad'?owner.snapshot:binding?JSON.parse(binding.snapshot_json):null;
+      if(squad)this.db.query('INSERT INTO squad_command_snapshots VALUES(?,?,?,?,?,?,?,?,?)').run(id,room.id,room.workspaceId!,squad.id,squad.revision,squad.leaderAgentId,workItem?.work_item_id??null,workItem?.id??null,now);
       new ProjectMemoryService(this.db).freeze(id, room.id);
       if(route)this.deps.routing!.freeze(id,route,quote?.id ?? null);
       const budgetLedger=new BudgetLedger(this.db);

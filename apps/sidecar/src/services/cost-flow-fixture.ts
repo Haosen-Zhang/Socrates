@@ -300,10 +300,10 @@ export async function setupCostFlowFixture(options: { leaderDecision?:unknown; s
   const quotes = new TaskQuoteService(db, sessions,routes), usage = new UsageCollector(db);
   const config = new ConfigStore(join(directory, "config.toml"), secrets);
   config.update({ language: "en", theme: "dark", soundEnabled: false });
-const workItems=new WorkItemService(db,commands);
+const workItems=new WorkItemService(db,commands,verification);
  const agentLifecycle=new AgentLifecycleService(db,{secrets,runtimeReady:()=>runtimes.isRegistered("native_ai_sdk")});
  const squads=new SquadService(db,sessions,workspaceId=>workItems.list(workspaceId),agentLifecycle);
- const workItemLaunch=new WorkItemLaunchService(db,workItems,sessions,squads,new TaskQuoteService(db,sessions),commands);
+ const workItemLaunch=new WorkItemLaunchService(db,workItems,sessions,squads,quotes,commands);
  const inbox=new InboxService(db,workItems,commands,verification);
  const interactions=new WorkInteractionService(db,workItems,sessions,commands,coordinator,tasks,team,packages,()=>{inbox.list();});
  interactions.start(10);

@@ -416,3 +416,9 @@ M03 可选 Board 不引入；M04 生命周期、M05 提及/收件箱/Leader 再�
 - M04、M05 均达到本轮验收条件；M06、M07 仍为后续阶段。按既有授权自动提交 PR，不合并、不发布。
 
 - 已按授权推送 `codex/multica-ux-m04-m05` 并创建 [PR #155](https://github.com/Haosen-Zhang/Socrates/pull/155)，关联 issue #154。代码验收 HEAD 为 `c7e4245`，后续为证据/进度文档提交；最终 review approved。未合并、未发布。GitHub 连接器创建权限不足，改用已配置 gh 完成；原工作区和既有未跟踪输出保留。
+
+## M06 — unified cost and evidence integration (2026-11-12)
+
+On `ca524f8`, audited actual P00–P08 code and reused the existing ledger, budget entrance, routing/adaptive host, independent verification, project memory, Flight Recorder and Arena. Added versioned Squad presets and frozen command attribution; WorkItem/Package/Run/Squad/Project cost panels; approved preflight verification; stale-evidence re-review; authorized Squad Arena candidates in isolated workspaces. No second billing system/runtime or dependency.
+
+Full service suite: 1320 pass / 0 fail / 24169 assertions / 228 files (43.80s); typecheck, lint and desktop build pass. Chrome11/11 checks pass with no renderer errors or external requests. Details, exact evidence boundaries, reuse/license table and browser reproduction: [M06 acceptance](doc/multica-m06-acceptance.md). M07 remains separate.

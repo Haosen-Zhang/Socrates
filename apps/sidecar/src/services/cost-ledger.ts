@@ -13,7 +13,7 @@ interface InvocationRow {
 }
 interface BudgetRow { root_task_id: string; room_id: string; mode: BudgetMode; limit_atomic: string; parent_id: string | null; revision: number; blocked_reason: string | null; blocked_json: string | null }
 interface ReservationRow { invocation_id: string; root_task_id: string; amount_atomic: string; state: string }
-type Filter = { roomId?: string; rootTaskId?: string; agentId?: string; since?: string; until?: string };
+export type CostFilter = { workspaceId?: string; workItemId?: string; squadId?: string; workPackageId?: string; runId?: string; roomId?: string; rootTaskId?: string; agentId?: string; since?: string; until?: string };
 type Finish = { usage?: TokenUsage; requestId?: string; finishReason?: string; outcome?: string };
 function minimalUsage(raw: TokenUsage): TokenUsage {
   const result: TokenUsage = {};
@@ -98,9 +98,14 @@ export class CostLedger {
     return record;
   }
   get(id: string): InvocationRecord | null { const row = this.row(id); return row ? this.project(row) : null; }
-  list(filter: Filter = {}): InvocationRecord[] {
+  list(filter: CostFilter = {}): InvocationRecord[] {
     const where:string[]=[],args:string[]=[];
     for(const [column,value,operator] of [['room_id',filter.roomId,'='],['agent_id',filter.agentId,'='],['created_at',filter.since,'>='],['created_at',filter.until,'<=']] as const)if(value){where.push(`${column}${operator}?`);args.push(value);}
+    if(filter.workspaceId){where.push('(room_id IN (SELECT id FROM sessions WHERE workspace_id=?) OR root_task_id IN (SELECT root_task_id FROM squad_command_snapshots WHERE workspace_id=?))');args.push(filter.workspaceId,filter.workspaceId);}
+    if(filter.workItemId){where.push('room_id IN (SELECT execution_room_id FROM work_item_runs WHERE work_item_id=?)');args.push(filter.workItemId);}
+    if(filter.squadId){where.push('root_task_id IN (SELECT root_task_id FROM squad_command_snapshots WHERE squad_id=?)');args.push(filter.squadId);}
+    if(filter.workPackageId){where.push("json_extract(identity_json,'$.workPackageId')=?");args.push(filter.workPackageId);}
+    if(filter.runId){where.push('run_id=?');args.push(filter.runId);}
     const rows=this.db.query<InvocationRow,string[]>(`SELECT * FROM cost_invocations${where.length?' WHERE '+where.join(' AND '):''} ORDER BY rowid`).all(...args);
     const tasks = filter.rootTaskId ? new Set(descendants(this.db, filter.rootTaskId)) : null;
     return rows.map(row=>this.project(row)).filter(record=>!tasks||tasks.has(record.rootTaskId));
@@ -192,7 +197,7 @@ export class CostLedger {
       new BudgetLedger(this.db).detectBreach(invocation.rootTaskId, input.requestId, id);
     }).immediate();
   }
-  summary(filter: Filter = {}): CostSummary {
+  summary(filter: CostFilter = {}): CostSummary {
     const records = this.list(filter).filter(record => !["created", "not_sent"].includes(record.state));
     const adjustments = records.flatMap(record => this.db.query<{ amount_atomic: string; currency: string }, [string]>("SELECT amount_atomic,currency FROM cost_adjustments WHERE invocation_id=?").all(record.invocationId));
     const usage: TokenUsage = {};
@@ -208,7 +213,7 @@ export class CostLedger {
     });
     const historical = this.db.query<{ session_id: string | null; room_id: string | null; task_id: string | null }, []>("SELECT session_id,room_id,task_id FROM cost_legacy_usage").all();
     const tasks = filter.rootTaskId ? new Set(descendants(this.db, filter.rootTaskId)) : null;
-    const historicalUnknownCount = filter.agentId || filter.since || filter.until ? 0 : historical.filter(row => (!filter.roomId || row.session_id === filter.roomId || row.room_id === filter.roomId) && (!tasks || !!row.task_id && tasks.has(row.task_id))).length;
+    const historicalUnknownCount = filter.agentId || filter.since || filter.until || filter.squadId || filter.workItemId || filter.workPackageId || filter.runId ? 0 : historical.filter(row => (!filter.workspaceId || !!this.db.query('SELECT id FROM sessions WHERE workspace_id=? AND id IN (?,?)').get(filter.workspaceId,row.session_id,row.room_id)) && (!filter.roomId || row.session_id === filter.roomId || row.room_id === filter.roomId) && (!tasks || !!row.task_id && tasks.has(row.task_id))).length;
     return { invocations: records.length, unknownCount: records.filter(unknown).length, totals: knownTotals(records, adjustments), estimatedTotals: estimatedTotals(records), ...categories(records), byAgent, usage, historicalUnknownCount };
   }
 }

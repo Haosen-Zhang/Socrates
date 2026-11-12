@@ -1,3 +1,4 @@
+import CostScopePanel from "../cost/CostScopePanel";
 import AgentDetailPanel from "../agent-lifecycle/AgentDetailPanel";
 import AgentPresence from "../agent-lifecycle/AgentPresence";
 import type { AgentAvailabilityProjection, AgentWorkloadProjection } from "@socrates/core";
@@ -17,9 +18,9 @@ type Detail = {
   recentRuns: Array<{id:string; agentId?:string; status:string}>;
   activeWorkItems: Array<{id:string; title:string}>;
 };
-type Draft = Pick<SquadTemplate,"workspaceId"|"name"|"avatar"|"leaderAgentId"|"description"|"instructions"|"members">;
+type Draft = Pick<SquadTemplate,"workspaceId"|"name"|"avatar"|"leaderAgentId"|"description"|"instructions"|"members"|"routingPreset">;
 export default function SquadsPanel({workspaceId,handshake,onOpenRoom,onAssign}:{workspaceId:string;handshake:Handshake;onOpenRoom:()=>void;onAssign?:(squadId:string)=>void}) {
-  const {agents,providers,sessions,loadSessions,selectAgentSession,lang}=useStorePick("agents","providers","sessions","loadSessions","selectAgentSession","lang");
+  const {agents,providers,sessions,loadSessions,selectAgentSession,lang,agentCapabilities}=useStorePick("agents","providers","sessions","loadSessions","selectAgentSession","lang","agentCapabilities");
   const tr=(zh:string,en:string)=>lang!=="en"?zh:en;
   const [agentDetail,setAgentDetail]=useState<string|null>(null);
   const [rows,setRows]=useState<SquadTemplate[]>([]),[detail,setDetail]=useState<Detail|null>(null);
@@ -60,7 +61,7 @@ export default function SquadsPanel({workspaceId,handshake,onOpenRoom,onAssign}:
     {current&&!draft&&<DetailPanel drawer open title={current.squad.name} closeLabel={tr("关闭团队详情","Close squad detail")} onClose={()=>setSelected("")}>
       <div className="squad-form"><p>{current.squad.description}</p><p>v{current.squad.revision} · {new Date(current.squad.updatedAt).toLocaleString()}</p>
       {error&&<ErrorNotice message={error}/>}
-      <h3>{tr("成员与职责","Members and responsibilities")}</h3>
+      <CostScopePanel handshake={handshake} scope={{squadId:current.squad.id}}/><p>{tr("默认执行策略","Default execution policy")}: {current.squad.routingPreset??"manual"}</p><h3>{tr("成员与职责","Members and responsibilities")}</h3>
       {current.squad.members.map(m=>{const a=agents.find(a=>a.id===m.agentId),status=current.members.find(a=>a.agentId===m.agentId);return <article key={m.agentId} className="squad-member"><AgentAvatar src={a?.avatar} label={a?.nickname??m.agentId} size={32} lively={false}/><div><strong>{a?.nickname??m.agentId}{m.agentId===current.squad.leaderAgentId?" · Leader":""}</strong><p>{m.responsibility||tr("未填写职责","No responsibility specified")}</p><small>{a?.modelId}</small><div>{status?.availabilityProjection&&status.workload?<AgentPresence availability={status.availabilityProjection} workload={status.workload} en={lang==="en"}/>:<p>{status?.reason}</p>}</div><button className="pixel-button px-2 py-1" aria-label={`${tr("查看 Agent","View agent")} ${a?.nickname??m.agentId}`} onClick={()=>setAgentDetail(m.agentId)}>{tr("Agent 详情与时间线","Agent detail and timeline")}</button></div></article>;})}
       <h3>{tr("Leader 协作指令","Leader instructions")}</h3><p className="work-task-objective">{current.squad.instructions||"—"}</p>
       <h3>{tr("活跃工作事项","Active work items")} ({current.activeWorkItems.length})</h3>{current.activeWorkItems.map(item=><p key={item.id}>{item.title}</p>)}
@@ -75,6 +76,7 @@ export default function SquadsPanel({workspaceId,handshake,onOpenRoom,onAssign}:
       </div>
     </DetailPanel>}
     {draft&&<DetailPanel drawer open title={editing?tr("编辑团队","Edit squad"):tr("新建 Squad","New squad")} closeLabel={tr("取消编辑","Cancel editing")} onClose={()=>{if(!busy){setDraft(null);setEditing(null);}}}><div className="squad-form">
+      <label>{tr("默认执行策略","Default execution policy")}<select aria-label={tr("默认执行策略","Default execution policy")} className="pixel-input" value={draft.routingPreset??"manual"} onChange={e=>setDraft({...draft,routingPreset:e.target.value as SquadTemplate['routingPreset']})}><option value="manual">{tr("Leader 派工（手动团队）","Leader delegation (manual team)")}</option>{agentCapabilities?.collaboration.routing&&(['economy','balanced','quality','custom'] as const).map(p=><option key={p} value={p}>{({economy:tr("经济优先","Economy"),balanced:tr("平衡","Balanced"),quality:tr("质量优先","Quality"),custom:tr("Custom · 固定成员团队","Custom · fixed member team")})[p]}</option>)}</select></label><p>{tr("自动策略仅在指定成员内选择；可能直接执行，团队方案仅 Leader 先规划。人工审批、预算和独立验证保持生效。Custom 保留 Leader 与此处全部成员。","Automatic policies choose only among these members and may execute directly; team plans start only the Leader. Human approvals, budgets and independent verification remain active. Custom keeps this Leader and all selected members.")}</p>
       <ActorPicker label="Leader" actors={actors} value={draft.leaderAgentId} onChange={chooseLeader}/>
       <button className="pixel-button px-3 py-2" onClick={()=>setNewAgent(true)}>{tr("新建角色并加入","Create and add agent")}</button>
       <label>{tr("团队名称","Squad name")}<input className="pixel-input" value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label>

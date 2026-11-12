@@ -294,9 +294,9 @@ commands.recoverInterrupted();
 const costTasks = new CostTaskService(db, commands, runSupervisor, agentRuns, multiTasks, multiCoordinator, teamRunner, executionRunner,{routing,adaptive});
 
 const agentLifecycle=new AgentLifecycleService(db,{secrets,runtimeReady:()=>runtimes.isRegistered("native_ai_sdk")});
-const workItems=new WorkItemService(db,commands);
+const workItems=new WorkItemService(db,commands,verification);
  const squads=new SquadService(db,sessions,workspaceId=>workItems.list(workspaceId),agentLifecycle);
- const workItemLaunch=new WorkItemLaunchService(db,workItems,sessions,squads,new TaskQuoteService(db,sessions),commands);
+ const workItemLaunch=new WorkItemLaunchService(db,workItems,sessions,squads,new TaskQuoteService(db,sessions,routing),commands);
  const inbox=new InboxService(db,workItems,commands,verification);
  const interactions=new WorkInteractionService(db,workItems,sessions,commands,multiCoordinator,multiTasks,teamRunner,workPackages,()=>{inbox.list();});
  interactions.start(500);

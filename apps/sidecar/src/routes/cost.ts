@@ -27,6 +27,21 @@ export function costRoutes(db: Database, sessions: SessionStore, broker: ModelIn
   };
   const view = (rootTaskId: string) => ({ rootTaskId, summary: broker.ledger.summary({ rootTaskId }), invocations: broker.ledger.list({ rootTaskId }),
     budget: broker.budgets.get(rootTaskId) ? broker.budgets.summary(rootTaskId) : null, command: commands.get(rootTaskId), blocked: broker.budgets.latestBlocked(rootTaskId) });
+  app.get("/scopes", c => {
+    const parsed=z.object({workspaceId:z.string().min(1).optional(),workItemId:z.string().min(1).optional(),squadId:z.string().min(1).optional(),workPackageId:z.string().min(1).optional(),runId:z.string().min(1).optional(),rootTaskId:z.string().min(1).optional(),roomId:z.string().min(1).optional(),agentId:z.string().min(1).optional()}).strict().safeParse(c.req.query());
+    if(!parsed.success || !Object.keys(parsed.data).length)return c.json({error:'cost_scope_required'},400);
+    const filter=parsed.data,invocations=broker.ledger.list(filter);
+    const roots=new Set(invocations.map(i=>i.rootTaskId));
+    if(filter.rootTaskId)roots.add(filter.rootTaskId);
+    if(filter.workItemId)for(const r of db.query<{id:string},[string]>('SELECT c.id FROM room_commands c JOIN work_item_runs r ON c.room_id=r.execution_room_id WHERE r.work_item_id=?').all(filter.workItemId))roots.add(r.id);
+    if(filter.squadId)for(const r of db.query<{root_task_id:string},[string]>('SELECT root_task_id FROM squad_command_snapshots WHERE squad_id=?').all(filter.squadId))roots.add(r.root_task_id);
+    return c.json({summary:broker.ledger.summary(filter),invocations,tasks:[...roots].map(rootTaskId=>{
+      const command=db.query<{input_json:string},[string]>('SELECT input_json FROM room_commands WHERE id=?').get(rootTaskId);
+      const quoteId=command?JSON.parse(command.input_json).quoteId:null;
+      const quote=quoteId?db.query<{quote_json:string},[string]>('SELECT quote_json FROM cost_quotes WHERE id=?').get(quoteId):null;
+      return {rootTaskId,budget:broker.budgets.get(rootTaskId)?broker.budgets.summary(rootTaskId):null,blocked:broker.budgets.latestBlocked(rootTaskId),quote:quote?JSON.parse(quote.quote_json):null};
+    }),scope:'unique_invocation_ids; overlapping dimensions must not be added'});
+  });
   app.get("/prices", c => {
     const id = c.req.query("providerId");
     if (id) {

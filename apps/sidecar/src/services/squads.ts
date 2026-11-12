@@ -4,7 +4,7 @@ import { SessionStore } from '../store/session-store';
 import { toAgent, type AgentRow } from '../agents';
 import type { Database } from 'bun:sqlite';
 import type { SquadTemplate, SquadMember, WorkItem } from '@socrates/core';
-export type SquadInput = Pick<SquadTemplate, 'workspaceId'|'name'|'leaderAgentId'|'description'|'instructions'|'avatar'|'members'>;
+export type SquadInput = Pick<SquadTemplate, 'workspaceId'|'name'|'leaderAgentId'|'description'|'instructions'|'avatar'|'members'|'routingPreset'>;
 export class SquadConflict extends Error {}
 export class SquadService {
   constructor(readonly db: Database, readonly sessions = new SessionStore(db), private workItems:(workspaceId:string)=>WorkItem[] = ()=>[], private lifecycle = new AgentLifecycleService(db)) {}
@@ -16,9 +16,10 @@ export class SquadService {
     const r = this.db.query<Record<string, unknown>,[string]>('SELECT * FROM squad_templates WHERE id = ?').get(id);
     if (!r) return null;
     const members = this.db.query<{agent_id:string;responsibility:string},[string]>('SELECT agent_id, responsibility FROM squad_members WHERE squad_id = ? ORDER BY rowid').all(id).map(m=>({agentId:m.agent_id,responsibility:m.responsibility}));
-    return {id,workspaceId:String(r.workspace_id),name:String(r.name),avatar:r.avatar as string|null,leaderAgentId:String(r.leader_agent_id),description:String(r.description),instructions:String(r.instructions),revision:Number(r.revision),archived:!!r.archived,createdAt:String(r.created_at),updatedAt:String(r.updated_at),members,activeWorkItemCount:this.activeItems(id,String(r.workspace_id),items).length};
+    return {id,workspaceId:String(r.workspace_id),name:String(r.name),avatar:r.avatar as string|null,leaderAgentId:String(r.leader_agent_id),description:String(r.description),instructions:String(r.instructions),routingPreset:r.routing_preset as SquadTemplate["routingPreset"],revision:Number(r.revision),archived:!!r.archived,createdAt:String(r.created_at),updatedAt:String(r.updated_at),members,activeWorkItemCount:this.activeItems(id,String(r.workspace_id),items).length};
   }
   private validate(input: SquadInput) {
+    if (!['manual','economy','balanced','quality','custom'].includes(input.routingPreset??'manual')) throw new Error('Invalid routing preset');
     if (!input.name.trim()) throw new Error('Squad name is required');
     if (!input.members.some(m=>m.agentId===input.leaderAgentId)) throw new Error('Leader must remain a member; change Leader before removal');
     if (new Set(input.members.map(m=>m.agentId)).size !== input.members.length) throw new Error('Duplicate member');
@@ -38,6 +39,7 @@ export class SquadService {
     this.db.transaction(()=>{
       this.db.query('INSERT INTO squad_templates(id,workspace_id,name,avatar,leader_agent_id,description,instructions,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(id,input.workspaceId,input.name.trim(),input.avatar,input.leaderAgentId,input.description,input.instructions,now,now);
       this.members(id,input.members);
+      this.db.query('UPDATE squad_templates SET routing_preset=? WHERE id=?').run(input.routingPreset??'manual',id);
     })();
     return this.get(id)!;
   }
@@ -53,6 +55,7 @@ export class SquadService {
       if (current.workspaceId!==input.workspaceId) throw new Error('Squad project cannot change');
       this.db.query('UPDATE squad_templates SET name=?,avatar=?,leader_agent_id=?,description=?,instructions=?,revision=revision+1,updated_at=? WHERE id=?').run(input.name.trim(),input.avatar,input.leaderAgentId,input.description,input.instructions,new Date().toISOString(),id);
       this.members(id,input.members);
+      this.db.query('UPDATE squad_templates SET routing_preset=? WHERE id=?').run(input.routingPreset??'manual',id);
     })();
     return this.get(id)!;
   }
@@ -74,7 +77,10 @@ export class SquadService {
     return this.get(id)!;
   }
   private busy(roomId:string) {
-    return !!this.db.query("SELECT id FROM room_commands WHERE room_id=? AND status IN ('dispatching','running') LIMIT 1").get(roomId)
+    return !!this.db.query(`SELECT c.id FROM room_commands c WHERE c.room_id=? AND c.status IN ('dispatching','running')
+      AND NOT EXISTS(SELECT 1 FROM agent_runs original JOIN agent_runs latest ON latest.turn_id=original.turn_id WHERE original.id=c.run_id AND latest.id=(SELECT id FROM agent_runs WHERE turn_id=original.turn_id ORDER BY attempt_no DESC,created_at DESC LIMIT 1) AND latest.status IN ('completed','failed','cancelled'))
+      AND NOT EXISTS(SELECT 1 FROM multi_tasks t WHERE t.id=c.task_id AND t.state IN ('completed','failed','cancelled'))
+      AND NOT EXISTS(SELECT 1 FROM adaptive_workflows w WHERE w.root_task_id=c.id AND w.status IN ('completed','failed','blocked','cancelled')) LIMIT 1`).get(roomId)
       || !!this.db.query("SELECT root_task_id FROM adaptive_workflows WHERE room_id=? AND status NOT IN ('completed','failed','blocked','cancelled') LIMIT 1").get(roomId)
       || !!this.db.query("SELECT id FROM multi_tasks WHERE session_id=? AND completed_at IS NULL LIMIT 1").get(roomId);
   }
@@ -103,7 +109,11 @@ export class SquadService {
       if (agent.modelCapabilities?.toolCalling !== true) throw new Error('Squad member requires verified tool capability');
       return {agentId:member.agentId,executionEligible:true,snapshot:{...agent,systemPrompt:agent.systemPrompt+(member.agentId===squad.leaderAgentId ? '\n\nSquad instructions: '+squad.instructions+'\nRoster: '+JSON.stringify(squad.members) : '')}};
     });
-    const collaborationDefaults={...DEFAULT_COLLABORATION_SETTINGS,strategy: 'team' as const,assignment:{...DEFAULT_COLLABORATION_SETTINGS.assignment,coordinatorAgentId:squad.leaderAgentId,callableAgentIds:squad.members.map(m=>m.agentId)}};
+    const collaborationDefaults:import('@socrates/core').RoomCollaborationSettings={...DEFAULT_COLLABORATION_SETTINGS,strategy: 'team' as const,assignment:{...DEFAULT_COLLABORATION_SETTINGS.assignment,coordinatorAgentId:squad.leaderAgentId,callableAgentIds:squad.members.map(m=>m.agentId)}};
+    if(squad.routingPreset && squad.routingPreset!=='manual') {
+      collaborationDefaults.strategy=squad.routingPreset==='custom'?'team':'adaptive';
+      collaborationDefaults.assignment.routing={...collaborationDefaults.assignment.routing,mode:squad.routingPreset==='custom'?'manual':'automatic',automaticPolicy:squad.routingPreset==='economy'?'cost':squad.routingPreset==='quality'?'quality':'balanced'};
+    }
     return {squad,agents,collaborationDefaults};
   }
   createRoom(id:string, expectedRevision:number,title:string) {
@@ -111,7 +121,7 @@ export class SquadService {
     const room=this.sessions.create({title,kind:'cowork',mode:p.agents.length>1?'multi_agent':'single_agent',workspaceId:p.squad.workspaceId,primaryAgentId:p.squad.leaderAgentId,agents:p.agents,collaborationDefaults:p.collaborationDefaults}, roomId=>this.saveBinding(roomId,p.squad));
     return {room,binding:this.binding(room.id)};
   }
-  private saveBinding(roomId:string,squad:SquadTemplate) {
+  saveBinding(roomId:string,squad:SquadTemplate) {
     this.db.query('INSERT INTO squad_binding_versions(room_id,version) VALUES(?,1) ON CONFLICT(room_id) DO UPDATE SET version=version+1').run(roomId);
     this.db.query('INSERT INTO squad_room_bindings(room_id,squad_id,revision,snapshot_json,binding_version) VALUES(?,?,?,?,(SELECT version FROM squad_binding_versions WHERE room_id=?)) ON CONFLICT(room_id) DO UPDATE SET squad_id=excluded.squad_id,revision=excluded.revision,binding_version=excluded.binding_version,snapshot_json=excluded.snapshot_json').run(roomId,squad.id,squad.revision,JSON.stringify(squad),roomId);
   }
